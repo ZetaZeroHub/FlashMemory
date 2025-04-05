@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"log"
 	"net/http"
 	"os"
@@ -17,6 +18,20 @@ import (
 	"github.com/kinglegendzzh/flashmemory/internal/search"
 	"github.com/kinglegendzzh/flashmemory/internal/utils"
 	"github.com/kinglegendzzh/flashmemory/internal/visualize"
+)
+
+var (
+	SupportedLanguages = []string{
+		".go",
+		".py",
+		".js", ".jsx",
+		".ts", ".tsx",
+		".java",
+		".cpp", ".cc", ".cc", ".cxx", ".c++", ".hpp", ".h",
+		".c",
+		".rb",
+		".php",
+	}
 )
 
 func main() {
@@ -36,6 +51,7 @@ func main() {
 	queryOnly := flag.Bool("query_only", false, "仅执行查询操作，跳过索引构建（仅限当前已有.gitgo索引的情况下）")
 	// 指定FAISSService目录的绝对路径
 	faissServicePath := flag.String("faiss_path", "", "指定FAISSService目录的绝对路径，优先级最高")
+	filePath := flag.String("file", "", "指定要定量更新的文件或文件夹，如果记录已存在则更新，否则新增")
 	flag.Parse()
 
 	// 获取FAISSService目录的路径
@@ -46,7 +62,7 @@ func main() {
 		// 检查用户提供的路径是否存在
 		if _, err := os.Stat(*faissServicePath); err == nil {
 			faissServiceDir = *faissServicePath
-			log.Printf("从命令行参数获取FAISSService目录: %s", faissServiceDir)
+			log.Printf("正在从命令行参数获取FAISSService目录: %s", faissServiceDir)
 		} else {
 			log.Printf("警告：命令行指定的FAISSService目录 %s 不存在或无法访问: %v", *faissServicePath, err)
 		}
@@ -56,6 +72,7 @@ func main() {
 	if faissServiceDir == "" {
 		// 方法1：尝试从源文件路径获取（适用于go run）
 		sourceDir, err := utils.GetSourceFileDir()
+		log.Printf("正在从源文件路径获取FAISSService目录: %s", sourceDir)
 		if err == nil {
 			// 检查源文件目录下是否存在FAISSService
 			tempDir := filepath.Join(sourceDir, "FAISSService")
@@ -74,6 +91,7 @@ func main() {
 		}
 		execDir := filepath.Dir(execPath)
 		tempDir := filepath.Join(execDir, "FAISSService")
+		log.Printf("正在从可执行文件路径获取FAISSService目录: %s", execDir)
 		if _, err := os.Stat(tempDir); err == nil {
 			faissServiceDir = tempDir
 			log.Printf("从可执行文件目录找到FAISSService: %s", faissServiceDir)
@@ -86,7 +104,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("无法获取当前工作目录: %v", err)
 		}
-		tempDir := filepath.Join(cwd, "flashmemory", "cmd", "main", "FAISSService")
+		log.Printf("正在从当前工作目录获取FAISSService目录: %s", cwd)
+		tempDir := filepath.Join(cwd, "cmd", "main", "FAISSService")
 		if _, err := os.Stat(tempDir); err == nil {
 			faissServiceDir = tempDir
 			log.Printf("从当前工作目录找到FAISSService: %s", faissServiceDir)
@@ -137,7 +156,7 @@ func main() {
 	// 索引文件路径
 	indexDBPath := filepath.Join(gitgoDir, "code_index.db")
 	faissIndexPath := filepath.Join(gitgoDir, "code_index.faiss")
-	faissMetaPath := filepath.Join(gitgoDir, "code_index.faiss.meta")
+	//faissMetaPath := filepath.Join(gitgoDir, "code_index.faiss.meta")
 
 	// 检查是否为仅查询模式
 	if *queryOnly {
@@ -490,31 +509,56 @@ func main() {
 		log.Println("索引文件不存在或已指定强制全量索引，将进行全量索引")
 	}
 
-	// 如果不是增量更新，则删除旧的索引文件
-	if !incrementalUpdate {
-		os.Remove(indexDBPath)
-		os.Remove(faissIndexPath)
-		os.Remove(faissMetaPath)
+	log.Printf("标签： %v, 待索引文件： %s ", incrementalUpdate, filesToProcess)
 
-		// 如果是强制全量索引，则删除分支索引信息
-		if *forceFullIndex {
-			db, err := index.EnsureIndexDB(*projDir)
-			if err == nil {
-				defer db.Close()
-				err = index.DeleteBranchIndexInfo(db, *branchName)
-				if err != nil {
-					log.Printf("删除分支 %s 的索引信息失败: %v", *branchName, err)
-				}
+	// 如果是强制全量索引，则删除分支索引信息
+	if *forceFullIndex {
+		log.Printf("强制全量索引，删除分支 %s 的索引信息", *branchName)
+		db, err := index.EnsureIndexDB(*projDir)
+		if err == nil {
+			defer db.Close()
+			err = index.DeleteBranchIndexInfo(db, *branchName)
+			if err != nil {
+				log.Printf("删除分支 %s 的索引信息失败: %v", *branchName, err)
 			}
 		}
 	}
 
 	// 1. 遍历项目目录以查找代码文件
-	files := []string{}
-
-	if incrementalUpdate && len(filesToProcess) > 0 {
+	var files []string
+	if *filePath != "" {
+		log.Println("选择性更新模式：使用 -file 参数指定的文件/文件夹")
+		info, err := os.Stat(*filePath)
+		if err != nil {
+			log.Fatalf("无法访问指定的 -file 路径: %v", err)
+		}
+		if info.IsDir() {
+			err = filepath.Walk(*filePath, func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					return err
+				}
+				if info.IsDir() {
+					if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+				ext := filepath.Ext(path)
+				if utils.Contains(SupportedLanguages, ext) {
+					files = append(files, path)
+				}
+				return nil
+			})
+			if err != nil {
+				log.Fatalf("遍历指定文件夹失败: %v", err)
+			}
+		} else {
+			files = append(files, *filePath)
+		}
+	} else if incrementalUpdate && len(filesToProcess) > 0 {
 		// 增量更新模式：只处理变更文件
 		log.Println("增量更新模式：只处理变更文件")
+		log.Printf("变更文件列表: %v", strings.Join(filesToProcess, ";"))
 		for _, file := range filesToProcess {
 			// 获取文件的绝对路径
 			absPath := filepath.Join(*projDir, file)
@@ -522,12 +566,12 @@ func main() {
 			if _, err := os.Stat(absPath); err == nil {
 				// 检查文件扩展名
 				ext := filepath.Ext(absPath)
-				if ext == ".go" || ext == ".py" || ext == ".js" || ext == ".java" || ext == ".cpp" {
+				if utils.Contains(SupportedLanguages, ext) {
 					files = append(files, absPath)
 				}
 			}
 		}
-	} else {
+	} else if *forceFullIndex {
 		// 全量索引模式：遍历整个项目目录
 		log.Println("全量索引模式：遍历整个项目目录")
 		err = filepath.Walk(*projDir, func(path string, info os.FileInfo, err error) error {
@@ -542,12 +586,11 @@ func main() {
 				}
 				return nil
 			}
-			// 仅考虑特定的文件扩展名（可配置）
+			// 仅考虑特定的文件扩展名
 			ext := filepath.Ext(path)
 			if ext == ".go" || ext == ".py" || ext == ".js" || ext == ".java" || ext == ".cpp" {
 				files = append(files, path)
 			}
-			// 跳过其他文件（如图片等）
 			return nil
 		})
 	}
@@ -555,7 +598,7 @@ func main() {
 		log.Fatalf("遍历项目目录失败: %v", err)
 	}
 	if len(files) == 0 {
-		log.Println("No source files found in the provided directory.")
+		log.Println("No source code files found in the provided directory.")
 		return
 	}
 
@@ -706,22 +749,22 @@ func main() {
 		}
 
 		fmt.Println()
-		fmt.Printf("查找: %s (模式: %s)\n", *query, opts.SearchMode)
+		logs.Infof("查找: %s (模式: %s)\n", *query, opts.SearchMode)
 		results := engine.Query(*query, opts)
 
 		if len(results) == 0 {
-			fmt.Println("未找到相关结果")
+			logs.Infof("未找到相关结果")
 		} else {
-			fmt.Println("搜索结果:")
+			logs.Infof("搜索结果:")
 			for _, res := range results {
-				fmt.Printf("- %s (包名: %s, 文件: %s) 匹配度: %.3f\n", res.Name, res.Package, res.File, res.Score)
-				fmt.Printf("  描述: %s\n", res.Description)
+				logs.Infof("- %s (包名: %s, 文件: %s) 匹配度: %.3f\n", res.Name, res.Package, res.File, res.Score)
+				logs.Infof("  描述: %s\n", res.Description)
 				if opts.IncludeCode && res.CodeSnippet != "" {
-					fmt.Printf("  代码片段:\n%s\n", res.CodeSnippet)
+					logs.Infof("  代码片段:\n%s\n", res.CodeSnippet)
 				}
 			}
 		}
 	} else {
-		fmt.Println("索引完成。您可以通过提供 -query 参数来执行查询。")
+		logs.Infof("索引完成。您可以通过提供 -query 参数来执行查询。")
 	}
 }

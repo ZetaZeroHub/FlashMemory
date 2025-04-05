@@ -137,8 +137,8 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo) LLMAnalysisResult 
 						prompt += fmt.Sprintf("%d. %s\n", tip, dep)
 					}
 				} else {
-					data["功能描述"] = strings.ReplaceAll(data["功能描述"].(string), "\n", "")
-					prompt += fmt.Sprintf("%d. %s(%s)\n", tip, dep, data["功能描述"])
+					data["description"] = strings.ReplaceAll(data["description"].(string), "\n", "")
+					prompt += fmt.Sprintf("%d. %s(%s)\n", tip, dep, data["description"])
 				}
 				tip++
 			}
@@ -150,7 +150,7 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo) LLMAnalysisResult 
 	}
 	prompt += `
 请用几句话为以上代码生成该实现的<功能描述>，并说明它的<执行流程>。
-（输出必须为一个合法的 JSON 对象，它的键和值必须都是中文描述，<执行流程>的值是数组格式）`
+（输出必须为一个合法的 JSON 对象，<功能描述>的Key是"description"，Value是字符串类型；<执行流程>的Key是"process"，Value是字符串数组；所有Value均使用中文描述。）`
 	//	prompt += `请基于代码内容和调用逻辑，从整体上分析该函数，并按照下列要求生成输出。输出必须为一个合法的 JSON 对象，且严格遵循以下格式和字段说明，每个字段的描述请用一句简明扼要的话说明：
 	//
 	//{
