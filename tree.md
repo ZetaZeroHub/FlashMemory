@@ -1,3 +1,4 @@
+# 代码组织结构：
 ```
 flashmemory/                 (project root)
 ├─ cmd/
