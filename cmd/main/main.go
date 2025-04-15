@@ -300,6 +300,7 @@ func main() {
 					if currentCommitHash != "" {
 						if branchInfo == nil {
 							// 没有找到分支索引信息，获取当前commit的变更文件
+							log.Printf("未找到分支索引信息，获取当前分支commit %s的变更文件...", currentCommitHash)
 							changedFiles, err := utils.GetChangedFilesByCommitHash(*projDir, currentCommitHash)
 							if err != nil {
 								log.Printf("获取commit %s的变更文件失败: %v，将进行全量索引", currentCommitHash, err)
@@ -324,6 +325,7 @@ func main() {
 							}
 						} else {
 							// 找到了分支索引信息，获取两个commit之间的变更文件
+							log.Printf("正在获取commit %s和%s之间的变更文件...", branchInfo.CommitHash, currentCommitHash)
 							log.Printf("找到分支 %s 的索引信息，上次索引的commit: %s", branchInfo.BranchName, branchInfo.CommitHash)
 
 							if branchInfo.CommitHash != currentCommitHash {
@@ -372,7 +374,7 @@ func main() {
 										}
 										// 仅考虑特定的文件扩展名
 										ext := filepath.Ext(path)
-										if ext == ".go" || ext == ".py" || ext == ".js" || ext == ".java" || ext == ".cpp" {
+										if utils.Contains(SupportedLanguages, ext) {
 											allFiles = append(allFiles, path)
 										}
 										return nil
@@ -384,7 +386,8 @@ func main() {
 										// 找出未索引的文件
 										var missingFiles []string
 										for _, file := range allFiles {
-											if !allIndexedFiles[file] && !utils.Contains(changedFiles, file) {
+											if !allIndexedFiles[file] && utils.Contains(changedFiles, file) {
+												log.Printf("--- 文件 %s 未索引，将处理", file)
 												missingFiles = append(missingFiles, file)
 											}
 										}
@@ -414,7 +417,7 @@ func main() {
 										}
 										// 仅考虑特定的文件扩展名
 										ext := filepath.Ext(path)
-										if ext == ".go" || ext == ".py" || ext == ".js" || ext == ".java" || ext == ".cpp" {
+										if utils.Contains(SupportedLanguages, ext) {
 											allFiles = append(allFiles, path)
 										}
 										return nil
@@ -465,7 +468,7 @@ func main() {
 									}
 									// 仅考虑特定的文件扩展名
 									ext := filepath.Ext(path)
-									if ext == ".go" || ext == ".py" || ext == ".js" || ext == ".java" || ext == ".cpp" {
+									if utils.Contains(SupportedLanguages, ext) {
 										allFiles = append(allFiles, path)
 									}
 									return nil
@@ -588,7 +591,7 @@ func main() {
 			}
 			// 仅考虑特定的文件扩展名
 			ext := filepath.Ext(path)
-			if ext == ".go" || ext == ".py" || ext == ".js" || ext == ".java" || ext == ".cpp" {
+			if utils.Contains(SupportedLanguages, ext) {
 				files = append(files, path)
 			}
 			return nil

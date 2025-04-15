@@ -36,7 +36,7 @@ func GetModelConfigByPromptLength(promptLength int) (model string, maxTokens int
 		numPredict = 512
 	}
 
-	if promptLength > 5000 {
+	if promptLength > 6000 {
 		model = "qwen2.5-coder:7b"
 		maxTokens = 8000
 		numCtx = 6000
@@ -44,7 +44,7 @@ func GetModelConfigByPromptLength(promptLength int) (model string, maxTokens int
 		numPredict = 700
 	}
 
-	if promptLength > 10000 {
+	if promptLength > 11000 {
 		model = "deepseek-r1:7b"
 		maxTokens = 18000
 		numCtx = 12000
