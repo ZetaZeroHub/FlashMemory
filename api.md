@@ -15,8 +15,8 @@ export API_PASS="your_password"
 # 指向包含 faiss_server.py 的 FAISSService 目录，例如：
 export FAISS_SERVICE_PATH="/path/to/flashmemory/cmd/main/FAISSService"
 
-# （可选）HTTP 服务端口，默认为 8080
-export PORT="8080"
+# （可选）HTTP 服务端口，默认为 5532
+export PORT="5532"
 ```
 
 确保上述变量生效后，再运行你的二进制或 `go run main.go` 启动服务。
@@ -85,7 +85,7 @@ export PORT="8080"
 - **调用示例**
   ```bash
   curl -u $API_USER:$API_PASS \
-    -X POST http://localhost:8080/api/search \
+    -X POST http://localhost:5532/api/search \
     -H 'Content-Type: application/json' \
     -d '{
       "project_dir": "/Users/me/myproj",
@@ -128,7 +128,7 @@ export PORT="8080"
 - **调用示例**
   ```bash
   curl -u $API_USER:$API_PASS \
-    -X POST http://localhost:8080/api/functions \
+    -X POST http://localhost:5532/api/functions \
     -H 'Content-Type: application/json' \
     -d '{
       "project_dir":  "/Users/me/myproj",
@@ -161,7 +161,7 @@ export PORT="8080"
 - **调用示例**
   ```bash
   curl -u $API_USER:$API_PASS \
-    -X POST http://localhost:8080/api/index \
+    -X POST http://localhost:5532/api/index \
     -H 'Content-Type: application/json' \
     -d '{
       "project_dir": "/Users/me/myproj"
@@ -193,7 +193,7 @@ export PORT="8080"
 - **调用示例**
   ```bash
   curl -u $API_USER:$API_PASS \
-    -X DELETE http://localhost:8080/api/index \
+    -X DELETE http://localhost:5532/api/index \
     -H 'Content-Type: application/json' \
     -d '{
       "project_dir":  "/Users/me/myproj",
@@ -227,7 +227,7 @@ export PORT="8080"
 - **调用示例**
   ```bash
   curl -u $API_USER:$API_PASS \
-    -X POST http://localhost:8080/api/index/incremental \
+    -X POST http://localhost:5532/api/index/incremental \
     -H 'Content-Type: application/json' \
     -d '{
       "project_dir": "/Users/me/myproj",

@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/kinglegendzzh/flashmemory/cmd/app/back"
+	"github.com/kinglegendzzh/flashmemory/internal/utils"
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 	"log"
 	"net/http"
 	"os"
-
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
+	"path/filepath"
 
 	"github.com/kinglegendzzh/flashmemory/internal/index"
 	"github.com/kinglegendzzh/flashmemory/internal/parser"
@@ -32,6 +33,31 @@ func main() {
 	if os.Getenv("FAISS_SERVICE_PATH") == "" {
 		log.Fatal("FAISS_SERVICE_PATH must be set")
 	}
+
+	//// 启动 FAISS 服务
+	//faissPath := os.Getenv("FAISS_SERVICE_PATH")
+	//if err := utils.CheckPythonEnvironment("cpu"); err != nil {
+	//	log.Fatalf("Python环境检查失败: %v", err)
+	//}
+	//faissProcess, err := utils.StartFaissService(faissPath)
+	//if err != nil {
+	//	log.Fatalf("启动Faiss服务失败: %v", err)
+	//}
+	//defer utils.StopFaissService(faissProcess)
+	//
+	//// 轮询检测 Faiss 服务健康
+	//for i := 0; i < 30; i++ {
+	//	resp, err := http.Get(index.DefaultFaissServerURL + "/health")
+	//	if err == nil && resp.StatusCode == http.StatusOK {
+	//		resp.Body.Close()
+	//		log.Println("Faiss服务已启动")
+	//		break
+	//	}
+	//	if i == 29 {
+	//		log.Fatal("Faiss服务启动超时，请检查 FAISS_SERVICE_PATH 是否正确以及后端服务是否可用。")
+	//	}
+	//	time.Sleep(time.Second)
+	//}
 
 	// Create Echo instance
 	e := echo.New()
@@ -56,7 +82,7 @@ func main() {
 	// Start server
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080"
+		port = "5532"
 	}
 	address := fmt.Sprintf(":%s", port)
 	log.Printf("Starting server on %s...", address)
@@ -79,6 +105,7 @@ func searchHandler() echo.HandlerFunc {
 		File        string  `json:"file"`
 		Score       float32 `json:"score"`
 		Description string  `json:"description"`
+		CodeSnippet string  `json:"code_snippet"`
 	}
 
 	return func(c echo.Context) error {
@@ -89,25 +116,87 @@ func searchHandler() echo.HandlerFunc {
 		if req.ProjectDir == "" {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
 		}
+		if req.SearchMode == "" {
+			req.SearchMode = "hybrid"
+		}
 		if req.Limit == 0 {
 			req.Limit = 5
 		}
-		// Initialize indexer and search engine
-		db, _ := index.EnsureIndexDB(req.ProjectDir)
-		faissWrapper := index.NewFaissWrapper(128, map[string]interface{}{
-			"storage_path": req.ProjectDir + "/.gitgo",
-			"index_id":     "code_index",
-		})
-		idx := &index.Indexer{DB: db, FaissIndex: faissWrapper}
-		engine := &search.SearchEngine{Indexer: idx, Descriptions: make(map[int]string)}
 
-		opts := search.SearchOptions{Limit: req.Limit, SearchMode: req.SearchMode}
+		gitgoDir := filepath.Join(req.ProjectDir, ".gitgo")
+
+		// 索引文件路径
+		indexDBPath := filepath.Join(gitgoDir, "code_index.db")
+		faissIndexPath := filepath.Join(gitgoDir, "code_index.faiss")
+		faissProcess, _, err := back.InitFaiss()
+
+		// 检查.gitgo目录和索引文件是否存在
+		if _, err := os.Stat(gitgoDir); os.IsNotExist(err) {
+			log.Fatalf("错误：仅查询模式需要已有的索引文件，但.gitgo目录不存在。请先运行索引构建。")
+		}
+		if _, err := os.Stat(indexDBPath); os.IsNotExist(err) {
+			log.Fatalf("错误：仅查询模式需要已有的索引文件，但索引数据库文件不存在。请先运行索引构建。")
+		}
+		if _, err := os.Stat(faissIndexPath); os.IsNotExist(err) {
+			log.Fatalf("错误：仅查询模式需要已有的索引文件，但Faiss索引文件不存在。请先运行索引构建。")
+		}
+
+		log.Println("仅查询模式：跳过索引构建，直接加载现有索引...")
+
+		// 打开数据库
+		db, err := index.EnsureIndexDB(req.ProjectDir)
+		if err != nil {
+			log.Fatalf("打开索引数据库失败: %v", err)
+		}
+		defer db.Close()
+
+		// 确保storage_path是绝对路径
+		absGitgoDir, err := filepath.Abs(gitgoDir)
+		if err != nil {
+			log.Fatalf("获取gitgo目录绝对路径失败: %v", err)
+		}
+
+		// 创建FaissWrapper，传入存储路径选项
+		faissOptions := map[string]interface{}{
+			"storage_path": absGitgoDir,
+			"server_url":   index.DefaultFaissServerURL,
+			"index_id":     "code_index",
+		}
+		idx := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapper(128, faissOptions)}
+
+		// 加载现有索引
+		err = idx.FaissIndex.LoadFromFile(faissIndexPath)
+		if err != nil {
+			log.Fatalf("加载现有Faiss索引失败: %v", err)
+		}
+		log.Println("成功加载现有Faiss索引")
+
+		// 执行查询
+		log.Println("执行查询...")
+
+		// 构造搜索选项
+		opts := search.SearchOptions{
+			Limit:       req.Limit,
+			MinScore:    0.1,
+			IncludeCode: true,
+			SearchMode:  req.SearchMode,
+		}
+
+		// SearchEngine，传入索引器
+		engine := &search.SearchEngine{
+			Indexer:      idx,
+			Descriptions: make(map[int]string),
+		}
+
+		fmt.Println()
+		fmt.Printf("查找: %s (模式: %s)\n", req.Query, opts.SearchMode)
 		results := engine.Query(req.Query, opts)
 
 		var data []FuncRes
 		for _, r := range results {
-			data = append(data, FuncRes{r.Name, r.Package, r.File, r.Score, r.Description})
+			data = append(data, FuncRes{r.Name, r.Package, r.File, r.Score, r.Description, r.CodeSnippet})
 		}
+		utils.StopFaissService(faissProcess)
 		return c.JSON(http.StatusOK, Response{Code: 0, Message: "OK", Data: data})
 	}
 }
@@ -153,17 +242,17 @@ func buildIndexHandler() echo.HandlerFunc {
 
 	return func(c echo.Context) error {
 		var req Req
+		full := false
 		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
 		}
 		if req.ProjectDir == "" {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
 		}
-		target := req.ProjectDir
-		if req.RelativeDir != "" {
-			target = req.ProjectDir + "/" + req.RelativeDir
+		if req.RelativeDir == "" {
+			full = true
 		}
-		err := back.BuildIndex(target, true)
+		err := back.BuildIndex(req.ProjectDir, req.RelativeDir, full)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, Response{Code: 2, Message: err.Error()})
 		}
