@@ -1,12 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
-	"github.com/labstack/echo/v4"
 	"log"
 	"net/http"
 	"os"
 
+	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 
 	"github.com/kinglegendzzh/flashmemory/internal/index"
@@ -31,17 +32,11 @@ func main() {
 	if projDir == "" {
 		projDir = "."
 	}
+	// Ensure FAISS path (not used directly here but required by index/service)
 	faissPath := os.Getenv("FAISS_SERVICE_PATH")
 	if faissPath == "" {
 		log.Fatal("FAISS_SERVICE_PATH must be set")
 	}
-
-	// Initialize index database (will create .gitgo etc.)
-	db, err := index.EnsureIndexDB(projDir)
-	if err != nil {
-		log.Fatalf("初始化索引数据库失败: %v", err)
-	}
-	defer db.Close()
 
 	// Create Echo instance
 	e := echo.New()
@@ -50,21 +45,16 @@ func main() {
 
 	// Basic Auth middleware
 	auth := middleware.BasicAuth(func(username, password string, c echo.Context) (bool, error) {
-		if username == authUser && password == authPass {
-			return true, nil
-		}
-		return false, nil
+		return username == authUser && password == authPass, nil
 	})
 
 	// API group with auth
 	api := e.Group("/api", auth)
 
 	// Routes
-	tp := api.POST
-	tp("/search", searchHandler(projDir))
-	tp = api.POST
-	tp("/functions", listFunctionsHandler(projDir))
-	tp("/index", buildIndexHandler(projDir))
+	api.POST("/search", searchHandler(projDir))
+	api.POST("/functions", listFunctionsHandler(projDir))
+	api.POST("/index", buildIndexHandler(projDir))
 	api.DELETE("/index", deleteIndexHandler(projDir))
 	api.POST("/index/incremental", incrementalIndexHandler(projDir))
 
@@ -97,7 +87,7 @@ func searchHandler(projDir string) echo.HandlerFunc {
 
 	return func(c echo.Context) error {
 		var req Req
-		if err := c.Bind(&req); err != nil {
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
 		}
 		if req.Limit == 0 {
@@ -133,10 +123,9 @@ func listFunctionsHandler(projDir string) echo.HandlerFunc {
 
 	return func(c echo.Context) error {
 		var req Req
-		if err := c.Bind(&req); err != nil {
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
 		}
-		// Walk files and parse
 		var funcs []FuncInfo
 		root := projDir
 		if req.RelativeDir != "" {
@@ -157,10 +146,9 @@ func buildIndexHandler(projDir string) echo.HandlerFunc {
 
 	return func(c echo.Context) error {
 		var req Req
-		if err := c.Bind(&req); err != nil {
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
 		}
-		// Call index building logic
 		target := projDir
 		if req.RelativeDir != "" {
 			target = projDir + "/" + req.RelativeDir
@@ -181,7 +169,7 @@ func deleteIndexHandler(projDir string) echo.HandlerFunc {
 
 	return func(c echo.Context) error {
 		var req Req
-		if err := c.Bind(&req); err != nil {
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
 		}
 		target := projDir
@@ -205,7 +193,7 @@ func incrementalIndexHandler(projDir string) echo.HandlerFunc {
 
 	return func(c echo.Context) error {
 		var req Req
-		if err := c.Bind(&req); err != nil {
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
 		}
 		err := IncrementalUpdate(projDir, req.Branch, req.Commit)
