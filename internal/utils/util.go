@@ -302,3 +302,11 @@ func Contains(slice []string, str string) bool {
 	}
 	return false
 }
+
+func IsHiddenDir(name string) bool {
+	// 排除当前和上级目录
+	if name == "." || name == ".." {
+		return false
+	}
+	return strings.HasPrefix(name, ".")
+}
