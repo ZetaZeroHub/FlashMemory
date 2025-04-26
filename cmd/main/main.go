@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"log"
 	"net/http"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"github.com/kinglegendzzh/flashmemory/internal/parser"
 	"github.com/kinglegendzzh/flashmemory/internal/search"
 	"github.com/kinglegendzzh/flashmemory/internal/utils"
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"github.com/kinglegendzzh/flashmemory/internal/visualize"
 )
 
@@ -535,6 +535,12 @@ func main() {
 		if err != nil {
 			log.Fatalf("无法访问指定的 -file 路径: %v", err)
 		}
+		// 打开数据库，准备删除旧记录
+		db, err := index.EnsureIndexDB(*projDir)
+		if err != nil {
+			log.Fatalf("打开索引数据库失败: %v", err)
+		}
+		defer db.Close()
 		if info.IsDir() {
 			err = filepath.Walk(*filePath, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
@@ -548,6 +554,13 @@ func main() {
 				}
 				ext := filepath.Ext(path)
 				if utils.Contains(SupportedLanguages, ext) {
+					// 删除该文件的旧索引记录
+					n, err := db.Exec("DELETE FROM functions WHERE file like ?", path+"%")
+					if err != nil {
+						log.Printf("删除文件 %s 的索引记录失败: %v", path, err)
+					} else {
+						log.Printf("已删除文件 %s 的索引记录, %s", path, n)
+					}
 					files = append(files, path)
 				}
 				return nil
@@ -556,6 +569,13 @@ func main() {
 				log.Fatalf("遍历指定文件夹失败: %v", err)
 			}
 		} else {
+			// 删除该文件的旧索引记录
+			n, err := db.Exec("DELETE FROM functions WHERE file like ?", *filePath+"%")
+			if err != nil {
+				log.Printf("删除文件 %s 的索引记录失败: %v", filePath, err)
+			} else {
+				log.Printf("已删除文件 %s 的索引记录, %s", filePath, n)
+			}
 			files = append(files, *filePath)
 		}
 	} else if incrementalUpdate && len(filesToProcess) > 0 {
