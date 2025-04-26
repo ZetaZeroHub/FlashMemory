@@ -8,138 +8,104 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kinglegendzzh/flashmemory/config"
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
 // GetModelConfigByPromptLength 根据提示词长度动态选择合适的模型和参数配置
 func GetModelConfigByPromptLength(promptLength int) (model string, maxTokens int, numCtx int, numKeep int, numPredict int, repeatLastN int, presencePenalty int, frequencyPenalty int, format string) {
-	if promptLength > 30000 {
+	cfg, err := config.LoadConfig()
+	if cfg == nil || err != nil {
+		logs.Errorf("Warn: no config file found or parse error, fallback to env or default. Err: %v", err)
 		return "", 0, 0, 0, 0, 0, 0, 0, ""
 	}
-	// 默认使用最小模型
-	model = "qwen2.5-coder:1.5b"
-	maxTokens = 2048
-	numCtx = 1024
-	numKeep = 2048
-	numPredict = 512
-	repeatLastN = 128
-	presencePenalty = 0
-	frequencyPenalty = 0
-	format = "json"
-
-	// 根据提示词长度动态调整模型大小
-	if promptLength > 1500 {
-		model = "qwen2.5-coder:3b"
-		maxTokens = 5000
-		numCtx = 3000
-		numKeep = 5000
-		numPredict = 512
+	var selected *config.ModelConfig
+	for i := len(cfg.ModelConfigs) - 1; i >= 0; i-- {
+		mc := cfg.ModelConfigs[i]
+		if promptLength >= mc.PromptLength {
+			selected = &mc
+			break
+		}
 	}
-
-	if promptLength > 6000 {
-		model = "qwen2.5-coder:7b"
-		maxTokens = 8000
-		numCtx = 6000
-		numKeep = 8000
-		numPredict = 700
+	if selected == nil || promptLength > 30000 {
+		return "", 0, 0, 0, 0, 0, 0, 0, ""
 	}
-
-	if promptLength > 11000 {
-		model = "deepseek-r1:7b"
-		maxTokens = 18000
-		numCtx = 12000
-		numKeep = 18000
-		numPredict = 1000
-		format = "json"
-	}
-
-	if promptLength > 20000 {
-		model = "deepseek-r1:7b"
-		maxTokens = 30000
-		numCtx = 18000
-		numKeep = 18000
-		numPredict = 1200
-		format = "json"
-	}
-
-	return
+	return selected.Name, selected.MaxTokens, selected.NumCtx, selected.NumKeep, selected.NumPredict, selected.RepeatLastN, selected.PresencePenalty, selected.FrequencyPenalty, selected.Format
 }
 
 // OllamaCompletion 调用 Ollama 的 completion API 获取完整回答
 // NormalizeResponseWithSmallModel 使用小模型规范化大模型的返回结果
 func NormalizeResponseWithSmallModel(rawResponse string) (string, error) {
-	prompt := fmt.Sprintf(`请将以下格式不规范的文本优化成一个合法的JSON对象，必须包含"功能描述"中文字段Key：
-%s`, rawResponse)
-
-	url := "http://127.0.0.1:11434/api/generate"
+	cfg, err := config.LoadConfig()
+	if cfg == nil || err != nil {
+		logs.Errorf("Warn: no config file found or parse error, fallback to env or default. Err: %v", err)
+		return "", err
+	}
+	prompt := fmt.Sprintf(`请将以下格式不规范的文本优化成一个合法的JSON对象，必须包含"功能描述"中文字段Key：\n%s`, rawResponse)
+	url := cfg.ApiBaseUrl + cfg.CompletionApi
 	payload := map[string]interface{}{
-		"model":  "qwen2.5-coder:3b",
+		"model":  cfg.NormalizeModel,
 		"prompt": prompt,
 		"stream": false,
-		"format": "json",
+		"format": cfg.DefaultFormat,
 		"options": map[string]interface{}{
-			"temperature": 0.1,
-			"low_vram":    true,
+			"temperature": cfg.DefaultTemp,
+			"low_vram":    cfg.DefaultLowVram,
 		},
 	}
-
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
-
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequest("POST", url, strings.NewReader(string(jsonPayload)))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
-
 	var result map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return "", fmt.Errorf("invalid JSON response from small model: %v", err)
 	}
-
 	response, ok := result["response"]
 	if !ok {
 		return "", fmt.Errorf("no response field in small model result")
 	}
-
 	responseStr := response.(string)
 	var responseObj map[string]interface{}
 	if err := json.Unmarshal([]byte(responseStr), &responseObj); err != nil {
 		return "", fmt.Errorf("invalid JSON in small model response: %v", err)
 	}
-
 	if _, ok := responseObj["功能描述"]; !ok {
 		return "", fmt.Errorf("missing '功能描述' field in small model response")
 	}
-
 	return responseStr, nil
 }
 
 func OllamaCompletion(prompt string) (string, error) {
+	cfg, err := config.LoadConfig()
+	if cfg == nil || err != nil {
+		logs.Errorf("Warn: no config file found or parse error, fallback to env or default. Err: %v", err)
+		return "", err
+	}
 	l := len(prompt)
 	autoModel, maxTokens, numCtx, numKeep, numPredict, repeatLastN, presencePenalty, frequencyPenalty, format := GetModelConfigByPromptLength(l)
 	if autoModel == "" {
 		return "[Warning]代码内容过大，请单独处理", nil
 	}
 	logs.Infof("Using model: %s", autoModel)
-	url := "http://127.0.0.1:11434/api/generate"
-	// 可选参数
+	url := cfg.ApiBaseUrl + cfg.CompletionApi
 	optionLoad := map[string]interface{}{
-		"temperature":       0.1,
+		"temperature":       cfg.DefaultTemp,
 		"presence_penalty":  presencePenalty,
 		"frequency_penalty": frequencyPenalty,
 		"max_tokens":        maxTokens,
@@ -147,7 +113,7 @@ func OllamaCompletion(prompt string) (string, error) {
 		"num_keep":          numKeep,
 		"num_predict":       numPredict,
 		"repeat_last_n":     repeatLastN,
-		"low_vram":          false,
+		"low_vram":          cfg.DefaultLowVram,
 	}
 	payload := map[string]interface{}{
 		"model":         autoModel,
@@ -161,22 +127,19 @@ func OllamaCompletion(prompt string) (string, error) {
 		"num_keep":      numKeep,
 		"num_predict":   numPredict,
 		"repeat_last_n": repeatLastN,
-		"low_vram":      false,
+		"low_vram":      cfg.DefaultLowVram,
 	}
-
 	var lastErr error
 	tempjson := ""
 	for retries := 0; retries < 3; retries++ {
 		if retries > 0 {
 			logs.Infof("Retrying request, attempt %d/3", retries+1)
 		}
-
 		jsonPayload, err := json.Marshal(payload)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-
 		client := &http.Client{Timeout: 30 * time.Minute}
 		req, err := http.NewRequest("POST", url, strings.NewReader(string(jsonPayload)))
 		if err != nil {
@@ -184,38 +147,29 @@ func OllamaCompletion(prompt string) (string, error) {
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
-
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
 			continue
 		}
 		defer resp.Body.Close()
-
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-
-		// 尝试解析为JSON
 		var result map[string]interface{}
 		if err := json.Unmarshal(body, &result); err != nil {
 			logs.Infof("Response is not valid JSON, retrying...")
 			lastErr = fmt.Errorf("invalid JSON response: %v", err)
 			continue
 		}
-
-		// 检查response字段
 		response, ok := result["response"]
 		if !ok {
 			lastErr = fmt.Errorf("no response field in result")
 			continue
 		}
-
 		responseStr := response.(string)
-
-		// 所有检查都通过，处理<think>标签
 		if strings.Contains(responseStr, "</think>") {
 			parts := strings.SplitAfter(responseStr, "</think>")
 			if len(parts) > 1 {
@@ -223,9 +177,7 @@ func OllamaCompletion(prompt string) (string, error) {
 				responseStr = strings.TrimSpace(parts[1])
 			}
 		}
-
 		if format == "json" {
-			// 尝试解析response为JSON并检查功能描述字段
 			var responseObj map[string]interface{}
 			if err := json.Unmarshal([]byte(responseStr), &responseObj); err != nil {
 				tempjson = responseStr
@@ -238,24 +190,19 @@ func OllamaCompletion(prompt string) (string, error) {
 				responseStr = normalizedResponse
 				logs.Infof("Normalized Response: %s", normalizedResponse)
 			}
-
 			if err := json.Unmarshal([]byte(responseStr), &responseObj); err != nil {
 				logs.Infof("Response content is not valid JSON, retrying...")
 				lastErr = fmt.Errorf("invalid JSON in response content: %v", err)
 				continue
 			}
-
-			// 检查功能描述字段
 			if _, ok := responseObj["description"]; !ok {
 				logs.Infof("Response missing 'description' field, retrying...")
 				lastErr = fmt.Errorf("missing 'description' field in response")
 				continue
 			}
 		}
-
 		return responseStr, nil
 	}
-	// 所有重试都失败
 	if lastErr != nil {
 		logs.Infof("All retries failed with large model, attempting to normalize last response with small model")
 		if normalizedResponse, err := NormalizeResponseWithSmallModel(tempjson); err == nil {
@@ -267,9 +214,14 @@ func OllamaCompletion(prompt string) (string, error) {
 
 // OllamaEmbedding 调用 Ollama 的 embedding API 获取查询向量
 func OllamaEmbedding(query string, dim int) ([]float32, error) {
-	url := "http://127.0.0.1:11434/api/embeddings"
+	cfg, err := config.LoadConfig()
+	if cfg == nil || err != nil {
+		logs.Errorf("Warn: no config file found or parse error, fallback to env or default. Err: %v", err)
+		return nil, err
+	}
+	url := cfg.ApiBaseUrl + cfg.EmbeddingApi
 	payload := map[string]interface{}{
-		"model":  "nomic-embed-text",
+		"model":  cfg.EmbeddingModel,
 		"prompt": query,
 	}
 	jsonPayload, err := json.Marshal(payload)
@@ -282,7 +234,6 @@ func OllamaEmbedding(query string, dim int) ([]float32, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	// 如需添加API key可在此设置请求头
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -292,7 +243,6 @@ func OllamaEmbedding(query string, dim int) ([]float32, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 解析返回的 JSON 格式，假设返回 {"embedding": [float32 array]}
 	var result map[string]interface{}
 	err = json.Unmarshal(body, &result)
 	if err != nil {
@@ -313,7 +263,6 @@ func OllamaEmbedding(query string, dim int) ([]float32, error) {
 		}
 	}
 	if len(embedding) != dim {
-		// 若维度不匹配，则进行截断或填充
 		if len(embedding) > dim {
 			embedding = embedding[:dim]
 		} else {
