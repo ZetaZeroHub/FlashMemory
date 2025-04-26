@@ -1,5 +1,5 @@
 // ===== file: internal/index/api_test.go =====
-package main
+package back
 
 import (
 	"os"

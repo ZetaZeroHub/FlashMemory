@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/kinglegendzzh/flashmemory/cmd/app/back"
 	"log"
 	"net/http"
 	"os"
@@ -27,14 +28,8 @@ var authUser = os.Getenv("API_USER")
 var authPass = os.Getenv("API_PASS")
 
 func main() {
-	// Project directory and FAISS service path from env
-	projDir := os.Getenv("PROJECT_DIR")
-	if projDir == "" {
-		projDir = "."
-	}
-	// Ensure FAISS path (not used directly here but required by index/service)
-	faissPath := os.Getenv("FAISS_SERVICE_PATH")
-	if faissPath == "" {
+	// FAISS service path from env
+	if os.Getenv("FAISS_SERVICE_PATH") == "" {
 		log.Fatal("FAISS_SERVICE_PATH must be set")
 	}
 
@@ -52,11 +47,11 @@ func main() {
 	api := e.Group("/api", auth)
 
 	// Routes
-	api.POST("/search", searchHandler(projDir))
-	api.POST("/functions", listFunctionsHandler(projDir))
-	api.POST("/index", buildIndexHandler(projDir))
-	api.DELETE("/index", deleteIndexHandler(projDir))
-	api.POST("/index/incremental", incrementalIndexHandler(projDir))
+	api.POST("/search", searchHandler())
+	api.POST("/functions", listFunctionsHandler())
+	api.POST("/index", buildIndexHandler())
+	api.DELETE("/index", deleteIndexHandler())
+	api.POST("/index/incremental", incrementalIndexHandler())
 
 	// Start server
 	port := os.Getenv("PORT")
@@ -70,9 +65,10 @@ func main() {
 	}
 }
 
-// searchHandler handles deep search with multiple modes
-func searchHandler(projDir string) echo.HandlerFunc {
+// searchHandler handles deep search with dynamic project path
+func searchHandler() echo.HandlerFunc {
 	type Req struct {
+		ProjectDir string `json:"project_dir"`
 		Query      string `json:"query"`
 		SearchMode string `json:"search_mode"` // semantic, keyword, hybrid
 		Limit      int    `json:"limit"`
@@ -90,12 +86,18 @@ func searchHandler(projDir string) echo.HandlerFunc {
 		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
 		}
+		if req.ProjectDir == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
+		}
 		if req.Limit == 0 {
 			req.Limit = 5
 		}
 		// Initialize indexer and search engine
-		db, _ := index.EnsureIndexDB(projDir)
-		faissWrapper := index.NewFaissWrapper(128, map[string]interface{}{"storage_path": projDir + "/.gitgo", "index_id": "code_index"})
+		db, _ := index.EnsureIndexDB(req.ProjectDir)
+		faissWrapper := index.NewFaissWrapper(128, map[string]interface{}{
+			"storage_path": req.ProjectDir + "/.gitgo",
+			"index_id":     "code_index",
+		})
 		idx := &index.Indexer{DB: db, FaissIndex: faissWrapper}
 		engine := &search.SearchEngine{Indexer: idx, Descriptions: make(map[int]string)}
 
@@ -110,9 +112,10 @@ func searchHandler(projDir string) echo.HandlerFunc {
 	}
 }
 
-// listFunctionsHandler returns list of all functions (or under a relative dir)
-func listFunctionsHandler(projDir string) echo.HandlerFunc {
+// listFunctionsHandler returns list of functions for dynamic project path
+func listFunctionsHandler() echo.HandlerFunc {
 	type Req struct {
+		ProjectDir  string `json:"project_dir"`
 		RelativeDir string `json:"relative_dir,omitempty"`
 	}
 	type FuncInfo struct {
@@ -126,10 +129,13 @@ func listFunctionsHandler(projDir string) echo.HandlerFunc {
 		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
 		}
+		if req.ProjectDir == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
+		}
 		var funcs []FuncInfo
-		root := projDir
+		root := req.ProjectDir
 		if req.RelativeDir != "" {
-			root = projDir + "/" + req.RelativeDir
+			root = req.ProjectDir + "/" + req.RelativeDir
 		}
 		parser.WalkAndParse(root, func(info parser.FunctionInfo) {
 			funcs = append(funcs, FuncInfo{info.Name, info.Package, info.File})
@@ -138,9 +144,10 @@ func listFunctionsHandler(projDir string) echo.HandlerFunc {
 	}
 }
 
-// buildIndexHandler builds full or partial index
-func buildIndexHandler(projDir string) echo.HandlerFunc {
+// buildIndexHandler builds index for dynamic project path
+func buildIndexHandler() echo.HandlerFunc {
 	type Req struct {
+		ProjectDir  string `json:"project_dir"`
 		RelativeDir string `json:"relative_dir,omitempty"`
 	}
 
@@ -149,11 +156,14 @@ func buildIndexHandler(projDir string) echo.HandlerFunc {
 		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
 		}
-		target := projDir
-		if req.RelativeDir != "" {
-			target = projDir + "/" + req.RelativeDir
+		if req.ProjectDir == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
 		}
-		err := BuildIndex(target, true)
+		target := req.ProjectDir
+		if req.RelativeDir != "" {
+			target = req.ProjectDir + "/" + req.RelativeDir
+		}
+		err := back.BuildIndex(target, true)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, Response{Code: 2, Message: err.Error()})
 		}
@@ -161,9 +171,10 @@ func buildIndexHandler(projDir string) echo.HandlerFunc {
 	}
 }
 
-// deleteIndexHandler deletes existing index
-func deleteIndexHandler(projDir string) echo.HandlerFunc {
+// deleteIndexHandler deletes index for dynamic project path
+func deleteIndexHandler() echo.HandlerFunc {
 	type Req struct {
+		ProjectDir  string `json:"project_dir"`
 		RelativeDir string `json:"relative_dir,omitempty"`
 	}
 
@@ -172,11 +183,14 @@ func deleteIndexHandler(projDir string) echo.HandlerFunc {
 		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
 		}
-		target := projDir
-		if req.RelativeDir != "" {
-			target = projDir + "/" + req.RelativeDir
+		if req.ProjectDir == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
 		}
-		err := DeleteIndex(target)
+		target := req.ProjectDir
+		if req.RelativeDir != "" {
+			target = req.ProjectDir + "/" + req.RelativeDir
+		}
+		err := back.DeleteIndex(target)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, Response{Code: 2, Message: err.Error()})
 		}
@@ -184,11 +198,12 @@ func deleteIndexHandler(projDir string) echo.HandlerFunc {
 	}
 }
 
-// incrementalIndexHandler updates index based on branch and commit
-func incrementalIndexHandler(projDir string) echo.HandlerFunc {
+// incrementalIndexHandler updates index for dynamic project path
+func incrementalIndexHandler() echo.HandlerFunc {
 	type Req struct {
-		Branch string `json:"branch,omitempty"`
-		Commit string `json:"commit,omitempty"`
+		ProjectDir string `json:"project_dir"`
+		Branch     string `json:"branch,omitempty"`
+		Commit     string `json:"commit,omitempty"`
 	}
 
 	return func(c echo.Context) error {
@@ -196,7 +211,10 @@ func incrementalIndexHandler(projDir string) echo.HandlerFunc {
 		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
 		}
-		err := IncrementalUpdate(projDir, req.Branch, req.Commit)
+		if req.ProjectDir == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
+		}
+		err := back.IncrementalUpdate(req.ProjectDir, req.Branch, req.Commit)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, Response{Code: 2, Message: err.Error()})
 		}

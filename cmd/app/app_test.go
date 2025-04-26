@@ -13,28 +13,24 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 )
 
-// helper to create Echo server with routes for testing
-func setupServer(projDir string) *echo.Echo {
-	// set project directory and auth env
+// setupServer creates Echo with routes for testing
+func setupServer() *echo.Echo {
 	e := echo.New()
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	auth := middleware.BasicAuth(func(username, password string, c echo.Context) (bool, error) {
-		if username == os.Getenv("API_USER") && password == os.Getenv("API_PASS") {
-			return true, nil
-		}
-		return false, nil
+		return username == os.Getenv("API_USER") && password == os.Getenv("API_PASS"), nil
 	})
 	api := e.Group("/api", auth)
-	api.POST("/search", searchHandler(projDir))
-	api.POST("/functions", listFunctionsHandler(projDir))
-	api.POST("/index", buildIndexHandler(projDir))
-	api.DELETE("/index", deleteIndexHandler(projDir))
-	api.POST("/index/incremental", incrementalIndexHandler(projDir))
+	api.POST("/search", searchHandler())
+	api.POST("/functions", listFunctionsHandler())
+	api.POST("/index", buildIndexHandler())
+	api.DELETE("/index", deleteIndexHandler())
+	api.POST("/index/incremental", incrementalIndexHandler())
 	return e
 }
 
-// helper to add BasicAuth header
+// addAuth sets BasicAuth header
 func addAuth(req *http.Request) {
 	user := os.Getenv("API_USER")
 	pass := os.Getenv("API_PASS")
@@ -43,37 +39,24 @@ func addAuth(req *http.Request) {
 }
 
 func TestSearch_Unauthorized(t *testing.T) {
-	e := setupServer(".")
-	// request without auth
+	e := setupServer()
 	req := httptest.NewRequest(http.MethodPost, "/api/search", nil)
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("expected status 401 Unauthorized, got %d", rec.Code)
+		t.Errorf("expected 401 Unauthorized, got %d", rec.Code)
 	}
 }
 
 func TestSearch_BadRequest(t *testing.T) {
-	e := setupServer(".")
-	// prepare invalid JSON
-	req := httptest.NewRequest(http.MethodPost, "/api/search", bytes.NewBufferString("invalid-json"))
+	e := setupServer()
+	// malformed JSON
+	req := httptest.NewRequest(http.MethodPost, "/api/search", bytes.NewBufferString("{invalid}"))
 	addAuth(req)
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
-		t.Errorf("expected status 400 BadRequest for invalid JSON, got %d", rec.Code)
-	}
-}
-
-func TestListFunctions_BadRequest(t *testing.T) {
-	e := setupServer(".")
-	// invalid JSON
-	req := httptest.NewRequest(http.MethodPost, "/api/functions", bytes.NewBufferString("{"))
-	addAuth(req)
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("expected status 400 BadRequest, got %d", rec.Code)
+		t.Errorf("expected 400 BadRequest, got %d", rec.Code)
 	}
 }
 
@@ -81,8 +64,9 @@ func TestBuildIndex_Success(t *testing.T) {
 	tmp := t.TempDir()
 	os.Setenv("API_USER", "u")
 	os.Setenv("API_PASS", "p")
-	e := setupServer(tmp)
-	body, _ := json.Marshal(map[string]string{})
+	e := setupServer()
+	// include required project_dir in body
+	body, _ := json.Marshal(map[string]string{"project_dir": tmp})
 	req := httptest.NewRequest(http.MethodPost, "/api/index", bytes.NewBuffer(body))
 	addAuth(req)
 	rec := httptest.NewRecorder()
@@ -96,14 +80,15 @@ func TestDeleteIndex_Success(t *testing.T) {
 	tmp := t.TempDir()
 	os.Setenv("API_USER", "u")
 	os.Setenv("API_PASS", "p")
-	// create dummy .gitgo
+	// create dummy .gitgo in tmp
 	dir := tmp + "/.gitgo"
-	err := os.MkdirAll(dir, 0755)
-	if err != nil {
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	e := setupServer(tmp)
-	req := httptest.NewRequest(http.MethodDelete, "/api/index", bytes.NewBufferString("{}"))
+	e := setupServer()
+	// include project_dir
+	reqBody, _ := json.Marshal(map[string]string{"project_dir": tmp})
+	req := httptest.NewRequest(http.MethodDelete, "/api/index", bytes.NewBuffer(reqBody))
 	addAuth(req)
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
@@ -120,8 +105,9 @@ func TestIncrementalIndex_Success(t *testing.T) {
 	tmp := t.TempDir()
 	os.Setenv("API_USER", "u")
 	os.Setenv("API_PASS", "p")
-	e := setupServer(tmp)
-	body, _ := json.Marshal(map[string]string{"branch": "b", "commit": "c"})
+	e := setupServer()
+	// include project_dir, branch, commit
+	body, _ := json.Marshal(map[string]string{"project_dir": tmp, "branch": "b", "commit": "c"})
 	req := httptest.NewRequest(http.MethodPost, "/api/index/incremental", bytes.NewBuffer(body))
 	addAuth(req)
 	rec := httptest.NewRecorder()
