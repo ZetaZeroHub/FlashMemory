@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,91 +70,6 @@ func DeleteIndex(projDir string) error {
 		return nil // 无索引，直接返回
 	}
 	return os.RemoveAll(gitgo)
-}
-
-func InitFaiss() (*os.Process, string, error) {
-	// 获取FAISSService目录的路径
-	var faissServiceDir string
-
-	// 如果方法4未找到，继续尝试其他方法
-	if faissServiceDir == "" {
-		// 方法1：尝试从源文件路径获取（适用于go run）
-		sourceDir, err := utils.GetSourceFileDir()
-		log.Printf("正在从源文件路径获取FAISSService目录: %s", sourceDir)
-		if err == nil {
-			// 检查源文件目录下是否存在FAISSService
-			tempDir := filepath.Join(sourceDir, "FAISSService")
-			if _, err := os.Stat(tempDir); err == nil {
-				faissServiceDir = tempDir
-				log.Printf("从源文件目录找到FAISSService: %s", faissServiceDir)
-			}
-		}
-	}
-
-	// 方法2：如果方法1失败，尝试从可执行文件路径获取（适用于编译后的二进制文件）
-	if faissServiceDir == "" {
-		execPath, err := os.Executable()
-		if err != nil {
-			log.Fatalf("无法获取可执行文件路径: %v", err)
-		}
-		execDir := filepath.Dir(execPath)
-		tempDir := filepath.Join(execDir, "FAISSService")
-		log.Printf("正在从可执行文件路径获取FAISSService目录: %s", execDir)
-		if _, err := os.Stat(tempDir); err == nil {
-			faissServiceDir = tempDir
-			log.Printf("从可执行文件目录找到FAISSService: %s", faissServiceDir)
-		}
-	}
-
-	// 方法3：如果前两种方法都失败，尝试从当前工作目录获取
-	if faissServiceDir == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			log.Fatalf("无法获取当前工作目录: %v", err)
-		}
-		log.Printf("正在从当前工作目录获取FAISSService目录: %s", cwd)
-		tempDir := filepath.Join(cwd, "cmd", "main", "FAISSService")
-		if _, err := os.Stat(tempDir); err == nil {
-			faissServiceDir = tempDir
-			log.Printf("从当前工作目录找到FAISSService: %s", faissServiceDir)
-		}
-	}
-
-	// 如果所有方法都失败，报错退出
-	if faissServiceDir == "" {
-		log.Fatalf("无法找到FAISSService目录，请确保FAISSService目录存在于源文件目录或可执行文件目录下")
-	}
-
-	// 1. 启动或确认 FAISS service 已就绪
-	if err := utils.CheckPythonEnvironment("cpu"); err != nil {
-		return nil, faissServiceDir, fmt.Errorf("Python环境检查失败: %w", err)
-	}
-
-	// 启动Faiss服务
-	faissProcess, err := utils.StartFaissService(faissServiceDir)
-	if err != nil {
-		log.Fatalf("启动Faiss服务失败: %v", err)
-	}
-
-	log.Println("正在启动Faiss服务...")
-
-	// 轮询检测Faiss服务状态
-	maxRetries := 60
-	retryInterval := time.Second
-	for i := 0; i < maxRetries; i++ {
-		resp, err := http.Get(index.DefaultFaissServerURL + "/health")
-		if err == nil && resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
-			log.Println("Faiss服务已成功启动")
-			break
-		}
-		if i == maxRetries-1 {
-			log.Fatalf("Faiss服务启动超时，超过%d秒仍未响应", maxRetries)
-		}
-		log.Printf("等待Faiss服务启动... (尝试 %d/%d)", i+1, maxRetries)
-		time.Sleep(retryInterval)
-	}
-	return faissProcess, faissServiceDir, nil
 }
 
 // indexCode 内部通用索引逻辑，抽自 main.go 的流程
