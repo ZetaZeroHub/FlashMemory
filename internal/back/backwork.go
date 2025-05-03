@@ -35,32 +35,27 @@ var (
 
 // BuildIndex 构建全量或指定目录索引
 func BuildIndex(projDir, subDir string, full bool) error {
-	// 如果全量，先删除旧索引
+	fm, err := InitFaissManager(projDir)
+	if err != nil {
+		return fmt.Errorf("初始化 FaissManager 失败: %w", err)
+	}
+	// 如果需要全量，先 Reset（删除老索引）
 	if full {
-		if err := DeleteIndex(projDir); err != nil {
-			return fmt.Errorf("删除旧索引失败: %w", err)
+		if e := fm.Reset(); e != nil {
+			return fmt.Errorf("重置 Faiss 索引失败: %w", e)
 		}
 	}
-	process, err := indexCode(projDir, "master", "", full, subDir)
-	utils.StopFaissService(process)
-	if err != nil {
-		return fmt.Errorf("构建索引失败: %w", err)
-	}
-	return nil
+	// 后续不再启动/停止服务，直接注入
+	return indexCodeWithManager(fm, projDir, "master", "", full, subDir)
 }
 
-// IncrementalUpdate 基于分支和 commit 增量更新索引
+// IncrementalUpdate 增量更新索引
 func IncrementalUpdate(projDir, branch, commit string) error {
-	// 默认分支 master
-	if branch == "" {
-		branch = "master"
-	}
-	process, err := indexCode(projDir, branch, commit, false, "")
-	utils.StopFaissService(process)
+	fm, err := InitFaissManager(projDir)
 	if err != nil {
-		return fmt.Errorf("增量更新索引失败: %w", err)
+		return fmt.Errorf("初始化 FaissManager 失败: %w", err)
 	}
-	return nil
+	return indexCodeWithManager(fm, projDir, branch, commit, false, "")
 }
 
 // DeleteIndex 删除索引文件（.gitgo 目录下所有内容）
@@ -73,19 +68,12 @@ func DeleteIndex(projDir string) error {
 }
 
 // indexCode 内部通用索引逻辑，抽自 main.go 的流程
-func indexCode(projDir, branchName, commitHash string, forceFull bool, filePath string) (*os.Process, error) {
+func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash string, forceFull bool, filePath string) error {
 
-	faissProcess, faissServiceDir, err := InitFaiss()
-	if err != nil {
-		return faissProcess, fmt.Errorf("启动Faiss服务失败: %w", err)
-	}
-
-	// 2. 创建 .gitgo 目录
 	gitgoDir := filepath.Join(projDir, ".gitgo")
-	if err := os.MkdirAll(gitgoDir, 0755); err != nil {
-		return faissProcess, fmt.Errorf("创建索引目录失败: %w", err)
+	if e := os.MkdirAll(gitgoDir, 0755); e != nil {
+		return fmt.Errorf("创建索引目录失败: %w", e)
 	}
-
 	// 索引文件路径
 	indexDBPath := filepath.Join(gitgoDir, "code_index.db")
 	faissIndexPath := filepath.Join(gitgoDir, "code_index.faiss")
@@ -378,7 +366,7 @@ func indexCode(projDir, branchName, commitHash string, forceFull bool, filePath 
 	// 3. 打开或创建索引数据库
 	db, err := index.EnsureIndexDB(projDir)
 	if err != nil {
-		return faissProcess, fmt.Errorf("初始化索引DB失败: %w", err)
+		return fmt.Errorf("初始化索引DB失败: %w", err)
 	}
 	defer db.Close()
 
@@ -477,7 +465,7 @@ func indexCode(projDir, branchName, commitHash string, forceFull bool, filePath 
 	}
 	if len(files) == 0 {
 		log.Println("No source code files found in the provided directory.")
-		return faissProcess, errors.New("No source code files found in the provided directory.")
+		return errors.New("No source code files found in the provided directory.")
 	}
 
 	// 2. 解析所有文件
@@ -498,7 +486,7 @@ func indexCode(projDir, branchName, commitHash string, forceFull bool, filePath 
 	fmt.Printf("Parsed %d files, extracted %d functions.\n", len(files), len(allFuncs))
 
 	if err != nil {
-		return faissProcess, err
+		return err
 	}
 
 	log.Println("正在分析代码...")
@@ -522,13 +510,7 @@ func indexCode(projDir, branchName, commitHash string, forceFull bool, filePath 
 		log.Fatalf("获取gitgo目录绝对路径失败: %v", err)
 	}
 
-	// 创建FaissWrapper，传入存储路径选项
-	faissOptions := map[string]interface{}{
-		"storage_path": absGitgoDir,
-		"server_url":   index.DefaultFaissServerURL, // 使用默认的Faiss HTTP服务URL
-		"index_id":     "code_index",                // 设置一个有意义的索引ID
-	}
-	idx := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapper(128, faissOptions)} // 假设128维向量
+	idx := fm.Indexer
 	err = idx.SaveAnalysisToDB(results)
 	if err != nil {
 		log.Fatalf("保存分析结果到数据库失败: %v", err)
@@ -536,7 +518,7 @@ func indexCode(projDir, branchName, commitHash string, forceFull bool, filePath 
 	// 构建嵌入向量并添加到Faiss索引
 	if incrementalUpdate {
 		// 增量更新模式：先加载现有索引
-		err = idx.FaissIndex.LoadFromFile(faissServiceDir)
+		err = idx.FaissIndex.LoadFromFile(fm.faissDir)
 		if err != nil {
 			log.Printf("加载现有Faiss索引失败: %v，将创建新索引", err)
 		} else {
@@ -548,7 +530,11 @@ func indexCode(projDir, branchName, commitHash string, forceFull bool, filePath 
 	for id, res := range results {
 		// 获取res.Description的嵌入向量
 		vec := search.SimpleEmbedding(res.Description, idx.FaissIndex.Dimension())
-		idx.FaissIndex.AddVector(id+1, vec) // SQLite行ID从1开始
+		err := idx.FaissIndex.AddVector(id+1, vec)
+		if err != nil {
+			log.Printf("为函数 %s 添加向量失败: %v", res.Func.Name, err)
+			return err
+		} // SQLite行ID从1开始
 	}
 
 	// 保存索引到文件
@@ -604,7 +590,5 @@ func indexCode(projDir, branchName, commitHash string, forceFull bool, filePath 
 
 	// 12. （可选） 展示统计
 	visualize.PrintStats(visualize.ComputePackageStats(kg))
-
-	defer utils.StopFaissService(faissProcess)
-	return faissProcess, nil
+	return nil
 }

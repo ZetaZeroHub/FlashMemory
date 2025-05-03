@@ -3,18 +3,18 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/kinglegendzzh/flashmemory/cmd/app/back"
-	"github.com/kinglegendzzh/flashmemory/internal/utils"
+	"github.com/kinglegendzzh/flashmemory/config"
+	"github.com/kinglegendzzh/flashmemory/internal/back"
+	"github.com/kinglegendzzh/flashmemory/internal/index"
+	"github.com/kinglegendzzh/flashmemory/internal/parser"
+	"github.com/kinglegendzzh/flashmemory/internal/search"
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
-
-	"github.com/kinglegendzzh/flashmemory/internal/index"
-	"github.com/kinglegendzzh/flashmemory/internal/parser"
-	"github.com/kinglegendzzh/flashmemory/internal/search"
 )
 
 // Response is the standard API response format
@@ -29,35 +29,17 @@ var authUser = os.Getenv("API_USER")
 var authPass = os.Getenv("API_PASS")
 
 func main() {
-	// FAISS service path from env
+	config.Init()
 	if os.Getenv("FAISS_SERVICE_PATH") == "" {
-		log.Fatal("FAISS_SERVICE_PATH must be set")
+		logs.Warnf("FAISS_SERVICE_PATH not set")
 	}
 
-	//// 启动 FAISS 服务
-	//faissPath := os.Getenv("FAISS_SERVICE_PATH")
-	//if err := utils.CheckPythonEnvironment("cpu"); err != nil {
-	//	log.Fatalf("Python环境检查失败: %v", err)
-	//}
-	//faissProcess, err := utils.StartFaissService(faissPath)
+	//fm, err := back.InitFaissManager(os.Getenv("FAISS_SERVICE_PATH"))
 	//if err != nil {
-	//	log.Fatalf("启动Faiss服务失败: %v", err)
+	//	log.Fatalf("FaissManager 初始化失败: %v", err)
 	//}
-	//defer utils.StopFaissService(faissProcess)
-	//
-	//// 轮询检测 Faiss 服务健康
-	//for i := 0; i < 30; i++ {
-	//	resp, err := http.Get(index.DefaultFaissServerURL + "/health")
-	//	if err == nil && resp.StatusCode == http.StatusOK {
-	//		resp.Body.Close()
-	//		log.Println("Faiss服务已启动")
-	//		break
-	//	}
-	//	if i == 29 {
-	//		log.Fatal("Faiss服务启动超时，请检查 FAISS_SERVICE_PATH 是否正确以及后端服务是否可用。")
-	//	}
-	//	time.Sleep(time.Second)
-	//}
+	//// 程序退出时统一停止 Faiss 服务
+	//defer fm.Stop()
 
 	// Create Echo instance
 	e := echo.New()
@@ -72,7 +54,7 @@ func main() {
 	// API group with auth
 	api := e.Group("/api", auth)
 
-	// Routes
+	// 新增：全局仓库混合检索
 	api.POST("/search", searchHandler())
 	api.POST("/functions", listFunctionsHandler())
 	api.POST("/index", buildIndexHandler())
@@ -128,7 +110,6 @@ func searchHandler() echo.HandlerFunc {
 		// 索引文件路径
 		indexDBPath := filepath.Join(gitgoDir, "code_index.db")
 		faissIndexPath := filepath.Join(gitgoDir, "code_index.faiss")
-		faissProcess, _, err := back.InitFaiss()
 
 		// 检查.gitgo目录和索引文件是否存在
 		if _, err := os.Stat(gitgoDir); os.IsNotExist(err) {
@@ -169,6 +150,12 @@ func searchHandler() echo.HandlerFunc {
 		if err != nil {
 			log.Fatalf("加载现有Faiss索引失败: %v", err)
 		}
+
+		err = back.EnsureEmbeddings(idx, gitgoDir, req.ProjectDir)
+		if err != nil {
+			log.Fatalf("加载嵌入向量失败: %v", err)
+		}
+
 		log.Println("成功加载现有Faiss索引")
 
 		// 执行查询
@@ -196,7 +183,6 @@ func searchHandler() echo.HandlerFunc {
 		for _, r := range results {
 			data = append(data, FuncRes{r.Name, r.Package, r.File, r.Score, r.Description, r.CodeSnippet})
 		}
-		utils.StopFaissService(faissProcess)
 		return c.JSON(http.StatusOK, Response{Code: 0, Message: "OK", Data: data})
 	}
 }

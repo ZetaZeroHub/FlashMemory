@@ -1,13 +1,16 @@
 package back
 
 import (
+	"bufio"
 	"fmt"
 	"github.com/kinglegendzzh/flashmemory/internal/index"
+	"github.com/kinglegendzzh/flashmemory/internal/search"
 	"github.com/kinglegendzzh/flashmemory/internal/utils"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,6 +20,7 @@ type FaissManager struct {
 	Indexer  *index.Indexer
 	opts     map[string]interface{}
 	gitgoDir string
+	faissDir string
 }
 
 var (
@@ -27,50 +31,49 @@ var (
 // InitFaissManager 在程序启动时调用，完成 Faiss 服务进程与 Indexer 的单例初始化
 func InitFaissManager(projDir string) (*FaissManager, error) {
 	var err error
-	once.Do(func() {
-		// 1. 启动 Faiss 服务（借用原 InitFaiss 的查目录+启动逻辑，不在此展开）
-		proc, _, e := InitFaiss()
-		if e != nil {
-			err = fmt.Errorf("初始化 Faiss 服务失败: %w", e)
-			return
-		}
+	// 1. 启动 Faiss 服务（借用原 InitFaiss 的查目录+启动逻辑，不在此展开）
+	proc, faissDir, e := InitFaiss()
+	if e != nil {
+		err = fmt.Errorf("初始化 Faiss 服务失败: %w", e)
+		return nil, fmt.Errorf("初始化 FaissManager 失败: %w", err)
+	}
 
-		// 2. 确保 .gitgo 目录存在
-		gitgo := filepath.Join(projDir, ".gitgo")
-		if e := os.MkdirAll(gitgo, 0755); e != nil {
-			err = fmt.Errorf("创建索引目录失败: %w", e)
-			return
-		}
+	// 2. 确保 .gitgo 目录存在
+	gitgo := filepath.Join(projDir, ".gitgo")
+	if e := os.MkdirAll(gitgo, 0755); e != nil {
+		err = fmt.Errorf("创建索引目录失败: %w", e)
+		return nil, fmt.Errorf("初始化 FaissManager 失败: %w", err)
+	}
 
-		// 3. 构造 FaissWrapper，并尝试加载已有索引文件
-		opts := map[string]interface{}{
-			"storage_path": gitgo,
-			"server_url":   index.DefaultFaissServerURL,
-			"index_id":     "code_index",
+	// 3. 构造 FaissWrapper，并尝试加载已有索引文件
+	opts := map[string]interface{}{
+		"storage_path": gitgo,
+		"server_url":   index.DefaultFaissServerURL,
+		"index_id":     "code_index",
+	}
+	fw := index.NewFaissWrapper(128, opts)
+	idxFile := filepath.Join(gitgo, "code_index.faiss")
+	if _, statErr := os.Stat(idxFile); statErr == nil {
+		if loadErr := fw.LoadFromFile(idxFile); loadErr == nil {
+			fmt.Println("► 成功加载已有 Faiss 索引")
 		}
-		fw := index.NewFaissWrapper(128, opts)
-		idxFile := filepath.Join(gitgo, "code_index.faiss")
-		if _, statErr := os.Stat(idxFile); statErr == nil {
-			if loadErr := fw.LoadFromFile(idxFile); loadErr == nil {
-				fmt.Println("► 成功加载已有 Faiss 索引")
-			}
-		}
+	}
 
-		// 4. 打开或创建索引数据库
-		db, dbErr := index.EnsureIndexDB(projDir)
-		if dbErr != nil {
-			err = fmt.Errorf("初始化索引数据库失败: %w", dbErr)
-			return
-		}
+	// 4. 打开或创建索引数据库
+	db, dbErr := index.EnsureIndexDB(projDir)
+	if dbErr != nil {
+		err = fmt.Errorf("初始化索引数据库失败: %w", dbErr)
+		return nil, fmt.Errorf("初始化 FaissManager 失败: %w", err)
+	}
 
-		// 5. 构建单例
-		fm = &FaissManager{
-			process:  proc,
-			Indexer:  &index.Indexer{DB: db, FaissIndex: fw},
-			opts:     opts,
-			gitgoDir: gitgo,
-		}
-	})
+	// 5. 构建单例
+	fm = &FaissManager{
+		process:  proc,
+		Indexer:  &index.Indexer{DB: db, FaissIndex: fw},
+		opts:     opts,
+		gitgoDir: gitgo,
+		faissDir: faissDir,
+	}
 	return fm, err
 }
 
@@ -98,6 +101,8 @@ func (m *FaissManager) Reset() error {
 func InitFaiss() (*os.Process, string, error) {
 	// 获取FAISSService目录的路径
 	var faissServiceDir string
+
+	faissServiceDir = os.Getenv("FAISS_SERVICE_PATH")
 
 	// 如果方法4未找到，继续尝试其他方法
 	if faissServiceDir == "" {
@@ -178,4 +183,81 @@ func InitFaiss() (*os.Process, string, error) {
 		time.Sleep(retryInterval)
 	}
 	return faissProcess, faissServiceDir, nil
+}
+
+// EnsureEmbeddings 遍历 functions 表，为每条记录同时计算 description+code snippet 的向量并加入 FAISS。
+func EnsureEmbeddings(idx *index.Indexer, gitgoDir, projDir string) error {
+	// 1. 从 DB 读出所有 id, description, file, start_line, end_line
+	rows, err := idx.DB.Query(
+		"SELECT id, description, file, start_line, end_line FROM functions",
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	dim := idx.FaissIndex.Dimension()
+	for rows.Next() {
+		var (
+			id                 int
+			desc, relPath      string
+			startLine, endLine int
+		)
+		if err := rows.Scan(&id, &desc, &relPath, &startLine, &endLine); err != nil {
+			continue
+		}
+
+		// 2. 读取这段代码片段
+		snippet, err := readSnippet(projDir, relPath, startLine, endLine)
+		if err != nil {
+			// 读不到也不要中断，直接只用 desc
+			fmt.Fprintf(os.Stderr, "warn: read snippet %s [%d:%d] failed: %v\n",
+				relPath, startLine, endLine, err)
+			snippet = ""
+		}
+
+		// 3. 拼接 description + snippet
+		text := desc
+		if snippet != "" {
+			text = desc + "\n```\n" + snippet + "\n```"
+		}
+
+		// 4. 生成向量并入索引
+		vec := search.SimpleEmbedding(text, dim)
+		if err := idx.FaissIndex.AddVector(id, vec); err != nil {
+			return err
+		}
+	}
+
+	// 5. 持久化 FAISS 索引文件
+	faissFile := filepath.Join(gitgoDir, "code_index.faiss")
+	return idx.FaissIndex.SaveToFile(faissFile)
+}
+
+// readSnippet 从 projDir/relPath 的文件里按行号截取代码片段
+func readSnippet(projDir, relPath string, start, end int) (string, error) {
+	absPath := filepath.Join(projDir, relPath)
+	f, err := os.Open(absPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	var sb strings.Builder
+	lineNo := 1
+	for scanner.Scan() {
+		if lineNo >= start && lineNo <= end {
+			sb.WriteString(scanner.Text())
+			sb.WriteByte('\n')
+		}
+		if lineNo > end {
+			break
+		}
+		lineNo++
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	return sb.String(), nil
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/kinglegendzzh/flashmemory/internal/back"
 	"log"
 	"net/http"
 	"os"
@@ -204,6 +205,12 @@ func main() {
 		if err != nil {
 			log.Fatalf("加载现有Faiss索引失败: %v", err)
 		}
+
+		err = back.EnsureEmbeddings(idx, gitgoDir, *projDir)
+		if err != nil {
+			log.Fatalf("加载嵌入向量失败: %v", err)
+		}
+
 		log.Println("成功加载现有Faiss索引")
 
 		// 执行查询
