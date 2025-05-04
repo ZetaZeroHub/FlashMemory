@@ -62,9 +62,14 @@ func WalkAndParse(root string, cb func(info FunctionInfo)) error {
 
 		// Query the database for functions that match the file and name
 		for _, fn := range funcs {
-			//todo 预处理fn.File，fn.File当前为绝对路径（如‘/Users/apple/Public/openProject/flashmemory/internal/parser/tree_sitter_parser.go"’），通过root项目路径（绝对路径）截取该fn.File变成相对路径（如“internal/parser/tree_sitter_parser.go"）
+			// 将绝对路径 fn.File 转成相对于 root 的相对路径
+			relPath, err := filepath.Rel(root, fn.File)
+			if err != nil {
+				// 如果转换失败，保留原始绝对路径
+				relPath = fn.File
+			}
+			fn.File = relPath
 
-			// Check if the function's file and name exist in the database
 			query := "SELECT id, name, file FROM functions WHERE file = ? AND name = ?"
 			rows, err := db.Query(query, fn.File, fn.Name)
 			if err != nil {
@@ -72,13 +77,13 @@ func WalkAndParse(root string, cb func(info FunctionInfo)) error {
 			}
 			defer rows.Close()
 
-			// If the function exists in the database, mark it as Scan = true
+			// 如果数据库中已存在，则标记 Scan = true
 			if rows.Next() {
 				fn.Scan = true
 			} else {
 				fn.Scan = false
 			}
-			// Proceed to the callback function
+			// 回调
 			cb(fn)
 		}
 		return nil
