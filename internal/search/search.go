@@ -2,12 +2,15 @@ package search
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"github.com/kinglegendzzh/flashmemory/internal/index"
 	"github.com/kinglegendzzh/flashmemory/internal/utils"
-	"io/ioutil"
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"log"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -35,6 +38,7 @@ type SearchEngine struct {
 	Indexer *index.Indexer
 	// For fallback text search
 	Descriptions map[int]string
+	ProjDir      string
 }
 
 // Searcher encapsulates different search implementations.
@@ -92,7 +96,7 @@ func semanticSearch(se *SearchEngine, query string, opts SearchOptions) ([]Searc
 
 	results := make([]SearchResult, 0, len(funcIDs))
 	for _, id := range funcIDs {
-		res, err := fetchFunctionFromDB(se.Indexer.DB, id, opts.IncludeCode)
+		res, err := fetchFunctionFromDB(se.Indexer.DB, id, opts.IncludeCode, se.ProjDir)
 		if err != nil {
 			continue
 		}
@@ -108,6 +112,21 @@ func semanticSearch(se *SearchEngine, query string, opts SearchOptions) ([]Searc
 
 // keywordSearch performs a SQL LIKE-based search.
 func keywordSearch(se *SearchEngine, query string, opts SearchOptions) ([]SearchResult, error) {
+	logs.Infof("Keyword search for query: %s", query)
+	keywordJsonArray, err := utils.DefaultModelCompletion(query)
+	if err != nil {
+		logs.Errorf("Failed to invoke keyword model: %v", err)
+		return nil, err
+	}
+	logs.Infof("Keyword JSON Array: %s", keywordJsonArray)
+	if keywordJsonArray == "" {
+		logs.Warnf("Keyword JSON Array is empty")
+	}
+	var keywords []string
+	// 反序列化
+	if err := json.Unmarshal([]byte(keywordJsonArray), &keywords); err != nil {
+		logs.Errorf("Failed to unmarshal keyword JSON Array: %v", err)
+	}
 	// 构建模糊匹配模式
 	pattern := "%" + query + "%"
 	sqlQuery := `
@@ -139,7 +158,8 @@ func keywordSearch(se *SearchEngine, query string, opts SearchOptions) ([]Search
 			Score: 1,
 		}
 		if opts.IncludeCode {
-			if snippet, err := getCodeSnippet(file, startLine, endLine); err == nil {
+			logs.Tokenf("正在获取代码片段: %s, %d, %d\n", file, startLine, endLine)
+			if snippet, err := getCodeSnippet(file, startLine, endLine, se.ProjDir); err == nil {
 				res.CodeSnippet = snippet
 			}
 		}
@@ -206,7 +226,18 @@ func SimpleEmbedding(query string, dim int) []float32 {
 		log.Printf("Ollama embedding error: %v, falling back to dummy embedding", err)
 		return dummyEmbedding(query, dim)
 	}
+	logs.Infof("Ollama embedding success:dim=%d", dim)
 	return embedding
+}
+
+func SimpleEmbeddingBatch(query []string, dim int) ([][]float32, error) {
+	embedding, err := utils.OllamaEmbeddingsList(query, dim)
+	if err != nil {
+		log.Printf("Ollama embedding error: %v, falling back to dummy embedding", err)
+		return nil, err
+	}
+	logs.Infof("batch Ollama embedding success:len=%v, dim=%d", len(embedding), dim)
+	return embedding, nil
 }
 
 // dummyEmbedding 为故障情况下的备用实现（与原实现类似）
@@ -241,7 +272,7 @@ func dummyEmbedding(query string, dim int) []float32 {
 }
 
 // fetchFunctionFromDB 根据rowid获取函数信息，并在需要时提取代码片段
-func fetchFunctionFromDB(db *sql.DB, id int, includeCode bool) (SearchResult, error) {
+func fetchFunctionFromDB(db *sql.DB, id int, includeCode bool, projDir string) (SearchResult, error) {
 	var name, pkg, file, desc string
 	var startLine, endLine int
 	err := db.QueryRow("SELECT name, package, file, description, start_line, end_line FROM functions WHERE rowid = ?", id).
@@ -257,7 +288,8 @@ func fetchFunctionFromDB(db *sql.DB, id int, includeCode bool) (SearchResult, er
 		Description: desc,
 	}
 	if includeCode {
-		if snippet, err := getCodeSnippet(file, startLine, endLine); err == nil {
+		logs.Tokenf("正在获取代码片段: %s, %d, %d\n", file, startLine, endLine)
+		if snippet, err := getCodeSnippet(file, startLine, endLine, projDir); err == nil {
 			res.CodeSnippet = snippet
 		}
 	}
@@ -265,19 +297,32 @@ func fetchFunctionFromDB(db *sql.DB, id int, includeCode bool) (SearchResult, er
 }
 
 // getCodeSnippet 从指定文件中提取从 startLine 到 endLine 的代码片段
-func getCodeSnippet(filePath string, startLine, endLine int) (string, error) {
-	data, err := ioutil.ReadFile(filePath)
+func getCodeSnippet(filePath string, startLine, endLine int, projDir string) (string, error) {
+	if projDir == "" {
+		return "", fmt.Errorf("projDir 不能为空")
+	}
+
+	fullPath := filepath.Join(projDir, filePath)
+	data, err := os.ReadFile(fullPath)
 	if err != nil {
+		logs.Errorf("读取文件失败 %s: %v", fullPath, err)
 		return "", err
 	}
+
 	lines := strings.Split(string(data), "\n")
-	// 调整边界
+	total := len(lines)
+
+	// 边界调整
 	if startLine < 1 {
 		startLine = 1
 	}
-	if endLine > len(lines) {
-		endLine = len(lines)
+	if endLine > total {
+		endLine = total
 	}
+	if startLine > endLine {
+		return "", fmt.Errorf("startLine (%d) > endLine (%d)", startLine, endLine)
+	}
+
 	snippet := strings.Join(lines[startLine-1:endLine], "\n")
 	return snippet, nil
 }
