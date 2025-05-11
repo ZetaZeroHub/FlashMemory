@@ -68,6 +68,9 @@ func (tp *TreeSitterParser) ParseFile(path string) ([]FunctionInfo, error) {
 	case "typescript":
 		// TypeScript 语法和 JavaScript 类似
 		language = js.GetLanguage()
+	case "vue":
+		// TypeScript 语法和 JavaScript 类似
+		language = js.GetLanguage()
 	default:
 		return nil, fmt.Errorf("Tree-sitter 不支持该语言：%s", tp.Lang)
 	}
@@ -112,25 +115,27 @@ func (tp *TreeSitterParser) ParseFile(path string) ([]FunctionInfo, error) {
 			node := capture.Node
 
 			var funcName string
-			if tp.Lang == "cpp" {
-				// 针对 C++，尝试从 declarator 字段中获取函数名
-				declNode := node.ChildByFieldName("declarator")
-				if declNode != nil {
-					for i := 0; i < int(declNode.ChildCount()); i++ {
-						child := declNode.Child(i)
-						if child.Type() == "identifier" {
-							funcName = child.Content(data)
-							break
+			if tp.Lang == "cpp" || tp.Lang == "c" {
+				if decl := node.ChildByFieldName("declarator"); decl != nil {
+					var ids []string
+					var collect func(n *sitter.Node)
+					collect = func(n *sitter.Node) {
+						switch n.Type() {
+						case "parameter_list", "template_parameter_list", "trailing_return_type":
+							return // 跳过参数列表、模板参数、尾置返回类型
+						case "operator_function_id":
+							ids = append(ids, n.Content(data)) // C++ 运算符重载
+							return
+						case "identifier":
+							ids = append(ids, n.Content(data))
+						}
+						for i := 0; i < int(n.ChildCount()); i++ {
+							collect(n.Child(i))
 						}
 					}
-				}
-				if funcName == "" {
-					// 若未找到，则回退到默认提取逻辑
-					nameNode := node.ChildByFieldName("name")
-					if nameNode != nil {
-						funcName = nameNode.Content(data)
-					} else if node.ChildCount() > 0 {
-						funcName = node.Child(0).Content(data)
+					collect(decl)
+					if len(ids) > 0 {
+						funcName = ids[len(ids)-1] // 取最后一个 identifier 作为函数名
 					}
 				}
 			} else {
@@ -192,6 +197,9 @@ func getTreeSitterFunctionQuery(lang string) string {
 		return `(function_definition) @func_decl`
 	case "javascript":
 		return `(function_declaration) @func_decl`
+	case "vue":
+		// 对 Vue，取决于上面你用的是 js 还是 ts 语法树
+		return `(function_declaration) @func_decl`
 	case "c":
 		return `(function_definition) @func_decl`
 	case "cpp":
@@ -210,7 +218,10 @@ func getTreeSitterFunctionQuery(lang string) string {
 	case "elixir":
 		return `(function_definition) @func_decl`
 	case "php":
-		return `(function_definition) @func_decl`
+		return `
+            (function_definition) @func_decl
+            (method_declaration)   @func_decl
+        `
 	default:
 		return ""
 	}
@@ -368,7 +379,7 @@ func (tp *TreeSitterParser) extractCalls(funcNode *sitter.Node, data []byte, lan
 		return calls
 	}
 
-	tp.debugLog("其它语言查询语句: %s", callQueryStr)
+	//tp.debugLog("其它语言查询语句: %s", callQueryStr)
 	callQuery, err := sitter.NewQuery([]byte(callQueryStr), language)
 	if err != nil {
 		tp.debugLog("创建其它语言查询失败: %v", err)
@@ -414,7 +425,10 @@ func (tp *TreeSitterParser) extractPackageName(rootNode *sitter.Node, data []byt
 	case "cpp":
 		// Example: namespace MyNamespace { ... }
 		// Extracts the *first* namespace definition found. Might not always be the primary one.
-		pkgQueryStr = fmt.Sprintf(`(namespace_definition) @namespace`)
+		// 只匹配 namespace_definition 的 name 字段，捕获 identifier 或者 nested_name_specifier
+		pkgQueryStr = `(namespace_definition 
+                          name: (_) @namespace
+                       )`
 	case "php":
 		// Example: namespace App\Http\Controllers;
 		pkgQueryStr = fmt.Sprintf(`(namespace_definition) @namespace`) // Name node contains identifier(s)
@@ -432,7 +446,10 @@ func (tp *TreeSitterParser) extractPackageName(rootNode *sitter.Node, data []byt
 		// Package is defined by directory structure and __init__.py
 		return "" // Cannot reliably extract from single file syntax
 	case "javascript", "typescript":
-		pkgQueryStr = "(export_statement) @export"
+		pkgQueryStr = `
+			(import_statement source: (string) @import_path) |
+			(export_statement) @export
+		`
 	case "rust":
 		// Crate name defined in Cargo.toml, modules defined by `mod` or file structure
 		pkgQueryStr = "(mod_item) @module"
@@ -582,6 +599,32 @@ func filterBuiltInCalls(calls []string) []string {
 		"String":         true,
 		"undefined":      true,
 		"valueOf":        true,
+		// 新增常用 JS 数组方法
+		"push":    true,
+		"pop":     true,
+		"shift":   true,
+		"unshift": true,
+		"concat":  true,
+		"join":    true,
+		//"slice":   true,
+		"splice": true,
+		//"map":     true,
+		//"filter":  true,
+		"reduce":  true,
+		"forEach": true,
+
+		// 新增常用 JS 字符串方法
+		"split":       true,
+		"replace":     true,
+		"indexOf":     true,
+		"includes":    true,
+		"substr":      true,
+		"substring":   true,
+		"toLowerCase": true,
+		"toUpperCase": true,
+		"trim":        true,
+		"charAt":      true,
+		"charCodeAt":  true,
 		// Java 内置（java.lang 包）
 		// "Math":      true,
 		"System": true,
@@ -591,14 +634,27 @@ func filterBuiltInCalls(calls []string) []string {
 		"Float":     true,
 		"Boolean":   true,
 		"Character": true,
+		//"Math":   true,
+		//"String": true,
 		// C/C++ 内置
-		"printf": true,
-		"scanf":  true,
-		"malloc": true,
-		"free":   true,
+		"printf":  true,
+		"scanf":   true,
+		"malloc":  true,
+		"free":    true,
+		"calloc":  true,
+		"realloc": true,
+		"memcpy":  true,
+		"memset":  true,
+		"strcpy":  true,
+		"strlen":  true,
+		"fopen":   true,
+		"fclose":  true,
+		//"exit":    true,
+		"abort": true,
 		// Rust 内置
 		// "println": true,
 		// "format":  true,
+		//"panic":   true,
 		// PHP 内置
 		"echo": true,
 		// "print": true,
@@ -606,6 +662,30 @@ func filterBuiltInCalls(calls []string) []string {
 		"empty": true,
 		"die":   true,
 		"exit":  true,
+		//"print":        true,
+		"include":      true,
+		"include_once": true,
+		//"require":      true,
+		"require_once": true,
+		//"printf":       true,
+		"sprintf":  true,
+		"var_dump": true,
+		"print_r":  true,
+		//"strlen":       true,
+		"count": true,
+
+		// Ruby 内置
+		"puts": true,
+		//"print":   true,
+		"p":       true,
+		"require": true,
+		"load":    true,
+		//"eval":    true,
+		//"exec":    true,
+		"system": true,
+		//"abort":   true,
+		//"exit":    true,
+
 	}
 
 	var filtered []string
