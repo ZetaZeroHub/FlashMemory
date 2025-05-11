@@ -1,8 +1,10 @@
 package analyzer
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/kinglegendzzh/flashmemory/config"
 	"io/ioutil"
 	"log"
 	"sort"
@@ -36,11 +38,17 @@ type LLMAnalyzer struct {
 	debug bool
 	// 最大并发goroutine数量
 	maxConcurrency int
+	Db             *sql.DB
+	projDir        string
 }
 
 // NewLLMAnalyzer 创建一个 LLMAnalyzer 实例
 func NewLLMAnalyzer(initialKnown map[string]string, debug bool, maxConcurrency int) *LLMAnalyzer {
 	return &LLMAnalyzer{KnownDescriptions: initialKnown, debug: debug, maxConcurrency: maxConcurrency}
+}
+
+func NewLLMAnalyzerHttp(initialKnown map[string]string, debug bool, maxConcurrency int, db *sql.DB, projDir string) *LLMAnalyzer {
+	return &LLMAnalyzer{KnownDescriptions: initialKnown, debug: debug, maxConcurrency: maxConcurrency, Db: db, projDir: projDir}
 }
 
 // extractCodeSnippet 根据文件路径和起止行号提取代码片段
@@ -102,9 +110,17 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo) LLMAnalysisResult 
 	}
 	res.InternalDeps = internalDeps
 	res.ExternalDeps = externalDeps
-
+	cfg, err := config.LoadConfig()
+	if cfg == nil || err != nil {
+		logs.Errorf("Warn: no config file found or parse error, fallback to env or default. Err: %v", err)
+	}
 	// 构造提示词：将代码片段和依赖描述整合到一起
-	prompt := fmt.Sprintf("你是一个专业的架构师，请仔细阅读以下函数代码：\n%s\n", snippet)
+	prompt := fmt.Sprintf("%s \n%s\n", cfg.AnaPrompts.Role, snippet)
+	// 如果snippet大于5000字符，则只保留前5000字符
+	if len(prompt) > cfg.CodeLimit {
+		logs.Infof("代码内容过长，截取前%d个字符", cfg.PromptLimit)
+		prompt = prompt[:cfg.CodeLimit]
+	}
 	if len(internalDeps) > 0 {
 		// 对 internalDeps 去重
 		dedup := make(map[string]bool)
@@ -122,7 +138,7 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo) LLMAnalysisResult 
 			desc, ok := a.KnownDescriptions[dep]
 			if ok {
 				if tip == 1 {
-					prompt += "该函数调用了以下内部函数：\n"
+					prompt += fmt.Sprintf("%s\n", cfg.AnaPrompts.InternalDeps)
 				}
 				var data map[string]interface{}
 				err := json.Unmarshal([]byte(desc), &data)
@@ -137,8 +153,10 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo) LLMAnalysisResult 
 						prompt += fmt.Sprintf("%d. %s\n", tip, dep)
 					}
 				} else {
-					data["description"] = strings.ReplaceAll(data["description"].(string), "\n", "")
-					prompt += fmt.Sprintf("%d. %s(%s)\n", tip, dep, data["description"])
+					if data["description"] != nil {
+						data["description"] = strings.ReplaceAll(data["description"].(string), "\n", "")
+						prompt += fmt.Sprintf("%d. %s(%s)\n", tip, dep, data["description"])
+					}
 				}
 				tip++
 			}
@@ -146,11 +164,10 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo) LLMAnalysisResult 
 	}
 	// 附加外部依赖信息
 	if len(externalDeps) > 0 {
-		prompt += fmt.Sprintf("并使用了外部库: %s\n", strings.Join(externalDeps, ", "))
+		prompt += fmt.Sprintf("%s %s\n", cfg.AnaPrompts.ExternalDeps, strings.Join(externalDeps, ", "))
 	}
-	prompt += `
-请用几句话为以上代码生成该实现的<功能描述>，并说明它的<执行流程>。
-（输出必须为一个合法的 JSON 对象，<功能描述>的Key是"description"，Value是字符串类型；<执行流程>的Key是"process"，Value是字符串数组；所有Value均使用中文描述。）`
+	prompt += fmt.Sprintf(`
+%s`, cfg.AnaPrompts.Main)
 	//	prompt += `请基于代码内容和调用逻辑，从整体上分析该函数，并按照下列要求生成输出。输出必须为一个合法的 JSON 对象，且严格遵循以下格式和字段说明，每个字段的描述请用一句简明扼要的话说明：
 	//
 	//{
@@ -177,7 +194,15 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo) LLMAnalysisResult 
 		log.Printf("[DEBUG] 调用大模型生成描述，内部依赖数: %d, 外部依赖数: %d", len(internalDeps), len(externalDeps))
 		log.Printf("[DEBUG] 详情，内部依赖: %s, 外部依赖: %s", internalDeps, externalDeps)
 	}
-	result, err := utils.OllamaCompletion(prompt)
+	result, err := utils.Completion(prompt)
+	tokens := []string{"```", "json", "```json"}
+	for _, v := range tokens {
+		if strings.Contains(result, v) {
+			logs.Tokenf("(!remove: %v!)", v)
+			result = strings.Replace(result, v, "", 2)
+		}
+	}
+	result = utils.FilterJSONContent(result)
 	if err != nil {
 		log.Printf("[ERROR] 调用大模型失败: %v", err)
 	}
@@ -234,6 +259,15 @@ func (a *LLMAnalyzer) AnalyzeAll(funcs []parser.FunctionInfo) []LLMAnalysisResul
 		var wg sync.WaitGroup
 
 		for _, f := range remaining {
+			if a.Db != nil {
+				if stored, found := a.loadStoredResult(f); found {
+					resultChan <- stored
+					// 同步已知描述，供后续依赖检查使用
+					knownDesc[f.Name] = stored.Description
+					continue
+				}
+			}
+
 			allDepsKnown := true
 			for _, dep := range f.Calls {
 				if _, ok := knownDesc[dep]; !ok {
@@ -249,6 +283,12 @@ func (a *LLMAnalyzer) AnalyzeAll(funcs []parser.FunctionInfo) []LLMAnalysisResul
 					defer wg.Done()
 					defer func() { <-sem }() // 释放信号量
 					res := a.AnalyzeFunction(fn)
+					// 立即存库
+					if a.Db != nil {
+						if err := SaveSingleResultToDB(a.Db, res, a.projDir); err != nil {
+							log.Printf("保存到数据库失败: %v", err)
+						}
+					}
 					resultChan <- res
 					knownDesc[fn.Name] = res.Description
 				}(f)
@@ -262,6 +302,15 @@ func (a *LLMAnalyzer) AnalyzeAll(funcs []parser.FunctionInfo) []LLMAnalysisResul
 		if len(newRemaining) == len(remaining) {
 			log.Printf("[WARN] 检测到循环依赖或缺失依赖，开始强制分析剩余 %d 个函数", len(remaining))
 			for _, f := range remaining {
+				if a.Db != nil {
+					if stored, found := a.loadStoredResult(f); found {
+						resultChan <- stored
+						// 同步已知描述，供后续依赖检查使用
+						knownDesc[f.Name] = stored.Description
+						continue
+					}
+				}
+
 				wg.Add(1)
 				sem <- struct{}{}
 				go func(fn parser.FunctionInfo) {
@@ -269,6 +318,12 @@ func (a *LLMAnalyzer) AnalyzeAll(funcs []parser.FunctionInfo) []LLMAnalysisResul
 					defer func() { <-sem }()
 					// 在强制分析时，提示词中依然会列出已知的依赖描述，缺失的部分留空，由大模型根据上下文补全
 					res := a.AnalyzeFunction(fn)
+					// 立即存库
+					if a.Db != nil {
+						if err := SaveSingleResultToDB(a.Db, res, a.projDir); err != nil {
+							log.Printf("保存到数据库失败: %v", err)
+						}
+					}
 					resultChan <- res
 					knownDesc[fn.Name] = res.Description
 				}(f)
@@ -282,4 +337,127 @@ func (a *LLMAnalyzer) AnalyzeAll(funcs []parser.FunctionInfo) []LLMAnalysisResul
 	close(resultChan)
 	<-done
 	return results
+}
+
+// SaveSingleResultToDB 将单个分析结果写入数据库。
+// - 对 functions 表用 INSERT OR REPLACE，以便更新已有描述。
+// - 对 calls 和 externals 表用 INSERT OR IGNORE，跳过已存在的行。
+// - 不使用事务，每条结果直接写入。
+func SaveSingleResultToDB(db *sql.DB, res LLMAnalysisResult, projDir string) error {
+	// 判断是否存在临时文件，如果不存在则抛出特殊异常码
+	gitgoDir := filepath.Join(projDir, ".gitgo")
+	tempFilePath := filepath.Join(gitgoDir, "indexing.temp")
+	if _, err := os.Stat(tempFilePath); os.IsNotExist(err) {
+		panic("索引临时文件已被删除，终止扫描")
+	}
+	// 1. 准备 statements
+	funcStmt, err := db.Prepare(`
+        INSERT OR REPLACE INTO functions
+        (name, package, file, description, start_line, end_line, function_type)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+	if err != nil {
+		return fmt.Errorf("prepare functions 失败: %w", err)
+	}
+	defer funcStmt.Close()
+
+	callStmt, err := db.Prepare(`
+        INSERT OR IGNORE INTO calls (caller, callee)
+        VALUES (?, ?)
+    `)
+	if err != nil {
+		return fmt.Errorf("prepare calls 失败: %w", err)
+	}
+	defer callStmt.Close()
+
+	extStmt, err := db.Prepare(`
+        INSERT OR IGNORE INTO externals (function, external)
+        VALUES (?, ?)
+    `)
+	if err != nil {
+		return fmt.Errorf("prepare externals 失败: %w", err)
+	}
+	defer extStmt.Close()
+
+	// 2. 处理相对路径
+	if projDir != "" {
+		rel, err := filepath.Rel(projDir, res.Func.File)
+		if err != nil {
+			logs.Errorf("%s, %s, 无法将文件路径转换为相对路径: %v", projDir, res.Func.File, err)
+		} else {
+			res.Func.File = filepath.ToSlash(rel)
+			logs.Infof("[DEBUG][DB] 存储文件路径为: %s", res.Func.File)
+		}
+	}
+
+	// 3. 插入 functions
+	if _, err := funcStmt.Exec(
+		res.Func.Name,
+		res.Func.Package,
+		res.Func.File,
+		res.Description,
+		res.Func.StartLine,
+		res.Func.EndLine,
+		res.Func.FunctionType,
+	); err != nil {
+		return fmt.Errorf("functions 写入失败: %w", err)
+	}
+
+	// 4. 插入 calls
+	for _, callee := range res.InternalDeps {
+		if _, err := callStmt.Exec(res.Func.Name, callee); err != nil {
+			log.Printf("calls 写入失败 (跳过继续): %v", err)
+		}
+	}
+
+	// 5. 插入 externals
+	for _, ext := range res.ExternalDeps {
+		if _, err := extStmt.Exec(res.Func.Name, ext); err != nil {
+			log.Printf("externals 写入失败 (跳过继续): %v", err)
+		}
+	}
+
+	return nil
+}
+
+// —— 新增文件顶部 imports ——
+// import "database/sql"
+// import "log"
+
+// —— 原来：LLMAnalyzer 类型定义之后，没有此方法 ——
+
+// —— 新增：loadStoredResult 方法 ——
+// 从数据库查询已存在的分析结果（仅取 description）
+// 若存在，返回对应 LLMAnalysisResult 且 ok=true，否则 ok=false
+func (a *LLMAnalyzer) loadStoredResult(fn parser.FunctionInfo) (LLMAnalysisResult, bool) {
+	// 1. 如果没有数据库连接，直接返回
+	if a.Db == nil {
+		return LLMAnalysisResult{}, false
+	}
+	var desc string
+	// 2. 按 File、Name、Package、StartLine、EndLine 精确匹配
+	query := `
+      SELECT description 
+      FROM functions 
+      WHERE file=? AND name=? AND package=? AND start_line=? AND end_line=?
+    `
+	if a.projDir != "" {
+		fn.File, _ = filepath.Rel(a.projDir, fn.File)
+		logs.Infof("[DEBUG][DB] 存储文件路径为: %s", fn.File)
+		fn.File = filepath.ToSlash(fn.File)
+	}
+	row := a.Db.QueryRow(query, fn.File, fn.Name, fn.Package, fn.StartLine, fn.EndLine)
+	if err := row.Scan(&desc); err != nil {
+		if err == sql.ErrNoRows {
+			return LLMAnalysisResult{}, false
+		}
+		log.Printf("[ERROR] 查询已存结果失败: %v", err)
+		return LLMAnalysisResult{}, false
+	}
+	logs.Infof("[DEBUG] 读取已存结果: %s", fn.File)
+	// 3. 构造简单的返回值（只带 Func 和 Description，其它字段可按需扩展）
+	return LLMAnalysisResult{
+		Func:        fn,
+		Description: desc,
+	}, true
 }
