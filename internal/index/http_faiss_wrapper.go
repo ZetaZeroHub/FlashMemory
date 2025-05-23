@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -30,6 +31,9 @@ type HTTPFaissWrapper struct {
 	maxCacheSize int                  // 最大缓存条目数
 	cacheHits    int                  // 缓存命中次数
 	cacheMisses  int                  // 缓存未命中次数
+
+	// 用于保护缓存及统计的读写锁
+	cacheMutex sync.RWMutex
 
 	// 持久化相关
 	lastSavePath string // 上次保存的路径，用于增量更新
@@ -119,13 +123,11 @@ func NewHTTPFaissWrapper(dimension int, useInnerProduct bool, serverURL string, 
 		return nil, fmt.Errorf("failed to read response: %v", err)
 	}
 
-	// 解析响应
 	var result map[string]interface{}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %v", err)
 	}
 
-	// 检查响应状态
 	if status, ok := result["status"].(string); !ok || status != "success" {
 		message := "unknown error"
 		if msg, ok := result["message"].(string); ok {
@@ -167,35 +169,30 @@ func (fw *HTTPFaissWrapper) AddVector(funcID int, vector []float32) error {
 
 	// 缓存向量
 	if fw.cacheEnabled {
-		// 创建向量的副本以避免外部修改
 		vectorCopy := make([]float32, len(vector))
 		copy(vectorCopy, vector)
-
-		// 使用函数ID作为缓存键
 		cacheKey := fmt.Sprintf("func_%d", funcID)
+
+		fw.cacheMutex.Lock()
 		fw.vectorCache[cacheKey] = vectorCopy
+		fw.cacheMutex.Unlock()
 	}
 
-	// 准备请求体
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"index_id": fw.IndexID,
 		"func_id":  funcID,
 		"vector":   vector,
 	})
 
-	// 发送请求（带重试）
 	respBody, err := fw.retryRequest("POST", "/add_vector", reqBody, 3)
 	if err != nil {
 		return fmt.Errorf("failed to add vector: %v", err)
 	}
 
-	// 解析响应
 	var result map[string]interface{}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return fmt.Errorf("failed to parse response: %v", err)
 	}
-
-	// 检查响应状态
 	if status, ok := result["status"].(string); !ok || status != "success" {
 		message := "unknown error"
 		if msg, ok := result["message"].(string); ok {
@@ -209,26 +206,21 @@ func (fw *HTTPFaissWrapper) AddVector(funcID int, vector []float32) error {
 
 // AddVectorsBatch 批量添加向量到索引
 func (fw *HTTPFaissWrapper) AddVectorsBatch(funcIDs []int, vectors []float32) error {
-	// 准备请求体
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"index_id": fw.IndexID,
 		"func_ids": funcIDs,
 		"vectors":  vectors,
 	})
 
-	// 发送请求（带重试）
 	respBody, err := fw.retryRequest("POST", "/add_vectors_batch", reqBody, 3)
 	if err != nil {
 		return fmt.Errorf("failed to add vectors batch: %v", err)
 	}
 
-	// 解析响应
 	var result map[string]interface{}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return fmt.Errorf("failed to parse response: %v", err)
 	}
-
-	// 检查响应状态
 	if status, ok := result["status"].(string); !ok || status != "success" {
 		message := "unknown error"
 		if msg, ok := result["message"].(string); ok {
@@ -242,45 +234,41 @@ func (fw *HTTPFaissWrapper) AddVectorsBatch(funcIDs []int, vectors []float32) er
 
 // SearchVectors 查找最接近查询向量的topK个向量
 func (fw *HTTPFaissWrapper) SearchVectors(query []float32, topK int) []int {
-	// 生成查询向量的缓存键
 	queryKey := fmt.Sprintf("query_%d", len(query))
 
-	// 检查缓存中是否有相同的查询向量
+	fw.cacheMutex.RLock()
 	cachedVector, hasCached := fw.vectorCache[queryKey]
+	fw.cacheMutex.RUnlock()
+
 	if fw.cacheEnabled && hasCached && cosineSimilarity(query, cachedVector) > 0.99 {
+		fw.cacheMutex.Lock()
 		fw.cacheHits++
-		// 如果缓存中有几乎相同的查询向量，可以考虑使用缓存的结果
-		// 这里简化处理，仍然执行搜索，但可以在此扩展缓存搜索结果
+		fw.cacheMutex.Unlock()
 		fmt.Println("Using similar cached query vector")
 	} else {
+		fw.cacheMutex.Lock()
 		fw.cacheMisses++
+		fw.cacheMutex.Unlock()
 	}
 
-	// 清理过期缓存
 	fw.cleanCache()
 
-	// 准备请求体
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"index_id": fw.IndexID,
 		"query":    query,
 		"top_k":    topK,
 	})
-
-	// 发送请求（带重试）
 	respBody, err := fw.retryRequest("POST", "/search_vectors", reqBody, 3)
 	if err != nil {
 		fmt.Printf("failed to search vectors: %v\n", err)
 		return []int{}
 	}
 
-	// 解析响应
 	var result map[string]interface{}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		fmt.Printf("failed to parse response: %v\n", err)
 		return []int{}
 	}
-
-	// 检查响应状态
 	if status, ok := result["status"].(string); !ok || status != "success" {
 		message := "unknown error"
 		if msg, ok := result["message"].(string); ok {
@@ -290,21 +278,20 @@ func (fw *HTTPFaissWrapper) SearchVectors(query []float32, topK int) []int {
 		return []int{}
 	}
 
-	// 缓存查询向量
 	if fw.cacheEnabled {
 		vectorCopy := make([]float32, len(query))
 		copy(vectorCopy, query)
+
+		fw.cacheMutex.Lock()
 		fw.vectorCache[queryKey] = vectorCopy
+		fw.cacheMutex.Unlock()
 	}
 
-	// 获取结果
 	resultsRaw, ok := result["results"].([]interface{})
 	if !ok {
 		fmt.Printf("invalid results format\n")
 		return []int{}
 	}
-
-	// 转换结果为int切片
 	results := make([]int, len(resultsRaw))
 	for i, v := range resultsRaw {
 		if id, ok := v.(float64); ok {
@@ -312,7 +299,6 @@ func (fw *HTTPFaissWrapper) SearchVectors(query []float32, topK int) []int {
 		}
 	}
 
-	// 获取分数
 	scoresRaw, ok := result["scores"].(map[string]interface{})
 	if ok {
 		for idStr, scoreRaw := range scoresRaw {
@@ -328,45 +314,34 @@ func (fw *HTTPFaissWrapper) SearchVectors(query []float32, topK int) []int {
 }
 
 // SaveToFile 将Faiss索引保存到文件
-// 如果设置了storagePath，则使用storagePath作为local_path参数
 func (fw *HTTPFaissWrapper) SaveToFile(path string) error {
-	// 确保目录存在
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory for index: %v", err)
 	}
 
-	// 确定本地路径
 	localPath := path
 	if fw.storagePath != "" {
-		// 如果设置了存储路径，则使用存储路径下的同名文件
 		localPath = filepath.Join(fw.storagePath, filepath.Base(path))
-		// 确保本地存储目录存在
 		if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
 			return fmt.Errorf("failed to create directory for local index: %v", err)
 		}
 	}
 
-	// 准备请求体
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"index_id":   fw.IndexID,
 		"path":       path,
-		"local_path": localPath, // 使用确定的本地路径
+		"local_path": localPath,
 	})
-
-	// 发送请求（带重试）
 	respBody, err := fw.retryRequest("POST", "/save_index", reqBody, 3)
 	if err != nil {
 		return fmt.Errorf("failed to save index: %v", err)
 	}
 
-	// 解析响应
 	var result map[string]interface{}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return fmt.Errorf("failed to parse response: %v", err)
 	}
-
-	// 检查响应状态
 	if status, ok := result["status"].(string); !ok || status != "success" {
 		message := "unknown error"
 		if msg, ok := result["message"].(string); ok {
@@ -375,44 +350,33 @@ func (fw *HTTPFaissWrapper) SaveToFile(path string) error {
 		return fmt.Errorf("failed to save index: %s", message)
 	}
 
-	// 记录最后保存的路径
 	fw.lastSavePath = path
-	// 重置脏标记
 	fw.dirtyFlag = false
-
 	return nil
 }
 
 // LoadFromFile 从文件加载Faiss索引
 func (fw *HTTPFaissWrapper) LoadFromFile(path string) error {
 	logs.Infof("HTTPFaissWrapper Loading index from %s", path)
-	// 确定本地路径
 	localPath := path
 	if fw.storagePath != "" {
-		// 如果设置了存储路径，则使用存储路径下的同名文件
 		localPath = filepath.Join(fw.storagePath, filepath.Base(path))
 	}
 
-	// 准备请求体
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"index_id":   fw.IndexID,
 		"path":       path,
-		"local_path": localPath, // 使用确定的本地路径
+		"local_path": localPath,
 	})
-
-	// 发送请求（带重试）
 	respBody, err := fw.retryRequest("POST", "/load_index", reqBody, 3)
 	if err != nil {
 		return fmt.Errorf("failed to load index: %v", err)
 	}
 
-	// 解析响应
 	var result map[string]interface{}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return fmt.Errorf("failed to parse response: %v", err)
 	}
-
-	// 检查响应状态
 	if status, ok := result["status"].(string); !ok || status != "success" {
 		message := "unknown error"
 		if msg, ok := result["message"].(string); ok {
@@ -421,7 +385,6 @@ func (fw *HTTPFaissWrapper) LoadFromFile(path string) error {
 		return fmt.Errorf("failed to load index: %s", message)
 	}
 
-	// 更新维度和度量类型
 	if dim, ok := result["dimension"].(float64); ok {
 		fw.Dim = int(dim)
 	}
@@ -429,11 +392,8 @@ func (fw *HTTPFaissWrapper) LoadFromFile(path string) error {
 		fw.MetricType = int(metricType)
 	}
 
-	// 记录加载的路径
 	fw.lastSavePath = path
-	// 重置脏标记
 	fw.dirtyFlag = false
-
 	return nil
 }
 
@@ -448,24 +408,32 @@ func (fw *HTTPFaissWrapper) SetSimilarityMetric(metric string) {
 
 // EnableCache 启用向量缓存
 func (fw *HTTPFaissWrapper) EnableCache() {
+	fw.cacheMutex.Lock()
+	defer fw.cacheMutex.Unlock()
 	fw.cacheEnabled = true
 	fmt.Println("Vector cache enabled")
 }
 
 // DisableCache 禁用向量缓存
 func (fw *HTTPFaissWrapper) DisableCache() {
+	fw.cacheMutex.Lock()
+	defer fw.cacheMutex.Unlock()
 	fw.cacheEnabled = false
 	fmt.Println("Vector cache disabled")
 }
 
 // ClearCache 清除向量缓存
 func (fw *HTTPFaissWrapper) ClearCache() {
+	fw.cacheMutex.Lock()
+	defer fw.cacheMutex.Unlock()
 	fw.vectorCache = make(map[string][]float32)
 	fmt.Println("Vector cache cleared")
 }
 
 // GetCacheStats 获取缓存统计信息
 func (fw *HTTPFaissWrapper) GetCacheStats() map[string]interface{} {
+	fw.cacheMutex.RLock()
+	defer fw.cacheMutex.RUnlock()
 	return map[string]interface{}{
 		"enabled":        fw.cacheEnabled,
 		"cache_size":     len(fw.vectorCache),
@@ -479,12 +447,9 @@ func (fw *HTTPFaissWrapper) GetCacheStats() map[string]interface{} {
 
 // Free 释放资源
 func (fw *HTTPFaissWrapper) Free() {
-	// 删除服务器上的索引
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"index_id": fw.IndexID,
 	})
-
-	// 发送请求（带重试）
 	_, err := fw.retryRequest("POST", "/delete_index", reqBody, 3)
 	if err != nil {
 		fmt.Printf("failed to delete index: %v\n", err)
@@ -493,8 +458,9 @@ func (fw *HTTPFaissWrapper) Free() {
 
 // cleanCache 清理过期的缓存条目
 func (fw *HTTPFaissWrapper) cleanCache() {
+	fw.cacheMutex.Lock()
+	defer fw.cacheMutex.Unlock()
 	if len(fw.vectorCache) > fw.maxCacheSize {
-		// 简单策略：当缓存超过限制时，清空一半的缓存
 		numToDelete := len(fw.vectorCache) / 2
 		deleted := 0
 		for key := range fw.vectorCache {
