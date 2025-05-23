@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"io"
 	"net/http"
 	"os"
@@ -101,7 +102,18 @@ func NewHTTPFaissWrapper(dimension int, useInnerProduct bool, serverURL string, 
 	}
 	defer resp.Body.Close()
 
-	// 读取响应
+	// 如果返回 400，认为索引已存在，默认成功
+	if resp.StatusCode == http.StatusBadRequest {
+		logs.Warnf("索引已存在，请勿重复创建")
+		return fw, nil
+	}
+	// 如果不是 200，则读取响应体并报错
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to create index, status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	// 读取并解析响应
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %v", err)
@@ -373,6 +385,7 @@ func (fw *HTTPFaissWrapper) SaveToFile(path string) error {
 
 // LoadFromFile 从文件加载Faiss索引
 func (fw *HTTPFaissWrapper) LoadFromFile(path string) error {
+	logs.Infof("HTTPFaissWrapper Loading index from %s", path)
 	// 确定本地路径
 	localPath := path
 	if fw.storagePath != "" {
