@@ -39,7 +39,7 @@ func InitFaissManager(projDir string, open bool) (fm *FaissManager, err error) {
 	var faissState bool
 	if open {
 		logs.Infof("启动 Faiss 服务中...")
-		proc, _, err = InitFaiss()
+		//proc, _, err = InitFaiss()
 		ext = ".faiss"
 		faissState = true
 		if err != nil {
@@ -59,7 +59,7 @@ func InitFaissManager(projDir string, open bool) (fm *FaissManager, err error) {
 	opts := map[string]interface{}{
 		"storage_path": gitgo,
 		"server_url":   index.DefaultFaissServerURL,
-		"index_id":     "code_index",
+		"index_id":     projDir,
 	}
 	fw := index.NewFaissWrapper(128, opts)
 	idxFile := filepath.Join(gitgo, "code_index"+ext)
