@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"database/sql"
 	"fmt"
 	"io/ioutil"
 	"strings"
@@ -23,8 +24,11 @@ import (
 
 // TreeSitterParser 使用 Tree-sitter 实现多语言代码解析
 type TreeSitterParser struct {
-	Lang  string
-	Debug bool // 控制调试日志输出
+	Lang    string
+	Debug   bool // 控制调试日志输出
+	NoLLM   bool
+	Db      *sql.DB
+	ProjDir string
 }
 
 // debugLog 输出调试日志（当 Debug 为 true 时）
@@ -184,6 +188,21 @@ func (tp *TreeSitterParser) ParseFile(path string) ([]FunctionInfo, error) {
 			funcs = append(funcs, fn)
 		}
 	}
+	//os := runtime.GOOS
+	//  如果未找到函数定义，则尝试使用 LlmParser（LlmParser目前不支持Windows系统）
+	//if os != "windows" {
+	if len(funcs) == 0 {
+		logs.Warnf("未能通过 TreeSitterParser 解析函数信息，回退至LlmParserr，path=%s", path)
+		llmParser := NewLLMParser(tp.Lang, tp.NoLLM, tp.Db, tp.ProjDir)
+		fn, err := llmParser.ParseFile(path)
+		if err != nil {
+			logs.Errorf("LLMParser 解析函数信息失败: %w", err)
+			return nil, err
+		}
+		funcs = append(funcs, fn...)
+		logs.Infof("LLMParser 解析函数信息成功，fn=%v", fn)
+	}
+	//}
 	return funcs, nil
 }
 
@@ -409,41 +428,28 @@ func (tp *TreeSitterParser) extractCalls(funcNode *sitter.Node, data []byte, lan
 	return filterBuiltInCalls(calls)
 }
 
-// --- NEW Method ---
-// extractPackageName 提取文件中的包或命名空间信息
 func (tp *TreeSitterParser) extractPackageName(rootNode *sitter.Node, data []byte, language *sitter.Language) string {
+	qc := sitter.NewQueryCursor()
 	var pkgQueryStr string
+	var classQueryStr string
+	var className string
+	var packageName string
 
+	// Step 1: Extract the package name based on language
 	switch tp.Lang {
 	case "go":
-		// Example: package main
 		pkgQueryStr = fmt.Sprintf(`(package_clause) @package`)
 	case "java":
-		// Example: package com.example.myapp;
-		// Handles simple and scoped identifiers
 		pkgQueryStr = fmt.Sprintf(`(package_declaration (scoped_identifier) @package)`)
 	case "cpp":
-		// Example: namespace MyNamespace { ... }
-		// Extracts the *first* namespace definition found. Might not always be the primary one.
-		// 只匹配 namespace_definition 的 name 字段，捕获 identifier 或者 nested_name_specifier
-		pkgQueryStr = `(namespace_definition 
-                          name: (_) @namespace
-                       )`
+		pkgQueryStr = `(namespace_definition name: (_) @namespace)`
 	case "php":
-		// Example: namespace App\Http\Controllers;
-		pkgQueryStr = fmt.Sprintf(`(namespace_definition) @namespace`) // Name node contains identifier(s)
+		pkgQueryStr = fmt.Sprintf(`(namespace_definition) @namespace`)
 	case "ruby":
-		// Example: module MyModule ... end
-		// Extracts the *first* module definition. Classes can also act as namespaces.
 		pkgQueryStr = fmt.Sprintf(`(module (constant) @namespace)`)
 	case "elixir":
-		// Example: defmodule MyApp.Web.MyController do ... end
-		// Extracts the main module defined with defmodule
-		// Alias usually holds the module name.
 		pkgQueryStr = "(module_definition name: (alias) @namespace)"
-	// --- Languages where package isn't typically declared in file syntax ---
 	case "python":
-		// Package is defined by directory structure and __init__.py
 		return "" // Cannot reliably extract from single file syntax
 	case "javascript", "typescript":
 		pkgQueryStr = `
@@ -451,48 +457,83 @@ func (tp *TreeSitterParser) extractPackageName(rootNode *sitter.Node, data []byt
 			(export_statement) @export
 		`
 	case "rust":
-		// Crate name defined in Cargo.toml, modules defined by `mod` or file structure
 		pkgQueryStr = "(mod_item) @module"
 	case "c", "bash":
-		// No built-in package/namespace concept in the same way
-		return ""
+		return "" // No package concept
 	default:
 		tp.debugLog("Package/namespace extraction not implemented for language: %s", tp.Lang)
 		return ""
 	}
 
-	// Execute the query if one was defined
-	if pkgQueryStr == "" {
-		return ""
+	// Step 2: Execute the query for package name extraction
+	if pkgQueryStr != "" {
+		tp.debugLog("Package query for %s: %s", tp.Lang, pkgQueryStr)
+		pkgQuery, err := sitter.NewQuery([]byte(pkgQueryStr), language)
+		if err != nil {
+			tp.debugLog("Error creating package query for %s: %v", tp.Lang, err)
+		} else {
+			qc.Exec(pkgQuery, rootNode)
+
+			// Extract the package name
+			if match, ok := qc.NextMatch(); ok {
+				for _, capture := range match.Captures {
+					packageName = capture.Node.Content(data)
+					tp.debugLog("Found package name: %s", packageName)
+					break
+				}
+			}
+		}
 	}
 
-	tp.debugLog("Package query for %s: %s", tp.Lang, pkgQueryStr)
-	pkgQuery, err := sitter.NewQuery([]byte(pkgQueryStr), language)
-	if err != nil {
-		tp.debugLog("Error creating package query for %s: %v", tp.Lang, err)
-		return "" // Query failed
+	// Step 3: Extract the class name (only for languages that have classes or modules)
+	switch tp.Lang {
+	case "java":
+		// Java classes are typically declared like `public class MyClass { ... }`
+		classQueryStr = `(class_declaration (identifier) @class)`
+	case "go":
+		classQueryStr = `(type_declaration (identifier) @class)`
+	case "cpp":
+		// C++ uses `class MyClass { ... };`
+		classQueryStr = `(class_specifier (name) @class)`
+	case "python":
+		// Python classes are declared using `class MyClass:`
+		classQueryStr = `(class_definition (identifier) @class)`
+	case "ruby":
+		// Ruby classes are defined using `class MyClass`
+		classQueryStr = `(class (constant) @class)`
+	case "javascript", "typescript":
+		// JavaScript classes are defined with `class MyClass { ... }`
+		classQueryStr = `(class_declaration (identifier) @class)`
+	default:
+		// No class definition query for other languages
 	}
 
-	qc := sitter.NewQueryCursor()
-	qc.Exec(pkgQuery, rootNode)
-
-	// Find the first match for the package/namespace declaration
-	match, ok := qc.NextMatch()
-	if !ok {
-		tp.debugLog("No package/namespace declaration found for %s", tp.Lang)
-		return "" // No match found
+	//tp.debugLog("Syntax tree: %s", rootNode.Content(data))
+	if classQueryStr != "" {
+		classQuery, err := sitter.NewQuery([]byte(classQueryStr), language)
+		if err != nil {
+			tp.debugLog("Error creating class query for %s: %v", tp.Lang, err)
+		} else {
+			qc.Exec(classQuery, rootNode)
+			// Extract the class name
+			if match, ok := qc.NextMatch(); ok {
+				tp.debugLog("Match found: %v", match)
+				for _, capture := range match.Captures {
+					className = capture.Node.Content(data)
+					tp.debugLog("Found class name: %s", className)
+					break
+				}
+			}
+		}
 	}
 
-	for _, capture := range match.Captures {
-		// Check if this capture is the one we named (e.g., "pkg_name")
-		packageName := capture.Node.Content(data)
-		// Optional: Clean up C++ nested namespace if needed, e.g., `A::B` -> `A::B`
-		// Optional: Clean up PHP namespace separator `\` if desired, though raw name is often fine.
-		tp.debugLog("Found package name: %s", packageName)
-		return packageName
+	// Step 4: Return the concatenated result "packageName::className"
+	if className != "" {
+		return fmt.Sprintf("%s::%s", packageName, className)
 	}
 
-	return "" // Match found, but the specific capture wasn't present (shouldn't usually happen with correct queries)
+	// If no class name is found, just return the package name
+	return packageName
 }
 
 // filterBuiltInCalls 根据内置白名单过滤掉系统内置函数调用，保留用户自定义调用
