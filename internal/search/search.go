@@ -23,6 +23,8 @@ type SearchResult struct {
 	Description string  // Function description
 	Score       float32 // Similarity score (综合得分)
 	CodeSnippet string  // 提取的代码片段（如果请求包含代码）
+	StartLine   int     // 代码片段的起始行
+	EndLine     int
 }
 
 // SearchOptions configures the search behavior.
@@ -39,6 +41,7 @@ type SearchEngine struct {
 	// For fallback text search
 	Descriptions map[int]string
 	ProjDir      string
+	Keywords     []string
 }
 
 // Searcher encapsulates different search implementations.
@@ -55,13 +58,39 @@ func NewSearcher(engine *SearchEngine) *Searcher {
 func (se *SearchEngine) Query(query string, opts SearchOptions) []SearchResult {
 	var results []SearchResult
 	var err error
+	if opts.SearchMode != "semantic" {
+		logs.Infof("Keywords llm search for query: %s", query)
+		// 1. 调用大模型拿到 Keywords JSON 数组字符串
+		keywordJsonArray, err := utils.DefaultModelCompletion(query)
+		tokens := []string{"```", "json", "```json"}
+		for _, v := range tokens {
+			if strings.Contains(keywordJsonArray, v) {
+				logs.Tokenf("(!remove: %v!)", v)
+				keywordJsonArray = strings.Replace(keywordJsonArray, v, "", 2)
+			}
+		}
+		if err != nil {
+			logs.Errorf("Failed to invoke keyword model: %v", err)
+		}
+		logs.Infof("Keyword JSON Array: %s", keywordJsonArray)
+		if keywordJsonArray == "" {
+			logs.Warnf("Keyword JSON Array is empty")
+		}
 
+		// 2. 反序列化到 []string
+		var keywords []string
+		if err := json.Unmarshal([]byte(keywordJsonArray), &keywords); err != nil {
+			logs.Errorf("Failed to unmarshal keyword JSON Array: %v", err)
+		}
+		se.Keywords = keywords
+	}
 	switch opts.SearchMode {
 	case "keyword":
 		results, err = keywordSearch(se, query, opts)
 	case "hybrid":
 		results, err = hybridSearch(se, query, opts)
 	default: // 默认使用语义搜索
+		logs.Infof("semantic llm search for query: %s", query)
 		results, err = semanticSearch(se, query, opts)
 	}
 	if err != nil {
@@ -78,7 +107,7 @@ func (se *SearchEngine) Query(query string, opts SearchOptions) []SearchResult {
 		fmt.Printf("- %s (Package: %s, File: %s) Score: %.3f\n", res.Name, res.Package, res.File, res.Score)
 		fmt.Printf("  Description: %s\n", res.Description)
 		if opts.IncludeCode && res.CodeSnippet != "" {
-			fmt.Printf("  Code Snippet:\n%s\n", res.CodeSnippet)
+			fmt.Printf(" Has Code Snippet.\n")
 		}
 	}
 	return results
@@ -86,8 +115,17 @@ func (se *SearchEngine) Query(query string, opts SearchOptions) []SearchResult {
 
 // semanticSearch performs vector similarity search using embeddings.
 func semanticSearch(se *SearchEngine, query string, opts SearchOptions) ([]SearchResult, error) {
-	// 使用 Ollama 的 embedding 计算查询向量
-	vector := SimpleEmbedding(query, se.Indexer.FaissIndex.Dimension())
+	var vector []float32
+	if opts.SearchMode != "semantic" {
+		se.Keywords = append(se.Keywords, query)
+		logs.Infof("semanticSearch 混合语义搜索: %s", se.Keywords)
+		// 使用 Ollama 的 embedding 计算查询向量
+		vector = SimpleEmbedding(strings.Join(se.Keywords, " "), se.Indexer.FaissIndex.Dimension())
+	} else {
+		logs.Infof("semanticSearch 语义搜索: %s", query)
+		// 使用 Ollama 的 embedding 计算查询向量
+		vector = SimpleEmbedding(query, se.Indexer.FaissIndex.Dimension())
+	}
 	// 使用 Faiss 搜索向量
 	funcIDs := se.Indexer.FaissIndex.SearchVectors(vector, opts.Limit)
 	if len(funcIDs) == 0 {
@@ -112,59 +150,71 @@ func semanticSearch(se *SearchEngine, query string, opts SearchOptions) ([]Searc
 
 // keywordSearch performs a SQL LIKE-based search.
 func keywordSearch(se *SearchEngine, query string, opts SearchOptions) ([]SearchResult, error) {
-	logs.Infof("Keyword search for query: %s", query)
-	keywordJsonArray, err := utils.DefaultModelCompletion(query)
-	if err != nil {
-		logs.Errorf("Failed to invoke keyword model: %v", err)
-		return nil, err
+	// 3. 构造模糊匹配的 WHERE 子句
+	//    同时包含原始 query 和大模型给出的每个 keyword
+	var (
+		conditions []string
+		args       []interface{}
+	)
+
+	// 把 query 也作为一个模糊匹配项
+	allTerms := append([]string{query}, se.Keywords...)
+	logs.Infof("All Terms: %v", allTerms)
+	for _, term := range allTerms {
+		pat := "%" + term + "%"
+		// 针对 name/package/description 三个字段都做 LIKE
+		conditions = append(conditions,
+			"name LIKE ?",
+			"package LIKE ?",
+			"description LIKE ?",
+		)
+		args = append(args, pat, pat, pat)
 	}
-	logs.Infof("Keyword JSON Array: %s", keywordJsonArray)
-	if keywordJsonArray == "" {
-		logs.Warnf("Keyword JSON Array is empty")
-	}
-	var keywords []string
-	// 反序列化
-	if err := json.Unmarshal([]byte(keywordJsonArray), &keywords); err != nil {
-		logs.Errorf("Failed to unmarshal keyword JSON Array: %v", err)
-	}
-	// 构建模糊匹配模式
-	pattern := "%" + query + "%"
-	sqlQuery := `
-		SELECT rowid, name, package, file, description, start_line, end_line 
-		FROM functions 
-		WHERE name LIKE ? OR package LIKE ? OR description LIKE ?
-		LIMIT ?`
-	rows, err := se.Indexer.DB.Query(sqlQuery, pattern, pattern, pattern, opts.Limit)
+
+	// LIMIT 参数
+	args = append(args, opts.Limit)
+
+	// 4. 动态拼接 SQL
+	sqlQuery := fmt.Sprintf(`
+        SELECT rowid, name, package, file, description, start_line, end_line
+        FROM functions
+        WHERE %s
+        LIMIT ?`,
+		strings.Join(conditions, " OR "),
+	)
+
+	// 5. 执行查询
+	rows, err := se.Indexer.DB.Query(sqlQuery, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	results := []SearchResult{}
+	// 6. 收集结果
+	var results []SearchResult
 	for rows.Next() {
-		var id int
-		var name, pkg, file, desc string
-		var startLine, endLine int
-		if err := rows.Scan(&id, &name, &pkg, &file, &desc, &startLine, &endLine); err != nil {
+		var r SearchResult
+		if err := rows.Scan(
+			&r.ID, &r.Name, &r.Package, &r.File,
+			&r.Description, &r.StartLine, &r.EndLine,
+		); err != nil {
+			logs.Errorf("Row scan error: %v", err)
 			continue
 		}
-		res := SearchResult{
-			ID:          id,
-			Name:        name,
-			Package:     pkg,
-			File:        file,
-			Description: desc,
-			// 关键词搜索的得分可以简单设置为1（或根据匹配次数计算）
-			Score: 1,
-		}
+
+		// 简单给一个固定分数，或者你也可以根据匹配次数累加
+		r.Score = 1
+
 		if opts.IncludeCode {
-			logs.Tokenf("正在获取代码片段: %s, %d, %d\n", file, startLine, endLine)
-			if snippet, err := getCodeSnippet(file, startLine, endLine, se.ProjDir); err == nil {
-				res.CodeSnippet = snippet
+			logs.Infof("Fetching code snippet: %s [%d:%d]", r.File, r.StartLine, r.EndLine)
+			if snippet, err := getCodeSnippet(r.File, r.StartLine, r.EndLine, se.ProjDir); err == nil {
+				r.CodeSnippet = snippet
 			}
 		}
-		results = append(results, res)
+
+		results = append(results, r)
 	}
+
 	return results, nil
 }
 
@@ -221,17 +271,17 @@ func hybridSearch(se *SearchEngine, query string, opts SearchOptions) ([]SearchR
 
 // SimpleEmbedding calls OllamaEmbedding to convert query text into an embedding vector.
 func SimpleEmbedding(query string, dim int) []float32 {
-	embedding, err := utils.OllamaEmbedding(query, dim)
+	embedding, err := utils.EmbeddingsList([]string{query}, dim)
 	if err != nil {
 		log.Printf("Ollama embedding error: %v, falling back to dummy embedding", err)
 		return dummyEmbedding(query, dim)
 	}
 	logs.Infof("Ollama embedding success:dim=%d", dim)
-	return embedding
+	return embedding[0]
 }
 
 func SimpleEmbeddingBatch(query []string, dim int) ([][]float32, error) {
-	embedding, err := utils.OllamaEmbeddingsList(query, dim)
+	embedding, err := utils.EmbeddingsList(query, dim)
 	if err != nil {
 		log.Printf("Ollama embedding error: %v, falling back to dummy embedding", err)
 		return nil, err
