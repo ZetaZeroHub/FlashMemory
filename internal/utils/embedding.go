@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/kinglegendzzh/flashmemory/config"
+	"github.com/kinglegendzzh/flashmemory/internal/cloud"
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"io/ioutil"
 	"net/http"
@@ -43,76 +44,15 @@ func getConfig() (*config.Config, error) {
 	return cfg, cfgErr
 }
 
-// OllamaEmbedding 调用 Ollama 的 embedding API 获取单条查询的向量
-func OllamaEmbedding(query string, dim int) ([]float32, error) {
+// EmbeddingsList 调用 Ollama 的 embedding API 获取多条查询的向量
+func EmbeddingsList(queries []string, dim int) ([][]float32, error) {
 	cfg, err := getConfig()
 	if cfg == nil || err != nil {
 		return nil, err
 	}
-
-	url := cfg.ApiBaseUrl + cfg.EmbeddingApi
-	payload := map[string]interface{}{
-		"model": cfg.EmbeddingModel,
-		"input": query,
-	}
-	jsonPayload, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("POST", url, strings.NewReader(string(jsonPayload)))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err = json.Unmarshal(body, &result); err != nil {
-		return nil, err
-	}
-
-	embeddingRaw, ok := result["embedding"]
-	if !ok {
-		return nil, fmt.Errorf("no embedding field in response")
-	}
-	embeddingSlice, ok := embeddingRaw.([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("embedding field is not a slice")
-	}
-	embedding := make([]float32, 0, len(embeddingSlice))
-	for _, v := range embeddingSlice {
-		if num, ok := v.(float64); ok {
-			embedding = append(embedding, float32(num))
-		}
-	}
-
-	// 保持长度与 dim 一致
-	if len(embedding) > dim {
-		embedding = embedding[:dim]
-	} else if len(embedding) < dim {
-		for i := len(embedding); i < dim; i++ {
-			embedding = append(embedding, 0)
-		}
-	}
-	return embedding, nil
-}
-
-// OllamaEmbeddingsList 调用 Ollama 的 embedding API 获取多条查询的向量
-func OllamaEmbeddingsList(queries []string, dim int) ([][]float32, error) {
-	cfg, err := getConfig()
-	if cfg == nil || err != nil {
-		return nil, err
+	if cfg.EmbeddingCloudModel.Enabled {
+		logs.Infof("Use Cloud Model: %s", cfg.EmbeddingCloudModel.Model)
+		return cloud.EmbeddingInvoke(&cfg.EmbeddingCloudModel, queries, dim)
 	}
 
 	url := cfg.ApiBaseUrl + cfg.EmbeddingApi
@@ -120,6 +60,7 @@ func OllamaEmbeddingsList(queries []string, dim int) ([][]float32, error) {
 		"model": cfg.EmbeddingModel,
 		"input": queries,
 	}
+	logs.Infof("EmbeddingsList: %s, %v", url, payload)
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -133,28 +74,31 @@ func OllamaEmbeddingsList(queries []string, dim int) ([][]float32, error) {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		logs.Errorf("Warn: [httpClient]no config file found or parse error, fallback to env or default. Err: %v", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		logs.Errorf("Warn: no config file found or parse error, fallback to env or default. Err: %v", err)
+		logs.Errorf("Warn: [ReadAll]no config file found or parse error, fallback to env or default. Err: %v", err)
 		return nil, err
 	}
 
 	var result map[string]interface{}
 	if err = json.Unmarshal(body, &result); err != nil {
-		logs.Errorf("Warn: no config file found or parse error, fallback to env or default. Err: %v", err)
+		logs.Errorf("Warn: [Unmarshal]no config file found or parse error, fallback to env or default. Err: %v", err)
 		return nil, err
 	}
 
 	raw, ok := result["embeddings"]
 	if !ok {
+		logs.Errorf("Warn: [result[\"embeddings\"]]no config file found or parse error, fallback to env or default. Err: %v", err)
 		return nil, fmt.Errorf("no embeddings field in response")
 	}
 	rawList, ok := raw.([]interface{})
 	if !ok {
+		logs.Errorf("Warn: [raw.([]interface{})]no config file found or parse error, fallback to env or default. Err: %v", err)
 		return nil, fmt.Errorf("embeddings field is not a list")
 	}
 
@@ -162,6 +106,7 @@ func OllamaEmbeddingsList(queries []string, dim int) ([][]float32, error) {
 	for i, item := range rawList {
 		sliceRaw, ok := item.([]interface{})
 		if !ok {
+			logs.Errorf("Warn: [sliceRaw, ok :=]no config file found or parse error, fallback to env or default. Err: %v", err)
 			return nil, fmt.Errorf("embeddings[%d] is not a list", i)
 		}
 		vec := make([]float32, 0, len(sliceRaw))
