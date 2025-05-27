@@ -44,7 +44,7 @@ func CheckPythonEnvironment(faissType, faissServiceDir string) error {
 	pythonCmd := "python3"
 	pipCmd := "pip"
 	if err != nil {
-		// 尝试python3命令
+		// 尝试python命令
 		cmd = exec.Command("python", "--version")
 		output, err = cmd.CombinedOutput()
 		if err != nil {
@@ -55,18 +55,9 @@ func CheckPythonEnvironment(faissType, faissServiceDir string) error {
 	}
 	log.Printf("检测到Python版本: %s", strings.TrimSpace(string(output)))
 
-	// 获取当前工作目录
-	if err != nil {
-		return fmt.Errorf("无法获取当前工作目录: %v", err)
-	}
-
 	// 构建虚拟环境目录路径
-
-	// 检查.env虚拟环境是否存在
 	envDir := filepath.Join(faissServiceDir, ".env")
 	envPython := filepath.Join(envDir, "bin", "python")
-
-	// 在Windows系统上路径会不同
 	if runtime.GOOS == "windows" {
 		envPython = filepath.Join(envDir, "Scripts", "python.exe")
 	}
@@ -83,18 +74,15 @@ func CheckPythonEnvironment(faissType, faissServiceDir string) error {
 	// 如果虚拟环境不存在，创建它
 	if !envExists {
 		log.Println("正在创建 .env 虚拟环境…（最多 1 分钟）")
-		// 这里加一个 1 分钟超时
 		if _, err := runCmdContext(faissServiceDir, pythonCmd, []string{"-m", "venv", ".env"}, time.Minute); err != nil {
 			return fmt.Errorf("创建 .env 虚拟环境失败: %v", err)
 		}
 		log.Println(".env 虚拟环境创建成功")
 	}
 
-	// 使用虚拟环境中的pip安装必要的库
-	requiredLibs := []string{"flask", "numpy"}
-
-	// 根据用户选择确定安装的faiss版本
-	faissLib := "faiss-cpu"
+	// 需要安装的基础库和Faiss库
+	requiredLibs := []string{"flask", "numpy", "flask_cors"}
+	faissLib := "faiss-cpu==1.10.0"
 	if faissType == "gpu" {
 		faissLib = "faiss-gpu"
 		log.Println("将安装GPU版本的Faiss (faiss-gpu)")
@@ -107,9 +95,9 @@ func CheckPythonEnvironment(faissType, faissServiceDir string) error {
 	}
 	requiredLibs = append(requiredLibs, faissLib)
 
-	// 先安装基础库（flask和numpy）
-	for _, lib := range requiredLibs[:2] {
-		// 检查库是否已安装在虚拟环境中
+	// 安装基础库
+	for _, lib := range requiredLibs[:3] {
+		// 检查库是否已安装
 		cmd = exec.Command(envPython, "-m", pipCmd, "list")
 		cmd.Dir = faissServiceDir
 		output, err = cmd.CombinedOutput()
@@ -117,14 +105,12 @@ func CheckPythonEnvironment(faissType, faissServiceDir string) error {
 			return fmt.Errorf("无法检查虚拟环境中的Python库: %v", err)
 		}
 
-		// 如果库未安装，则安装它
+		// 安装库
 		if !strings.Contains(string(output), lib) {
 			log.Printf("正在安装 %s...", lib)
-			cmd = exec.Command(envPython, "-m", pipCmd, "install", lib)
-			cmd.Dir = faissServiceDir
-			output, err = cmd.CombinedOutput()
+			out, err := runCmdContext(faissServiceDir, envPython, []string{"-m", pipCmd, "install", lib}, 10*time.Minute)
 			if err != nil {
-				return fmt.Errorf("安装 %s 失败: %v\n%s", lib, err, string(output))
+				return fmt.Errorf("安装 %s 失败: %v\n%s", lib, err, string(out))
 			}
 			log.Printf("%s 安装成功", lib)
 		} else {
@@ -132,42 +118,32 @@ func CheckPythonEnvironment(faissType, faissServiceDir string) error {
 		}
 	}
 
-	// 安装faiss库（可能是CPU或GPU版本）
+	// 安装Faiss库
 	lib := faissLib
-	// 检查faiss是否已安装
+	// 检查Faiss是否已安装
 	cmd = exec.Command(envPython, "-m", pipCmd, "list")
 	cmd.Dir = faissServiceDir
 	output, err = cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("无法检查虚拟环境中的Python库: %v", err)
 	}
-
-	// 检查是否已安装任何版本的faiss
 	faissInstalled := strings.Contains(string(output), "faiss")
 
-	// 如果未安装，则尝试安装指定版本
 	if !faissInstalled {
 		log.Printf("正在安装 %s...", lib)
-		cmd = exec.Command(envPython, "-m", pipCmd, "install", lib)
-		cmd.Dir = faissServiceDir
-		output, err = cmd.CombinedOutput()
-
-		// 如果安装GPU版本失败，尝试安装CPU版本
+		out, err := runCmdContext(faissServiceDir, envPython, []string{"-m", pipCmd, "install", lib}, time.Minute)
 		if err != nil && lib == "faiss-gpu" {
-			log.Printf("安装 %s 失败: %v\n%s", lib, err, string(output))
+			log.Printf("安装 %s 失败: %v\n%s", lib, err, string(out))
 			log.Println("尝试安装CPU版本 (faiss-cpu)...")
 
 			lib = "faiss-cpu"
-			cmd = exec.Command(envPython, "-m", pipCmd, "install", lib)
-			cmd.Dir = faissServiceDir
-			output, err = cmd.CombinedOutput()
+			out, err = runCmdContext(faissServiceDir, envPython, []string{"-m", pipCmd, "install", lib}, time.Minute)
 			if err != nil {
-				return fmt.Errorf("安装 %s 也失败: %v\n%s", lib, err, string(output))
+				return fmt.Errorf("安装 %s 也失败: %v\n%s", lib, err, string(out))
 			}
 		} else if err != nil {
-			return fmt.Errorf("安装 %s 失败: %v\n%s", lib, err, string(output))
+			return fmt.Errorf("安装 %s 失败: %v\n%s", lib, err, string(out))
 		}
-
 		log.Printf("%s 安装成功", lib)
 	} else {
 		log.Println("faiss 已安装在虚拟环境中")
@@ -231,4 +207,15 @@ func FilterJSONContent(result string) string {
 
 	// 如果没有找到匹配的 ```json 和 ```，返回原始结果
 	return result
+}
+
+func IsExcludedPath(path string, exclude []interface{}) bool {
+	//读取excludeJson中key=exclude的字符串数组判断path是否包含在内
+	for _, exc := range exclude {
+		if strings.Contains(path, exc.(string)) {
+			logs.Warnf("exclude path: %s", path)
+			return true
+		}
+	}
+	return false
 }
