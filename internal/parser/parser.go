@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"database/sql"
 	"path/filepath"
 	"strings"
 )
@@ -18,6 +19,9 @@ type FunctionInfo struct {
 	StartLine    int      // 函数的起始行号
 	EndLine      int      // 函数的结束行号
 	FunctionType string   // 函数类型（例如 "method"方法、"function"函数、"constructor"构造函数等）
+	Description  string
+	CodeSnippet  string
+	Scan         bool
 }
 
 // Parser is an interface to parse a file and extract functions and imports.
@@ -34,6 +38,8 @@ func DetectLang(path string) string {
 		return "go"
 	case ".py":
 		return "python"
+	case ".vue":
+		return "javascript"
 	case ".js", ".jsx":
 		return "javascript"
 	case ".ts", ".tsx":
@@ -57,9 +63,27 @@ func DetectLang(path string) string {
 // NewParser returns an appropriate Parser implementation for the given language.
 func NewParser(lang string) Parser {
 	switch lang {
-	case "go", "python", "javascript", "typescript", "java", "cpp", "c", "ruby", "rust", "bash", "elixir", "php":
+	case "go", "python", "javascript", "typescript", "java", "cpp", "c", "h", "ruby", "rust", "bash", "elixir", "php":
 		return &TreeSitterParser{Lang: lang, Debug: true}
 	default:
-		return &RegexParser{Lang: lang}
+		return &LLMParser{Lang: lang}
+	}
+}
+
+func NewParserDb(lang string, db *sql.DB, projDir string) Parser {
+	switch lang {
+	case "go", "python", "javascript", "typescript", "java", "cpp", "c", "h", "ruby", "rust", "bash", "elixir", "php":
+		return &TreeSitterParser{Lang: lang, Debug: true, Db: db, ProjDir: projDir}
+	default:
+		return &LLMParser{Lang: lang, Db: db, ProjDir: projDir}
+	}
+}
+
+func NewParserNoLLM(lang string) Parser {
+	switch lang {
+	case "go", "python", "javascript", "typescript", "java", "cpp", "c", "h", "ruby", "rust", "bash", "elixir", "php":
+		return &TreeSitterParser{Lang: lang, Debug: true, NoLLM: true}
+	default:
+		return &LLMParser{Lang: lang, NoLLM: true}
 	}
 }
