@@ -691,17 +691,43 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 	return nil
 }
 
-func ListGraph(projDir string) (err error) {
+func ListGraph(projDir, subPath string) (err error) {
+	gitgoDir := filepath.Join(projDir, ".gitgo")
+	if e := os.MkdirAll(gitgoDir, 0755); e != nil {
+		return fmt.Errorf("创建索引目录失败: %w", e)
+	}
+	tempFilePath := filepath.Join(gitgoDir, "indexing.temp")
+	// 如果 temp 文件已存在，说明已有索引进程在运行
+	if _, err := os.Stat(tempFilePath); err == nil {
+		logs.Warnf("索引已运行，跳过索引...")
+	} else if !os.IsNotExist(err) {
+		logs.Warnf("索引临时文件已存在，跳过索引...")
+	}
+
+	// 创建临时文件，标记开始索引
+	f, err := os.Create(tempFilePath)
+	if err != nil {
+		logs.Warnf("创建索引临时文件失败 %q: %v", tempFilePath, err)
+	}
+	f.Close()
 	var files []string
-	// 全量索引模式：遍历整个项目目录
-	log.Println("全量索引模式：遍历整个项目目录")
-	err = filepath.Walk(projDir, func(path string, info os.FileInfo, err error) error {
+	var totalPath string
+	// 如果提供了子路径，则更新 projDir 路径
+	if subPath != "" {
+		totalPath = filepath.Join(projDir, subPath)
+		logs.Infof("更新 projDir + subPath 路径为: %s", totalPath)
+	}
+
+	// 全量索引模式：遍历整个项目目录，或者子路径中的文件
+	log.Printf("遍历路径: %s", totalPath)
+	err = filepath.Walk(totalPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
+		// 如果是目录，进行排除处理
 		if info.IsDir() {
 			// 跳过exclude.json中指定的路径
-			excludeFile := filepath.Join(projDir, ".gitgo", "exclude.json")
+			excludeFile := filepath.Join(totalPath, ".gitgo", "exclude.json")
 			jsonFile, err := utils.ReadJSONArrayFile(excludeFile)
 			if err == nil {
 				if utils.IsExcludedPath(path, jsonFile) {
@@ -723,18 +749,26 @@ func ListGraph(projDir string) (err error) {
 		}
 		return nil
 	})
+
+	if err != nil {
+		return fmt.Errorf("遍历目录时发生错误: %w", err)
+	}
+
+	// 初始化索引DB
 	db, err := index.EnsureIndexDB(projDir)
 	if err != nil {
 		return fmt.Errorf("初始化索引DB失败: %w", err)
 	}
 	defer db.Close()
+
 	var allFuncs []parser.FunctionInfo
+	// 遍历文件并解析
 	for _, file := range files {
 		lang := parser.DetectLang(file)
 		if lang == "" {
 			continue
 		}
-		p := parser.NewParser(lang)
+		p := parser.NewParserDb(lang, db, projDir)
 		funcs, err := p.ParseFile(file)
 		if err != nil {
 			log.Printf("Error parsing file %s: %v\n", file, err)
@@ -744,17 +778,26 @@ func ListGraph(projDir string) (err error) {
 	}
 	fmt.Printf("Parsed %d files, extracted %d functions.\n", len(files), len(allFuncs))
 	log.Println("正在分析代码...")
+
 	// 3. 分析函数（考虑依赖关系顺序）
 	llmAnalyzer := analyzer.NewLLMAnalyzerHttp(&sync.Map{}, true, 3, db, projDir)
-	results := llmAnalyzer.LoadAll(allFuncs)
+	results := llmAnalyzer.AnalyzeAll(allFuncs)
 	fmt.Printf("Analyzed %d functions with AI summaries.\n", len(results))
 	log.Println("正在构建知识图谱...")
+
 	// 4. 构建知识图谱
 	kg := graph.BuildGraph(results)
 	// （可选）保存图结构用于调试
-	err = kg.SaveGraphJSON(filepath.Join(projDir, ".gitgo", "graph.json"))
+	err = kg.SaveGraphJSONOnlyFunctions(filepath.Join(projDir, ".gitgo", "graph.json"))
 	// 12. （可选） 展示统计
 	visualize.PrintStats(visualize.ComputePackageStats(kg))
+	// 确保退出时删除临时文件
+	defer func() {
+		if err := os.Remove(tempFilePath); err != nil && !os.IsNotExist(err) {
+			log.Printf("删除索引临时文件失败 %q: %v", tempFilePath, err)
+		}
+		logs.Infof("索引完成，已删除索引临时文件 %q", tempFilePath)
+	}()
 	return err
 }
 
