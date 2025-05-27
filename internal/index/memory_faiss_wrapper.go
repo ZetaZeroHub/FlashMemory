@@ -2,6 +2,7 @@ package index
 
 import (
 	"fmt"
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -224,6 +225,7 @@ func (fw *MemoryFaissWrapper) SaveToFile(path string) error {
 
 // LoadFromFile 从文件加载索引
 func (fw *MemoryFaissWrapper) LoadFromFile(path string) error {
+	logs.Infof("MemoryFaissWrapper Loading index from %s", path)
 	// 从简单的文本文件加载（仅支持基本格式）
 	file, err := os.Open(path)
 	if err != nil {
