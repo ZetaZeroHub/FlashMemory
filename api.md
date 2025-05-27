@@ -1,4 +1,4 @@
-以下是基于新版接口的完整 RESTful API 文档，所有请求均需在 JSON Body 中提供 **project_dir**，以支持任意目录下的子项目操作。
+_以下是基于新版接口的完整 RESTful API 文档，所有请求均需在 JSON Body 中提供 **project_dir**，以支持任意目录下的子项目操作。
 
 ---
 
@@ -61,7 +61,7 @@ export PORT="5532"
   {
     "project_dir":  "/path/to/project",  // 必填：项目根路径
     "query":        "文件上传",           // 必填：查询关键词
-    "search_mode":  "semantic",           // 可选：semantic|keyword|hybrid，默认 semantic
+    "search_mode":  "semantic",           // 可选：semantic|keyword|hybrid，默认 hybrid
     "limit":        5                     // 可选：结果条数，默认 5
   }
   ```
@@ -107,7 +107,6 @@ export PORT="5532"
   ```json
   {
     "project_dir":  "/path/to/project",  // 必填：项目根路径
-    "relative_dir": "src/utils"          // 可选：子目录，相对于 project_dir
   }
   ```
 - **响应示例**
@@ -131,8 +130,7 @@ export PORT="5532"
     -X POST http://localhost:5532/api/functions \
     -H 'Content-Type: application/json' \
     -d '{
-      "project_dir":  "/Users/me/myproj",
-      "relative_dir": "src/utils"
+      "project_dir":  "/Users/me/myproj"
     }'
   ```
 
@@ -267,4 +265,4 @@ export PORT="5532"
 > - 调用前请确保环境变量 `API_USER`、`API_PASS`、`FAISS_SERVICE_PATH` 已设置。
 > - 各接口返回的 `data` 结构请参照上述示例。
 > - FAISS 服务可通过 `utils.StartFaissService` 在 Go 启动时自动拉起，或提前手动启动。
-> - 如果未提前手动启动，服务启动后会自动寻找并启动该目录下的 `faiss_server.py`。
+> - 如果未提前手动启动，服务启动后会自动寻找并启动该目录下的 `faiss_server.py`。_
