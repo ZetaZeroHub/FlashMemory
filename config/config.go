@@ -6,19 +6,34 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/spf13/viper"
 
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
-var GlobalConfigPath string
+var (
+	// 通过 -config 或 -c 指定的配置文件路径
+	GlobalConfigPath string
+
+	// 全局唯一的配置对象
+	GlobalOllamaConfig *Config
+
+	// 保证只执行一次加载
+	loadConfigOnce sync.Once
+
+	// 第一次加载时的错误
+	loadConfigErr error
+)
+
 var GitManage string
 
-func Init(f flag.FlagSet) string {
+func Init() string {
 	// 通过命令行参数 -path 获取配置文件路径
-	f.StringVar(&GlobalConfigPath, "config", "", "配置文件路径")
-	f.StringVar(&GlobalConfigPath, "c", "", "配置文件路径")
+	flag.StringVar(&GlobalConfigPath, "config", "", "配置文件路径")
+	flag.StringVar(&GlobalConfigPath, "c", "", "配置文件路径")
+	flag.Parse()
 	logs.Infof("当前配置文件路径: %s", GlobalConfigPath)
 	// 可选：对传入的路径做校验或转换为绝对路径
 	//if GlobalConfigPath == "" {
@@ -33,73 +48,109 @@ func Init(f flag.FlagSet) string {
 	return GlobalConfigPath
 }
 
+type CloudModel struct {
+	Api         string  `mapstructure:"api" json:"api" yaml:"api"`
+	Model       string  `mapstructure:"model" json:"model" yaml:"model"`
+	Url         string  `mapstructure:"url" json:"url" yaml:"url"`
+	Enabled     bool    `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
+	Type        string  `mapstructure:"type" json:"type" yaml:"type"`
+	MaxPrompts  int     `mapstructure:"max_prompts" json:"max_prompts" yaml:"max_prompts"`
+	Temperature float32 `mapstructure:"temperature" yaml:"temperature" json:"temperature,omitempty"`
+}
+
 type ModelConfig struct {
-	Name             string `mapstructure:"name" yaml:"name" json:"name,omitempty"`
-	MaxTokens        int    `mapstructure:"max_tokens" yaml:"max_tokens" json:"max_tokens,omitempty"`
-	NumCtx           int    `mapstructure:"num_ctx" yaml:"num_ctx" json:"num_ctx,omitempty"`
-	NumKeep          int    `mapstructure:"num_keep" yaml:"num_keep" json:"num_keep,omitempty"`
-	NumPredict       int    `mapstructure:"num_predict" yaml:"num_predict" json:"num_predict,omitempty"`
-	RepeatLastN      int    `mapstructure:"repeat_last_n" yaml:"repeat_last_n" json:"repeat_last_n,omitempty"`
-	PresencePenalty  int    `mapstructure:"presence_penalty" yaml:"presence_penalty" json:"presence_penalty,omitempty"`
-	FrequencyPenalty int    `mapstructure:"frequency_penalty" yaml:"frequency_penalty" json:"frequency_penalty,omitempty"`
-	Format           string `mapstructure:"format" yaml:"format" json:"format,omitempty"`
-	PromptLength     int    `mapstructure:"prompt_length" yaml:"prompt_length" json:"prompt_length,omitempty"`
+	Name             string     `mapstructure:"name" yaml:"name" json:"name,omitempty"`
+	MaxTokens        int        `mapstructure:"max_tokens" yaml:"max_tokens" json:"max_tokens,omitempty"`
+	NumCtx           int        `mapstructure:"num_ctx" yaml:"num_ctx" json:"num_ctx,omitempty"`
+	NumKeep          int        `mapstructure:"num_keep" yaml:"num_keep" json:"num_keep,omitempty"`
+	NumPredict       int        `mapstructure:"num_predict" yaml:"num_predict" json:"num_predict,omitempty"`
+	RepeatLastN      int        `mapstructure:"repeat_last_n" yaml:"repeat_last_n" json:"repeat_last_n,omitempty"`
+	PresencePenalty  int        `mapstructure:"presence_penalty" yaml:"presence_penalty" json:"presence_penalty,omitempty"`
+	FrequencyPenalty int        `mapstructure:"frequency_penalty" yaml:"frequency_penalty" json:"frequency_penalty,omitempty"`
+	Format           string     `mapstructure:"format" yaml:"format" json:"format,omitempty"`
+	PromptLength     int        `mapstructure:"prompt_length" yaml:"prompt_length" json:"prompt_length,omitempty"`
+	Size             string     `mapstructure:"size" yaml:"size" json:"size,omitempty"`
+	Temperature      float32    `mapstructure:"temperature" yaml:"temperature" json:"temperature,omitempty"`
+	CloudModel       CloudModel `mapstructure:"cloud_model" yaml:"cloud_model" json:"cloud_model,omitempty"`
+}
+type AnaPrompts struct {
+	Role         string `mapstructure:"role" yaml:"role" json:"role,omitempty"`
+	InternalDeps string `mapstructure:"internal_deps" yaml:"internal_deps" json:"internal_deps,omitempty"`
+	ExternalDeps string `mapstructure:"external_deps" yaml:"external_deps" json:"external_deps,omitempty"`
+	Main         string `mapstructure:"main" yaml:"main" json:"main,omitempty"`
+}
+
+type KeywordPrompts struct {
+	System string `mapstructure:"system" yaml:"system" json:"system,omitempty"`
+	User   string `mapstructure:"user" yaml:"user" json:"user,omitempty"`
 }
 
 type Config struct {
-	ApiBaseUrl     string        `mapstructure:"api_base_url" yaml:"api_base_url" json:"api_base_url,omitempty"`
-	CompletionApi  string        `mapstructure:"completion_api" yaml:"completion_api" json:"completion_api,omitempty"`
-	EmbeddingApi   string        `mapstructure:"embedding_api" yaml:"embedding_api" json:"embedding_api,omitempty"`
-	DefaultModel   string        `mapstructure:"default_model" yaml:"default_model" json:"default_model,omitempty"`
-	DefaultFormat  string        `mapstructure:"default_format" yaml:"default_format" json:"default_format,omitempty"`
-	DefaultTemp    float64       `mapstructure:"default_temperature" yaml:"default_temperature" json:"default_temp,omitempty"`
-	DefaultLowVram bool          `mapstructure:"default_low_vram" yaml:"default_low_vram" json:"default_low_vram,omitempty"`
-	NormalizeModel string        `mapstructure:"normalize_model" yaml:"normalize_model" json:"normalize_model,omitempty"`
-	EmbeddingModel string        `mapstructure:"embedding_model" yaml:"embedding_model" json:"embedding_model,omitempty"`
-	ModelConfigs   []ModelConfig `mapstructure:"model_configs" yaml:"model_configs" json:"model_configs,omitempty"`
+	LlmParserPrompts     string         `mapstructure:"llm_parser_prompts" yaml:"llm_parser_prompts" json:"llm_parser_prompts,omitempty"`
+	AnaPrompts           AnaPrompts     `mapstructure:"ana_prompts" yaml:"ana_prompts" json:"ana_prompts,omitempty"`
+	KeywordPrompts       KeywordPrompts `mapstructure:"keyword_prompts" yaml:"keyword_prompts" json:"keyword_prompts,omitempty"`
+	ApiBaseUrl           string         `mapstructure:"api_base_url" yaml:"api_base_url" json:"api_base_url,omitempty"`
+	CompletionApi        string         `mapstructure:"completion_api" yaml:"completion_api" json:"completion_api,omitempty"`
+	EmbeddingApi         string         `mapstructure:"embedding_api" yaml:"embedding_api" json:"embedding_api,omitempty"`
+	DefaultModel         string         `mapstructure:"default_model" yaml:"default_model" json:"default_model,omitempty"`
+	DefaultFormat        string         `mapstructure:"default_format" yaml:"default_format" json:"default_format,omitempty"`
+	DefaultTemp          float64        `mapstructure:"default_temperature" yaml:"default_temperature" json:"default_temp,omitempty"`
+	DefaultLowVram       bool           `mapstructure:"default_low_vram" yaml:"default_low_vram" json:"default_low_vram,omitempty"`
+	NormalizeModel       string         `mapstructure:"normalize_model" yaml:"normalize_model" json:"normalize_model,omitempty"`
+	EmbeddingModel       string         `mapstructure:"embedding_model" yaml:"embedding_model" json:"embedding_model,omitempty"`
+	EmbeddingMaxBatch    int            `mapstructure:"embedding_max_batch" yaml:"embedding_max_batch" json:"embedding_max_batch,omitempty"`
+	EmbeddingMaxWorker   int            `mapstructure:"embedding_max_worker" yaml:"embedding_max_worker" json:"embedding_max_worker,omitempty"`
+	EmbeddingCloudModel  CloudModel     `mapstructure:"embedding_cloud_model" yaml:"embedding_cloud_model" json:"embedding_cloud_model,omitempty"`
+	DefaultCloudModel    CloudModel     `mapstructure:"default_cloud_model" yaml:"default_cloud_model" json:"default_cloud_model,omitempty"`
+	ModelConfigs         []ModelConfig  `mapstructure:"model_configs" yaml:"model_configs" json:"model_configs,omitempty"`
+	CodeLimit            int            `mapstructure:"code_limit" yaml:"code_limit" json:"code_limit,omitempty"`
+	PromptLimit          int            `mapstructure:"prompt_limit" yaml:"prompt_limit" json:"prompt_limit,omitempty"`
+	ParserCodeLineLimit  int            `mapstructure:"parser_code_line_limit" yaml:"parser_code_line_limit" json:"parser_code_line_limit,omitempty"`
+	ParserCodeChunkLimit int            `mapstructure:"parser_code_chunk_limit" yaml:"parser_code_chunk_limit" json:"parser_code_chunk_limit,omitempty"`
 }
 
-var GlobalOllamaConfig *Config
-
-// LoadConfig 优先从文件加载，如果失败则回退到环境变量或默认值
+// LoadConfig 加载配置（优先文件，其次环境变量），并保证仅加载一次
 func LoadConfig() (*Config, error) {
-	vp := viper.New()
-	vp.AutomaticEnv()
+	loadConfigOnce.Do(func() {
+		vp := viper.New()
+		vp.AutomaticEnv()
 
-	configPath := os.Getenv("BOTGO_CONFIG_PATH")
-	if GlobalConfigPath != "" {
-		configPath = GlobalConfigPath
-	}
-	if configPath != "" {
-		if strings.HasSuffix(configPath, ".yaml") || strings.HasSuffix(configPath, ".yml") || strings.HasSuffix(configPath, ".json") {
-			vp.SetConfigFile(configPath)
+		// 优先使用命令行参数或环境变量指定路径
+		configPath := os.Getenv("BOTGO_CONFIG_PATH")
+		if GlobalConfigPath != "" {
+			configPath = GlobalConfigPath
+		}
+		if configPath != "" {
+			if strings.HasSuffix(configPath, ".yaml") ||
+				strings.HasSuffix(configPath, ".yml") ||
+				strings.HasSuffix(configPath, ".json") {
+				vp.SetConfigFile(configPath)
+			} else {
+				vp.SetConfigName("fm")
+				vp.AddConfigPath(configPath)
+			}
 		} else {
-			// 如果传入的是目录，则在该目录下查找配置文件
-			vp.SetConfigName("config")
-			vp.AddConfigPath(configPath)
+			// 默认在可执行文件目录和当前目录查找
+			vp.SetConfigName("fm")
+			if exePath, err := os.Executable(); err == nil {
+				vp.AddConfigPath(filepath.Dir(exePath))
+			}
+			vp.AddConfigPath(".")
 		}
-	} else {
-		// 默认逻辑：先尝试从可执行文件所在目录加载配置，再从当前工作目录加载
-		vp.SetConfigName("config")
-		exePath, err := os.Executable()
-		if err == nil {
-			exeDir := filepath.Dir(exePath)
-			vp.AddConfigPath(exeDir)
+
+		// 读取配置文件（可选）
+		if err := vp.ReadInConfig(); err != nil {
+			fmt.Println("Warn: no config file found or parse error, fallback to env or default. Err:", err)
 		}
-		vp.AddConfigPath(".")
-	}
 
-	err := vp.ReadInConfig()
-	if err != nil {
-		fmt.Println("Warn: no config file found or parse error, fallback to env or default. Err:", err)
-	}
-
-	var cfg Config
-	if err == nil {
-		if err = vp.Unmarshal(&cfg); err != nil {
-			return nil, fmt.Errorf("unmarshal config file error: %v", err)
+		// 反序列化到 Config 结构体
+		var cfg Config
+		if err := vp.Unmarshal(&cfg); err != nil {
+			loadConfigErr = fmt.Errorf("unmarshal config file error: %v", err)
+			return
 		}
-	}
+		GlobalOllamaConfig = &cfg
+	})
 
-	return &cfg, nil
+	return GlobalOllamaConfig, loadConfigErr
 }
