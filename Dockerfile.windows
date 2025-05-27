@@ -1,0 +1,37 @@
+### 多阶段构建 Windows 容器 Dockerfile
+# 第一阶段：编译
+FROM mcr.microsoft.com/windows/nanoserver:ltsc2022 AS builder
+
+# 安装 Go
+RUN powershell -NoProfile -Command \
+    Invoke-WebRequest -Uri https://golang.org/dl/go1.23.windows-amd64.zip -OutFile go.zip; \
+    Expand-Archive go.zip -DestinationPath C:\; \
+    Remove-Item go.zip; \
+    setx /M PATH "%PATH%;C:\go\\bin"
+
+WORKDIR C:\app
+
+# 复制模块文件并下载依赖
+COPY go.mod go.sum .
+RUN go mod download
+
+# 复制所有源码
+COPY . .
+
+# 设置环境变量并编译（禁用 cgo）
+ENV GOOS=windows \
+    GOARCH=amd64 \
+    CGO_ENABLED=0
+RUN go build -o fm_http.exe cmd/app/fm_http.go
+RUN go build -o fm.exe     cmd/main/fm.go
+
+# 第二阶段：运行
+FROM mcr.microsoft.com/windows/nanoserver:ltsc2022
+WORKDIR C:\app
+
+# 拷贝可执行文件
+COPY --from=builder C:\app\fm_http.exe .
+COPY --from=builder C:\app\fm.exe      .
+
+# 默认执行
+ENTRYPOINT ["C:\\app\\fm_http.exe"]
