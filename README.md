@@ -4,14 +4,14 @@
 
 ```shell
 cd ~/Public/openProject
-go run flashmemory/cmd/main/main.go -query 'getEnvPythonPath'
+go run flashmemory/cmd/main/fm.go -query 'getEnvPythonPath' -faiss_path '/Users/apple/Public/openProject/flashmemory/cmd/main/FAISSService' -dir '/Users/apple/Public/openProject/flashmemory' -file 'config'
 ```
 
 ## 扫描本项目
 
 ```shell
 cd /Users/apple/Public/openProject/flashmemory
-go run cmd/main/main.go -query 'getEnvPythonPath' -faiss_path '/Users/apple/Public/openProject/flashmemory/cmd/main/FAISSService'
+go run cmd/main/fm.go -query 'getEnvPythonPath' -faiss_path '/Users/apple/Public/openProject/flashmemory/cmd/main/FAISSService'
 ```
 
 ```shell
@@ -144,65 +144,65 @@ FlashMemory 是一个跨语言代码分析和语义搜索系统，具有以下�
 ```bash
 # 更新指定文件并关联到develop分支
 
-go run cmd/main/main.go -dir /path/to/project -file src/utils/logger.go -branch develop
+go run cmd/main/fm.go -dir /path/to/project -file src/utils/logger.go -branch develop
 
 # 指定commit更新特定文件夹
 
-go run cmd/main/main.go -dir /path/to/project -file config/ -commit 8a3b1f2 -branch feature-auth
+go run cmd/main/fm.go -dir /path/to/project -file config/ -commit 8a3b1f2 -branch feature-auth
 ```
 
 基本索引：
 
 ```bash
-go run flashmemory/cmd/main/main.go -dir /path/to/project
+go run flashmemory/cmd/main/fm.go -dir /path/to/project
 ```
 
 索引并查询：
 
 ```bash
-go run flashmemory/cmd/main/main.go -dir /path/to/project -query "如何处理文件上传"
+go run flashmemory/cmd/main/fm.go -dir /path/to/project -query "如何处理文件上传"
 ```
 
 强制全量索引：
 
 ```bash
-go run flashmemory/cmd/main/main.go -dir /path/to/project -force_full
+go run flashmemory/cmd/main/fm.go -dir /path/to/project -force_full
 ```
 
 指定分支和提交：
 
 ```bash
-go run flashmemory/cmd/main/main.go -dir /path/to/project -branch develop -commit abc123
+go run flashmemory/cmd/main/fm.go -dir /path/to/project -branch develop -commit abc123
 ```
 
 增量索引（仅更新变更文件）：
 
 ```bash
-go run flashmemory/cmd/main/main.go -dir /path/to/project
+go run flashmemory/cmd/main/fm.go -dir /path/to/project
 ```
 
 混合搜索模式（语义+关键词）：
 
 ```bash
-go run flashmemory/cmd/main/main.go -dir /path/to/project -query "文件上传" -search_mode hybrid
+go run flashmemory/cmd/main/fm.go -dir /path/to/project -query "文件上传" -search_mode hybrid
 ```
 
 GPU加速索引（需要CUDA环境）：
 
 ```bash
-go run flashmemory/cmd/main/main.go -dir /path/to/project -faiss gpu
+go run flashmemory/cmd/main/fm.go -dir /path/to/project -faiss gpu
 ```
 
 仅查询模式（使用已有索引）：
 
 ```bash
-go run flashmemory/cmd/main/main.go -dir /path/to/project -query "文件上传" -query_only
+go run flashmemory/cmd/main/fm.go -dir /path/to/project -query "文件上传" -query_only
 ```
 
 自定义FAISS索引路径：
 
 ```bash
-go run flashmemory/cmd/main/main.go -dir /path/to/project -faiss_path /custom/path/to/faiss_index
+go run flashmemory/cmd/main/fm.go -dir /path/to/project -faiss_path /custom/path/to/faiss_index
 ```
 
 ## 注意事项
