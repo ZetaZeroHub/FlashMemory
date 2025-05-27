@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kinglegendzzh/flashmemory/internal/analyzer"
@@ -53,10 +54,15 @@ func main() {
 	// 指定FAISSService目录的绝对路径
 	faissServicePath := flag.String("faiss_path", "", "指定FAISSService目录的绝对路径，优先级最高")
 	filePath := flag.String("file", "", "指定要定量更新的文件或文件夹，如果记录已存在则更新，否则新增")
+	useFaiss := flag.Bool("use_faiss", false, "指定要定量更新的文件或文件夹，如果记录已存在则更新，否则新增")
 	flag.Parse()
 
 	// 获取FAISSService目录的路径
 	var faissServiceDir string
+	ext := ".local"
+	if *useFaiss {
+		ext = ".faiss"
+	}
 
 	// （优先级最高）从命令行参数获取绝对路径
 	if *faissServicePath != "" {
@@ -119,7 +125,7 @@ func main() {
 	}
 
 	// 检查Python环境
-	if err := utils.CheckPythonEnvironment(*faissType); err != nil {
+	if err := utils.CheckPythonEnvironment(*faissType, faissServiceDir); err != nil {
 		log.Fatalf("Python环境检查失败: %v", err)
 	}
 
@@ -156,7 +162,7 @@ func main() {
 
 	// 索引文件路径
 	indexDBPath := filepath.Join(gitgoDir, "code_index.db")
-	faissIndexPath := filepath.Join(gitgoDir, "code_index.faiss")
+	faissIndexPath := filepath.Join(gitgoDir, "code_index"+ext)
 	//faissMetaPath := filepath.Join(gitgoDir, "code_index.faiss.meta")
 
 	// 检查是否为仅查询模式
@@ -196,7 +202,7 @@ func main() {
 		faissOptions := map[string]interface{}{
 			"storage_path": absGitgoDir,
 			"server_url":   index.DefaultFaissServerURL,
-			"index_id":     "code_index",
+			"index_id":     projDir,
 		}
 		idx := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapper(128, faissOptions)}
 
@@ -206,7 +212,7 @@ func main() {
 			log.Fatalf("加载现有Faiss索引失败: %v", err)
 		}
 
-		err = back.EnsureEmbeddings(idx, gitgoDir, *projDir)
+		err = back.EnsureEmbeddingsBatch(idx)
 		if err != nil {
 			log.Fatalf("加载嵌入向量失败: %v", err)
 		}
@@ -538,7 +544,8 @@ func main() {
 	var files []string
 	if *filePath != "" {
 		log.Println("选择性更新模式：使用 -file 参数指定的文件/文件夹")
-		info, err := os.Stat(*filePath)
+		fullPath := filepath.Join(*projDir, *filePath)
+		info, err := os.Stat(fullPath)
 		if err != nil {
 			log.Fatalf("无法访问指定的 -file 路径: %v", err)
 		}
@@ -549,7 +556,7 @@ func main() {
 		}
 		defer db.Close()
 		if info.IsDir() {
-			err = filepath.Walk(*filePath, func(path string, info os.FileInfo, err error) error {
+			err = filepath.Walk(fullPath, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
 					return err
 				}
@@ -562,11 +569,16 @@ func main() {
 				ext := filepath.Ext(path)
 				if utils.Contains(SupportedLanguages, ext) {
 					// 删除该文件的旧索引记录
-					n, err := db.Exec("DELETE FROM functions WHERE file like ?", path+"%")
+					relPath, err := filepath.Rel(*projDir, path)
+					relPath = filepath.ToSlash(relPath)
+					if err != nil {
+						return fmt.Errorf("获取 %s 相对于 %s 的相对路径失败: %w", fullPath, projDir, err)
+					}
+					n, err := db.Exec("DELETE FROM functions WHERE file like ?", relPath+"%")
 					if err != nil {
 						log.Printf("删除文件 %s 的索引记录失败: %v", path, err)
 					} else {
-						log.Printf("已删除文件 %s 的索引记录, %s", path, n)
+						log.Printf("已删除文件 %s(%s) 的索引记录, %s", path, relPath, n)
 					}
 					files = append(files, path)
 				}
@@ -653,7 +665,7 @@ func main() {
 
 	log.Println("正在分析代码...")
 	// 3. 分析函数（考虑依赖关系顺序）
-	llmAnalyzer := analyzer.NewLLMAnalyzer(map[string]string{}, true, 3)
+	llmAnalyzer := analyzer.NewLLMAnalyzer(&sync.Map{}, true, 3)
 	results := llmAnalyzer.AnalyzeAll(allFuncs)
 	fmt.Printf("Analyzed %d functions with AI summaries.\n", len(results))
 
@@ -681,10 +693,10 @@ func main() {
 	faissOptions := map[string]interface{}{
 		"storage_path": absGitgoDir,
 		"server_url":   index.DefaultFaissServerURL, // 使用默认的Faiss HTTP服务URL
-		"index_id":     "code_index",                // 设置一个有意义的索引ID
+		"index_id":     projDir,                     // 设置一个有意义的索引ID
 	}
 	idx := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapper(128, faissOptions)} // 假设128维向量
-	err = idx.SaveAnalysisToDB(results)
+	err = idx.SaveAnalysisToDBHttp(results, *projDir)
 	if err != nil {
 		log.Fatalf("保存分析结果到数据库失败: %v", err)
 	}
@@ -700,10 +712,10 @@ func main() {
 	}
 
 	// 为每个分析结果添加向量
-	for id, res := range results {
-		// 获取res.Description的嵌入向量
-		vec := search.SimpleEmbedding(res.Description, idx.FaissIndex.Dimension())
-		idx.FaissIndex.AddVector(id+1, vec) // SQLite行ID从1开始
+	err = back.EnsureEmbeddingsBatch(idx)
+	if err != nil {
+		log.Printf("为函数添加向量失败: %v", err)
+		return
 	}
 
 	// 保存索引到文件
