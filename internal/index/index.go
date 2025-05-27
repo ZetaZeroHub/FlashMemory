@@ -3,6 +3,7 @@ package index
 import (
 	"database/sql"
 	"fmt"
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"log"
 	"math"
 	"os"
@@ -58,6 +59,14 @@ CREATE TABLE IF NOT EXISTS externals (
 	if err != nil {
 		return nil, err
 	}
+	// 为 functions 表添加唯一索引，避免重复插入
+	_, err = db.Exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_func_unique
+  ON functions(name, package, file, start_line, end_line, function_type);
+`)
+	if err != nil {
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -68,35 +77,94 @@ func (idx *Indexer) SaveAnalysisToDB(results []analyzer.LLMAnalysisResult) error
 		return err
 	}
 	defer tx.Rollback()
-	// Insert each function (upsert semantics for incremental updates can be added)
-	funcStmt, _ := tx.Prepare("INSERT OR REPLACE INTO functions(name, package, file, description, start_line, end_line, function_type) VALUES(?, ?, ?, ?, ?, ?, ?)")
+	// 使用 INSERT OR IGNORE，遇到冲突时跳过
+	funcStmt, _ := tx.Prepare(`
+INSERT OR IGNORE INTO functions(
+    name, package, file, description, start_line, end_line, function_type
+) VALUES(?, ?, ?, ?, ?, ?, ?)`)
 	callStmt, _ := tx.Prepare("INSERT INTO calls(caller, callee) VALUES(?, ?)")
 	extStmt, _ := tx.Prepare("INSERT INTO externals(function, external) VALUES(?, ?)")
 	for _, res := range results {
-		name := res.Func.Name
-		pkg := res.Func.Package
-		file := res.Func.File
-		desc := res.Description
-		startLine := res.Func.StartLine
-		endLine := res.Func.EndLine
-		funcType := res.Func.FunctionType
-		_, err = funcStmt.Exec(name, pkg, file, desc, startLine, endLine, funcType)
+		_, err = funcStmt.Exec(
+			res.Func.Name,
+			res.Func.Package,
+			res.Func.File,
+			res.Description,
+			res.Func.StartLine,
+			res.Func.EndLine,
+			res.Func.FunctionType,
+		)
 		if err != nil {
-			log.Println("DB insert func error:", err)
-			continue
+			log.Printf("插入 functions 失败（已跳过？）: %v", err)
 		}
+		// calls 和 externals 如果也可能重复，可以同样建唯一索引并用 OR IGNORE
 		for _, callee := range res.InternalDeps {
-			_, _ = callStmt.Exec(name, callee)
+			if _, err := callStmt.Exec(res.Func.Name, callee); err != nil {
+				log.Printf("插入 calls 失败: %v", err)
+			}
 		}
 		for _, ext := range res.ExternalDeps {
-			_, _ = extStmt.Exec(name, ext)
+			if _, err := extStmt.Exec(res.Func.Name, ext); err != nil {
+				log.Printf("插入 externals 失败: %v", err)
+			}
 		}
 	}
-	err = tx.Commit()
+
+	return tx.Commit()
+}
+
+func (idx *Indexer) SaveAnalysisToDBHttp(results []analyzer.LLMAnalysisResult, projDir string) error {
+	tx, err := idx.DB.Begin()
 	if err != nil {
 		return err
 	}
-	return nil
+	defer tx.Rollback()
+	// 使用 INSERT OR IGNORE，遇到冲突时跳过
+	funcStmt, _ := tx.Prepare(`
+INSERT OR IGNORE INTO functions(
+    name, package, file, description, start_line, end_line, function_type
+) VALUES(?, ?, ?, ?, ?, ?, ?)`)
+	callStmt, _ := tx.Prepare("INSERT INTO calls(caller, callee) VALUES(?, ?)")
+	extStmt, _ := tx.Prepare("INSERT INTO externals(function, external) VALUES(?, ?)")
+	for _, res := range results {
+		if res.Func.FunctionType == "llm_parser" {
+			logs.Warnf("[WARN] 忽略 LLM_PARSER 函数的库录入 %s", res.Func.Name)
+			continue
+		}
+		if projDir != "" {
+			res.Func.File, err = filepath.Rel(projDir, res.Func.File)
+			if err != nil {
+				fmt.Errorf("%s, %s, 无法将文件路径转换为相对路径: %w", projDir, res.Func.File, err)
+			}
+			res.Func.File = filepath.ToSlash(res.Func.File)
+			logs.Infof("[DEBUG][DB] 存储文件路径为: %s", res.Func.File)
+		}
+		_, err = funcStmt.Exec(
+			res.Func.Name,
+			res.Func.Package,
+			res.Func.File,
+			res.Description,
+			res.Func.StartLine,
+			res.Func.EndLine,
+			res.Func.FunctionType,
+		)
+		if err != nil {
+			log.Printf("插入 functions 失败（已跳过？）: %v", err)
+		}
+		// calls 和 externals 如果也可能重复，可以同样建唯一索引并用 OR IGNORE
+		for _, callee := range res.InternalDeps {
+			if _, err := callStmt.Exec(res.Func.Name, callee); err != nil {
+				log.Printf("插入 calls 失败: %v", err)
+			}
+		}
+		for _, ext := range res.ExternalDeps {
+			if _, err := extStmt.Exec(res.Func.Name, ext); err != nil {
+				log.Printf("插入 externals 失败: %v", err)
+			}
+		}
+	}
+
+	return tx.Commit()
 }
 
 // --- Vector indexing (Faiss) ---
