@@ -1,8 +1,10 @@
 package utils
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/kinglegendzzh/flashmemory/internal/cloud"
 	"io/ioutil"
 	"net/http"
 	"strings"
@@ -12,28 +14,7 @@ import (
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
-// GetModelConfigByPromptLength 根据提示词长度动态选择合适的模型和参数配置
-func GetModelConfigByPromptLength(promptLength int) (model string, maxTokens int, numCtx int, numKeep int, numPredict int, repeatLastN int, presencePenalty int, frequencyPenalty int, format string) {
-	cfg, err := config.LoadConfig()
-	if cfg == nil || err != nil {
-		logs.Errorf("Warn: no config file found or parse error, fallback to env or default. Err: %v", err)
-		return "", 0, 0, 0, 0, 0, 0, 0, ""
-	}
-	var selected *config.ModelConfig
-	for i := len(cfg.ModelConfigs) - 1; i >= 0; i-- {
-		mc := cfg.ModelConfigs[i]
-		if promptLength >= mc.PromptLength {
-			selected = &mc
-			break
-		}
-	}
-	if selected == nil || promptLength > 30000 {
-		return "", 0, 0, 0, 0, 0, 0, 0, ""
-	}
-	return selected.Name, selected.MaxTokens, selected.NumCtx, selected.NumKeep, selected.NumPredict, selected.RepeatLastN, selected.PresencePenalty, selected.FrequencyPenalty, selected.Format
-}
-
-// OllamaCompletion 调用 Ollama 的 completion API 获取完整回答
+// Completion 调用 Ollama 的 completion API 获取完整回答
 // NormalizeResponseWithSmallModel 使用小模型规范化大模型的返回结果
 func NormalizeResponseWithSmallModel(rawResponse string) (string, error) {
 	cfg, err := config.LoadConfig()
@@ -91,42 +72,93 @@ func NormalizeResponseWithSmallModel(rawResponse string) (string, error) {
 	return responseStr, nil
 }
 
-func OllamaCompletion(prompt string) (string, error) {
+func DefaultModelCompletion(rawResponse string) (string, error) {
+	cfg, err := config.LoadConfig()
+	if cfg == nil || err != nil {
+		logs.Errorf("Warn: no config file found or parse error, fallback to env or default. Err: %v", err)
+		return "", err
+	}
+	logs.Infof("Keyword search for query: %s", rawResponse)
+	if cfg.DefaultCloudModel.Enabled {
+		invoke, err := cloud.KeywordInvoke(&cfg.DefaultCloudModel, &cfg.KeywordPrompts, rawResponse)
+		if err != nil {
+			logs.Errorf("Failed to invoke keyword model: %v", err)
+			return "", err
+		}
+		return FilterJSONContent(invoke), nil
+	} else {
+		logs.Infof("Using model: %s/%s", cfg.ApiBaseUrl+cfg.CompletionApi, cfg.DefaultModel)
+		ctx := context.Background()
+		template := cloud.CreateTemplate(cfg.KeywordPrompts.System, cfg.KeywordPrompts.User)
+		m := map[string]any{}
+		m["search_query"] = rawResponse
+		// 使用模板生成消息
+		messages, err := template.Format(ctx, m)
+		if err != nil {
+			logs.Errorf("format template failed: %v\n", err)
+			return "", err
+		}
+		cm, err := cloud.CreateOllamaModel(ctx, cfg.ApiBaseUrl, cfg.DefaultModel)
+		if err != nil {
+			logs.Errorf("create chat model failed: %v", err)
+			return "", err
+		}
+		logs.Infof("messages: %v", messages)
+		msg, err := cloud.Generate(ctx, cm, messages)
+		if err != nil {
+			logs.Errorf("generate failed: %v", err)
+			return "", err
+		}
+		return FilterJSONContent(msg.Content), nil
+	}
+}
+
+func Completion(prompt string) (string, error) {
 	cfg, err := config.LoadConfig()
 	if cfg == nil || err != nil {
 		logs.Errorf("Warn: no config file found or parse error, fallback to env or default. Err: %v", err)
 		return "", err
 	}
 	l := len(prompt)
-	autoModel, maxTokens, numCtx, numKeep, numPredict, repeatLastN, presencePenalty, frequencyPenalty, format := GetModelConfigByPromptLength(l)
-	if autoModel == "" {
-		return "[Warning]代码内容过大，请单独处理", nil
+	//截取
+	if l > cfg.PromptLimit {
+		logs.Infof("提示词内容过长，截取前%d个字符", cfg.PromptLimit)
+		prompt = prompt[:cfg.PromptLimit]
 	}
-	logs.Infof("Using model: %s", autoModel)
-	url := cfg.ApiBaseUrl + cfg.CompletionApi
+	modelConfig := cloud.GetModelConfigByPromptLength(l)
+	if modelConfig == nil {
+		logs.Infof("No model configuration found for prompt length %d", l)
+		return "", nil
+	}
+	if modelConfig.CloudModel.Enabled {
+		logs.Infof("Using cloud model: %s", modelConfig.CloudModel.Model)
+		return cloud.ANAInvoke(&modelConfig.CloudModel, prompt)
+	}
+
+	logs.Infof("Using model: %s", modelConfig.Name)
 	optionLoad := map[string]interface{}{
 		"temperature":       cfg.DefaultTemp,
-		"presence_penalty":  presencePenalty,
-		"frequency_penalty": frequencyPenalty,
-		"max_tokens":        maxTokens,
-		"num_ctx":           numCtx,
-		"num_keep":          numKeep,
-		"num_predict":       numPredict,
-		"repeat_last_n":     repeatLastN,
+		"presence_penalty":  modelConfig.PresencePenalty,
+		"frequency_penalty": modelConfig.FrequencyPenalty,
+		"max_tokens":        modelConfig.MaxTokens,
+		"num_ctx":           modelConfig.NumCtx,
+		"num_keep":          modelConfig.NumKeep,
+		"num_predict":       modelConfig.NumPredict,
+		"repeat_last_n":     modelConfig.RepeatLastN,
 		"low_vram":          cfg.DefaultLowVram,
 	}
 	payload := map[string]interface{}{
-		"model":         autoModel,
+		"model":         modelConfig.Name,
 		"prompt":        prompt,
 		"stream":        false,
-		"format":        format,
+		"format":        modelConfig.Format,
 		"options":       optionLoad,
 		"keep_alive":    "30m",
-		"max_tokens":    maxTokens,
-		"num_ctx":       numCtx,
-		"num_keep":      numKeep,
-		"num_predict":   numPredict,
-		"repeat_last_n": repeatLastN,
+		"max_tokens":    modelConfig.MaxTokens,
+		"num_ctx":       modelConfig.NumCtx,
+		"num_keep":      modelConfig.NumKeep,
+		"num_predict":   modelConfig.NumPredict,
+		"repeat_last_n": modelConfig.RepeatLastN,
 		"low_vram":      cfg.DefaultLowVram,
 	}
 	var lastErr error
@@ -141,7 +173,7 @@ func OllamaCompletion(prompt string) (string, error) {
 			continue
 		}
 		client := &http.Client{Timeout: 30 * time.Minute}
-		req, err := http.NewRequest("POST", url, strings.NewReader(string(jsonPayload)))
+		req, err := http.NewRequest("POST", cfg.ApiBaseUrl+cfg.CompletionApi, strings.NewReader(string(jsonPayload)))
 		if err != nil {
 			lastErr = err
 			continue
@@ -177,7 +209,7 @@ func OllamaCompletion(prompt string) (string, error) {
 				responseStr = strings.TrimSpace(parts[1])
 			}
 		}
-		if format == "json" {
+		if modelConfig.Format == "json" {
 			var responseObj map[string]interface{}
 			if err := json.Unmarshal([]byte(responseStr), &responseObj); err != nil {
 				tempjson = responseStr
@@ -210,66 +242,4 @@ func OllamaCompletion(prompt string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("all retry attempts failed, last error: %v", lastErr)
-}
-
-// OllamaEmbedding 调用 Ollama 的 embedding API 获取查询向量
-func OllamaEmbedding(query string, dim int) ([]float32, error) {
-	cfg, err := config.LoadConfig()
-	if cfg == nil || err != nil {
-		logs.Errorf("Warn: no config file found or parse error, fallback to env or default. Err: %v", err)
-		return nil, err
-	}
-	url := cfg.ApiBaseUrl + cfg.EmbeddingApi
-	payload := map[string]interface{}{
-		"model":  cfg.EmbeddingModel,
-		"prompt": query,
-	}
-	jsonPayload, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest("POST", url, strings.NewReader(string(jsonPayload)))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	var result map[string]interface{}
-	err = json.Unmarshal(body, &result)
-	if err != nil {
-		return nil, err
-	}
-	embeddingRaw, ok := result["embedding"]
-	if !ok {
-		return nil, fmt.Errorf("no embedding field in response")
-	}
-	embeddingSlice, ok := embeddingRaw.([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("embedding field is not a slice")
-	}
-	embedding := make([]float32, 0, len(embeddingSlice))
-	for _, v := range embeddingSlice {
-		if num, ok := v.(float64); ok {
-			embedding = append(embedding, float32(num))
-		}
-	}
-	if len(embedding) != dim {
-		if len(embedding) > dim {
-			embedding = embedding[:dim]
-		} else {
-			for i := len(embedding); i < dim; i++ {
-				embedding = append(embedding, 0)
-			}
-		}
-	}
-	return embedding, nil
 }
