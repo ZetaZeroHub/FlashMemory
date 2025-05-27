@@ -7,6 +7,7 @@ import (
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -26,7 +27,7 @@ func main() {
 	logs.Infof("FunctionInfo %s", indent)
 
 	// 创建分析器实例
-	llmAnalyzer := analyzer.NewLLMAnalyzer(map[string]string{}, true, 3)
+	llmAnalyzer := analyzer.NewLLMAnalyzer(&sync.Map{}, true, 3)
 
 	// 分析函数
 	results := llmAnalyzer.AnalyzeAll(allFuncs)
