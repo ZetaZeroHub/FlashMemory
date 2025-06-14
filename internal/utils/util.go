@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"io"
 	"log"
 	"os"
@@ -13,6 +12,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
 // runCmdContext 执行命令，最多等待 timeout，实时打印输出并返回最终输出或错误

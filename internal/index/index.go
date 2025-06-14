@@ -3,13 +3,13 @@ package index
 import (
 	"database/sql"
 	"fmt"
-	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"log"
 	"math"
 	"os"
 	"path/filepath"
 
 	"github.com/kinglegendzzh/flashmemory/internal/analyzer"
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 
 	_ "modernc.org/sqlite"
 )

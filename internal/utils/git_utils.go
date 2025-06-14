@@ -130,3 +130,60 @@ func GetBranchCommitHash(repoPath string, branch string) (string, error) {
 
 	return strings.TrimSpace(string(output)), nil
 }
+
+// GetCurrentBranchName 获取当前分支名称
+// 参数:
+//   - repoPath: 仓库路径
+//
+// 返回:
+//   - string: 分支名称
+//   - error: 错误信息
+func GetCurrentBranchName(repoPath string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = repoPath
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("获取当前分支名称失败: %v\n%s", err, string(output))
+	}
+
+	return strings.TrimSpace(string(output)), nil
+}
+
+// GetCommitDate 获取指定commit的提交日期
+// 参数:
+//   - repoPath: 仓库路径
+//   - commitHash: commit hash
+//
+// 返回:
+//   - string: 提交日期 (ISO 8601格式)
+//   - error: 错误信息
+func GetCommitDate(repoPath string, commitHash string) (string, error) {
+	if commitHash == "" {
+		return "", fmt.Errorf("commit hash不能为空")
+	}
+
+	cmd := exec.Command("git", "show", "-s", "--format=%ci", commitHash)
+	cmd.Dir = repoPath
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("获取commit %s的提交日期失败: %v\n%s", commitHash, err, string(output))
+	}
+
+	return strings.TrimSpace(string(output)), nil
+}
+
+// IsGitRepository 检查指定路径是否为git仓库
+// 参数:
+//   - repoPath: 仓库路径
+//
+// 返回:
+//   - bool: 是否为git仓库
+func IsGitRepository(repoPath string) bool {
+	cmd := exec.Command("git", "rev-parse", "--git-dir")
+	cmd.Dir = repoPath
+
+	_, err := cmd.CombinedOutput()
+	return err == nil
+}
