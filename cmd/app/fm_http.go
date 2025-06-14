@@ -4,20 +4,26 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/kinglegendzzh/flashmemory/config"
-	"github.com/kinglegendzzh/flashmemory/internal/back"
-	"github.com/kinglegendzzh/flashmemory/internal/index"
-	"github.com/kinglegendzzh/flashmemory/internal/parser"
-	"github.com/kinglegendzzh/flashmemory/internal/search"
-	"github.com/kinglegendzzh/flashmemory/internal/utils"
-	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
+
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
+
+	"github.com/kinglegendzzh/flashmemory/config"
+	"github.com/kinglegendzzh/flashmemory/internal/back"
+	"github.com/kinglegendzzh/flashmemory/internal/graph"
+	"github.com/kinglegendzzh/flashmemory/internal/index"
+	"github.com/kinglegendzzh/flashmemory/internal/parser"
+	"github.com/kinglegendzzh/flashmemory/internal/ranking"
+	"github.com/kinglegendzzh/flashmemory/internal/search"
+	"github.com/kinglegendzzh/flashmemory/internal/utils"
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
 // Response is the standard API response format
@@ -32,6 +38,14 @@ var authUser = os.Getenv("API_USER")
 var authPass = os.Getenv("API_PASS")
 
 func main() {
+	// 捕获 panic 错误并记录日志
+	defer func() {
+		if err := recover(); err != nil {
+			logs.Errorf("捕获 panic 错误: %v", err)
+			os.Exit(1)
+		}
+	}()
+
 	configPath := config.Init()
 	if configPath == "" {
 		logs.Fatalf("请设置配置文件路径")
@@ -96,6 +110,7 @@ func main() {
 	api.POST("/exclude", excludeHandler())
 	api.POST("/exclude/read", excludeReadHandler())
 	api.POST("/llm/analyzer", llmAnalyzerHandler())
+	api.POST("/ranking", functionRankingHandler())
 	api.GET("/health", healthCheckHandler())
 
 	c := e.Group("/c", auth)
@@ -120,7 +135,17 @@ func main() {
 	log.Printf("Starting server on %s...", address)
 	if err := e.Start(address); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
+		panic(err)
 	}
+
+	// 捕获系统信号来优雅关闭服务
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+		sig := <-c
+		logs.Infof("Received signal %s, shutting down server...", sig)
+		os.Exit(0)
+	}()
 }
 
 func healthCheckHandler() echo.HandlerFunc {
@@ -476,6 +501,7 @@ func listGraphHandler() echo.HandlerFunc {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
 		}
 		if req.ProjectDir == "" {
+			logs.Errorf("project_dir is required")
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
 		}
 		err := makeGitIgnore(req.ProjectDir)
@@ -485,6 +511,7 @@ func listGraphHandler() echo.HandlerFunc {
 		}
 		err = back.ListGraph(req.ProjectDir, req.SubPath)
 		if err != nil {
+			logs.Errorf("Error listing graph: %v", err)
 			return c.JSON(http.StatusInternalServerError, Response{Code: 2, Message: err.Error()})
 		}
 		return c.JSON(http.StatusOK, Response{
@@ -606,5 +633,117 @@ func makeGitIgnore(projDir string) error {
 			return err
 		}
 	}
+	// 追加一行 .zip
+	if !strings.Contains(string(content), ".zip") {
+		f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			logs.Warnf("打开 .gitignore 失败: %v", err)
+			return err
+		}
+		defer f.Close()
+
+		if _, err := f.WriteString("\n*.zip\n"); err != nil {
+			logs.Warnf("写入 .gitignore 失败: %v", err)
+			return err
+		}
+	}
 	return nil
+}
+
+// FunctionRankingRequest 函数重要性评级请求
+type FunctionRankingRequest struct {
+	ProjectDir string                 `json:"project_dir"`
+	Config     *ranking.RankingConfig `json:"config,omitempty"`
+}
+
+// functionRankingHandler 函数重要性评级处理器
+func functionRankingHandler() echo.HandlerFunc {
+	return func(c echo.Context) error {
+		var req FunctionRankingRequest
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, Response{
+				Code:    1,
+				Message: "Invalid request format: " + err.Error(),
+			})
+		}
+
+		if req.ProjectDir == "" {
+			return c.JSON(http.StatusBadRequest, Response{
+				Code:    1,
+				Message: "project_dir is required",
+			})
+		}
+
+		// 默认配置：均衡配置
+		if req.Config == nil {
+			req.Config = &ranking.RankingConfig{
+				Alpha: 0.4, // FanIn权重
+				Beta:  0.2, // FanOut权重
+				Gamma: 0.2, // Depth权重
+				Delta: 0.2, // Complexity权重
+			}
+		}
+
+		// 读取graph.json文件
+		graphPath := filepath.Join(req.ProjectDir, ".gitgo", "graph.json")
+		data, err := os.ReadFile(graphPath)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, Response{
+				Code:    1,
+				Message: "Failed to read graph.json: " + err.Error(),
+			})
+		}
+
+		// 解析graph.json
+		var kg graph.KnowledgeGraph
+		if err := json.Unmarshal(data, &kg); err != nil {
+			return c.JSON(http.StatusInternalServerError, Response{
+				Code:    1,
+				Message: "Failed to parse graph.json: " + err.Error(),
+			})
+		}
+
+		// 转换为ranking算法需要的格式
+		functions := make([]parser.FunctionInfo, len(kg.Functions))
+		for i, result := range kg.Functions {
+			functions[i] = result.Func
+		}
+
+		// 计算重要性评分
+		scores := ranking.CalculateImportanceScores(functions, req.Config)
+
+		// 将评分回填到ImportanceScore字段
+		for i := range kg.Functions {
+			funcName := kg.Functions[i].Func.Name
+			if score, exists := scores[funcName]; exists {
+				kg.Functions[i].ImportanceScore = score
+			}
+		}
+
+		// 保存更新后的graph.json
+		updatedData, err := json.MarshalIndent(kg, "", "  ")
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, Response{
+				Code:    1,
+				Message: "Failed to marshal updated graph: " + err.Error(),
+			})
+		}
+
+		if err := os.WriteFile(graphPath, updatedData, 0644); err != nil {
+			return c.JSON(http.StatusInternalServerError, Response{
+				Code:    1,
+				Message: "Failed to save updated graph.json: " + err.Error(),
+			})
+		}
+
+		return c.JSON(http.StatusOK, Response{
+			Code:    0,
+			Message: "Function importance scores calculated and saved successfully",
+			Data: map[string]interface{}{
+				"total_functions": len(functions),
+				"config":          req.Config,
+				"scores":          scores,
+			},
+		})
+	}
 }
