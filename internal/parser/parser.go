@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"path/filepath"
 	"strings"
+
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
 // FunctionInfo 保存函数或方法的关键信息
@@ -22,6 +24,11 @@ type FunctionInfo struct {
 	Description  string
 	CodeSnippet  string
 	Scan         bool
+	FanIn        int
+	FanOut       int
+	Complexity   int
+	Depth        int
+	Score        float64
 }
 
 // Parser is an interface to parse a file and extract functions and imports.
@@ -56,7 +63,8 @@ func DetectLang(path string) string {
 	case ".php":
 		return "php"
 	default:
-		return ""
+		// 对于其他未知的文件类型，去除.后缀
+		return strings.TrimPrefix(ext, ".")
 	}
 }
 
@@ -82,8 +90,10 @@ func NewParserDb(lang string, db *sql.DB, projDir string) Parser {
 func NewParserNoLLM(lang string) Parser {
 	switch lang {
 	case "go", "python", "javascript", "typescript", "java", "cpp", "c", "h", "ruby", "rust", "bash", "elixir", "php":
+		logs.Infof("正在使用TreeSitterParser %s 解析器", lang)
 		return &TreeSitterParser{Lang: lang, Debug: true, NoLLM: true}
 	default:
+		logs.Infof("正在使用LLMParser %s 解析器", lang)
 		return &LLMParser{Lang: lang, NoLLM: true}
 	}
 }

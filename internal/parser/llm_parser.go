@@ -5,15 +5,16 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"os"
+	"path/filepath"
+	"strings"
+
 	"github.com/kinglegendzzh/flashmemory/cmd/common"
 	"github.com/kinglegendzzh/flashmemory/config"
 	"github.com/kinglegendzzh/flashmemory/internal/cloud"
 	"github.com/kinglegendzzh/flashmemory/internal/utils"
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
-	"io/ioutil"
-	"os"
-	"path/filepath"
-	"strings"
 )
 
 // LLMParser uses a language model to enhance code understanding
@@ -353,7 +354,7 @@ func SaveSingleResultToDB(db *sql.DB, res FunctionInfo, projDir string) error {
 	return nil
 }
 
-func (lp *LLMParser) loadStoredResult(path, projDir string) ([]FunctionInfo, bool) {
+func (lp *LLMParser) loadStoredResult(path string, projDir string) ([]FunctionInfo, bool) {
 	// 1. 如果没有数据库连接，直接返回
 	if lp.Db == nil {
 		logs.Warnf("[ERROR] 无数据库连接")
@@ -381,6 +382,8 @@ func (lp *LLMParser) loadStoredResult(path, projDir string) ([]FunctionInfo, boo
         SELECT name, file, description, start_line, end_line, function_type
         FROM functions
         WHERE file = ?
+          AND description IS NOT NULL
+          AND description != ''
           AND name != ''
           AND name IS NOT NULL
           AND function_type = 'llm_parser'

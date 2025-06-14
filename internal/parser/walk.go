@@ -2,27 +2,14 @@ package parser
 
 import (
 	"database/sql"
-	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/kinglegendzzh/flashmemory/cmd/common"
 	"github.com/kinglegendzzh/flashmemory/internal/utils"
-)
-
-var (
-	SupportedLanguages = []string{
-		".go",
-		".py",
-		".vue",
-		".js", ".jsx",
-		".ts", ".tsx",
-		".java",
-		".cpp", ".cc", ".cc", ".cxx", ".c++", ".hpp", ".h",
-		".c",
-		".rb",
-		".php",
-	}
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
 // WalkAndParse 遍历 root，调用 DetectLang/NewParser/ParseFile 解析函数
@@ -32,25 +19,38 @@ func WalkAndParse(root string, cb func(info FunctionInfo)) error {
 		if err != nil {
 			return err
 		}
-		if info.IsDir() {
-			// 跳过exclude.json中指定的路径
-			excludeFile := filepath.Join(root, ".gitgo", "exclude.json")
-			jsonFile, err := utils.ReadJSONArrayFile(excludeFile)
-			if err == nil {
-				if utils.IsExcludedPath(path, jsonFile) {
-					logs.Warnf("跳过指定目录: %s", path)
-					return filepath.SkipDir
-				}
+		// 跳过exclude.json中指定的路径
+		fullWalkPath := filepath.Join(root, path)
+		excludeFile := filepath.Join(root, ".gitgo", "exclude.json")
+		jsonFile, err := utils.ReadJSONArrayFile(excludeFile)
+		if err == nil {
+			if utils.IsExcludedPath(fullWalkPath, jsonFile) {
+				log.Printf("跳过指定文件: %s", fullWalkPath)
+				return filepath.SkipDir
 			}
+		}
+		if info.IsDir() {
+
 			// 跳过以点开头的隐藏目录
-			if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") && info.Name() != "node_modules" {
-				logs.Warnf("跳过目录: %s", info.Name())
+			if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") && !utils.Contains([]string{
+				"node_modules",
+				"mini.js",
+				"dist",
+				"build",
+				"target",
+				"out",
+				"bin",
+				"gen",
+				"static",
+				"public",
+			}, fullWalkPath) {
+				logs.Warnf("跳过目录: %s or %s", info.Name(), fullWalkPath)
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		ext := filepath.Ext(path)
-		if !utils.Contains(SupportedLanguages, ext) {
+		if !utils.Contains(common.SupportedLanguages, ext) {
 			return nil
 		}
 		lang := DetectLang(path)
