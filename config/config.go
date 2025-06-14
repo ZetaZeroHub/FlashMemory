@@ -75,6 +75,8 @@ type ModelConfig struct {
 }
 type AnaPrompts struct {
 	Role         string `mapstructure:"role" yaml:"role" json:"role,omitempty"`
+	Route        string `mapstructure:"route" yaml:"route" json:"route,omitempty"`
+	Imports      string `mapstructure:"imports" yaml:"imports" json:"imports,omitempty"`
 	InternalDeps string `mapstructure:"internal_deps" yaml:"internal_deps" json:"internal_deps,omitempty"`
 	ExternalDeps string `mapstructure:"external_deps" yaml:"external_deps" json:"external_deps,omitempty"`
 	Main         string `mapstructure:"main" yaml:"main" json:"main,omitempty"`
@@ -96,6 +98,7 @@ type Config struct {
 	DefaultFormat        string         `mapstructure:"default_format" yaml:"default_format" json:"default_format,omitempty"`
 	DefaultTemp          float64        `mapstructure:"default_temperature" yaml:"default_temperature" json:"default_temp,omitempty"`
 	DefaultLowVram       bool           `mapstructure:"default_low_vram" yaml:"default_low_vram" json:"default_low_vram,omitempty"`
+	DefaultMaxWorker     int            `mapstructure:"default_max_worker" yaml:"default_max_worker" json:"default_max_worker,omitempty"`
 	NormalizeModel       string         `mapstructure:"normalize_model" yaml:"normalize_model" json:"normalize_model,omitempty"`
 	EmbeddingModel       string         `mapstructure:"embedding_model" yaml:"embedding_model" json:"embedding_model,omitempty"`
 	EmbeddingMaxBatch    int            `mapstructure:"embedding_max_batch" yaml:"embedding_max_batch" json:"embedding_max_batch,omitempty"`
