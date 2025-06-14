@@ -5,21 +5,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+
 	"github.com/cloudwego/eino-ext/components/model/ollama"
 	"github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino-ext/components/model/qwen"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/prompt"
 	"github.com/cloudwego/eino/schema"
+	"github.com/ollama/ollama/api"
+
 	"github.com/kinglegendzzh/flashmemory/config"
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
-	"github.com/ollama/ollama/api"
-	"net/http"
 )
 
 // 字典枚举
 var (
 	OPENAI = "openai"
 	OLLAMA = "ollama"
+	QWEN   = "qwen"
 )
 
 // EmbeddingData 对应接口返回的每一条 embedding
@@ -94,6 +98,17 @@ func CreateChatModel(ctx context.Context, config *config.CloudModel) (model mode
 			modelConfig.Options.Temperature = config.Temperature
 		}
 		cm, err := ollama.NewChatModel(ctx, &modelConfig)
+		return cm, err
+	case QWEN:
+		modelConfig := qwen.ChatModelConfig{
+			APIKey:  config.Api,
+			Model:   config.Model,
+			BaseURL: config.Url,
+		}
+		if config.Temperature != 0 {
+			modelConfig.Temperature = &config.Temperature
+		}
+		cm, err := qwen.NewChatModel(ctx, &modelConfig)
 		return cm, err
 	default:
 		logs.Errorf("unknown model type: %s", config.Type)

@@ -1,26 +1,47 @@
 package back
 
 import (
-	_ "database/sql"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/kinglegendzzh/flashmemory/cmd/common"
-	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
-	"github.com/kinglegendzzh/flashmemory/internal/visualize"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/kinglegendzzh/flashmemory/cmd/common"
+	"github.com/kinglegendzzh/flashmemory/config"
 	"github.com/kinglegendzzh/flashmemory/internal/analyzer"
 	"github.com/kinglegendzzh/flashmemory/internal/graph"
 	"github.com/kinglegendzzh/flashmemory/internal/index"
 	"github.com/kinglegendzzh/flashmemory/internal/parser"
 	"github.com/kinglegendzzh/flashmemory/internal/utils"
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
+	"github.com/kinglegendzzh/flashmemory/internal/visualize"
+
+	_ "database/sql"
 )
+
+// GitBuildInfo 表示单次构建的git信息
+type GitBuildInfo struct {
+	BranchName   string    `json:"branch_name"`    // git分支名称
+	CommitHash   string    `json:"commit_hash"`    // git最新hash
+	CommitDate   string    `json:"commit_date"`    // git提交日期
+	BuildDate    time.Time `json:"build_date"`     // 构建日期
+	Path         string    `json:"path,omitempty"` // 构建路径（相对路径），全路径构建时为空
+	IndexedFiles int       `json:"indexed_files"`  // 索引的文件数量
+	AllFuncs     int       `json:"all_funcs"`      // 索引的函数数量
+}
+
+// GitInfoHistory 表示git信息历史记录
+type GitInfoHistory struct {
+	Latest  *GitBuildInfo  `json:"latest"`  // 当前最新构建信息
+	History []GitBuildInfo `json:"history"` // 历史构建信息列表
+}
 
 // BuildIndex 构建全量或指定目录索引
 func BuildIndex(projDir, subDir string, full bool, open bool) error {
@@ -83,10 +104,121 @@ func ResetIndex(projDir string) error {
 	faissIndexMetaPath := filepath.Join(gitgo, "code_index.faiss.meta")
 	localIndexPath := filepath.Join(gitgo, "code_index.local")
 	tempPath := filepath.Join(gitgo, "indexing.temp")
+	graphPath := filepath.Join(gitgo, "graph.json")
+	infoPath := filepath.Join(gitgo, "info.json")
+	// 清除客户端缓存
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"index_id": projDir,
+	})
+	resp, err := httpClient.Post(index.DefaultFaissServerURL+"/delete_index", "application/json", bytes.NewBuffer(reqBody))
+	if err != nil {
+		logs.Warnf("删除索引失败，但忽略错误: %v", err)
+	}
+	defer httpClient.CloseIdleConnections()
+	defer resp.Body.Close()
 	os.Remove(faissIndexPath)
 	os.Remove(faissIndexMetaPath)
 	os.Remove(localIndexPath)
 	os.Remove(tempPath)
+	os.Remove(graphPath)
+	os.Remove(infoPath)
+	return nil
+}
+
+// SaveGitBuildInfo 保存git构建信息到.gitgo/info.json
+// 参数:
+//   - projDir: 项目目录路径
+//   - subPath: 子路径（相对路径），全路径构建时为空字符串
+//   - indexedFiles: 索引的文件数量
+//
+// 返回:
+//   - error: 错误信息
+func SaveGitBuildInfo(projDir string, subPath string, indexedFiles, allFuncs int) error {
+	// 初始化git信息变量
+	var branchName, commitHash, commitDate string
+
+	// 检查是否为git仓库并获取git信息
+	if utils.IsGitRepository(projDir) {
+		var err error
+		branchName, err = utils.GetCurrentBranchName(projDir)
+		if err != nil {
+			log.Printf("获取当前分支名称失败: %v，将使用空值", err)
+		}
+
+		commitHash, err = utils.GetCurrentBranchCommitHash(projDir)
+		if err != nil {
+			log.Printf("获取当前commit hash失败: %v，将使用空值", err)
+		}
+
+		if commitHash != "" {
+			commitDate, err = utils.GetCommitDate(projDir, commitHash)
+			if err != nil {
+				log.Printf("获取commit日期失败: %v，将使用空值", err)
+			}
+		}
+		log.Printf("检测到git仓库，分支: %s, commit: %s", branchName, commitHash)
+	} else {
+		log.Println("当前项目不是git仓库，git相关字段将为空")
+	}
+
+	// 创建当前构建信息
+	currentBuildInfo := GitBuildInfo{
+		BranchName:   branchName,
+		CommitHash:   commitHash,
+		CommitDate:   commitDate,
+		BuildDate:    time.Now(),
+		Path:         subPath,
+		IndexedFiles: indexedFiles,
+		AllFuncs:     allFuncs,
+	}
+
+	// 确保.gitgo目录存在
+	gitgoDir := filepath.Join(projDir, ".gitgo")
+	if err := os.MkdirAll(gitgoDir, 0755); err != nil {
+		return fmt.Errorf("创建.gitgo目录失败: %w", err)
+	}
+
+	// info.json文件路径
+	infoFilePath := filepath.Join(gitgoDir, "info.json")
+
+	// 读取现有的git信息历史
+	var gitHistory GitInfoHistory
+	if data, err := os.ReadFile(infoFilePath); err == nil {
+		if err := json.Unmarshal(data, &gitHistory); err != nil {
+			log.Printf("解析现有git信息失败，将创建新的记录: %v", err)
+			gitHistory = GitInfoHistory{}
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("读取git信息文件失败: %w", err)
+	}
+
+	// 如果存在最新记录，将其移动到历史记录中
+	if gitHistory.Latest != nil {
+		gitHistory.History = append(gitHistory.History, *gitHistory.Latest)
+	}
+
+	// 更新最新记录
+	gitHistory.Latest = &currentBuildInfo
+
+	// 序列化为JSON
+	jsonData, err := json.MarshalIndent(gitHistory, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化git信息失败: %w", err)
+	}
+
+	// 写入文件
+	if err := os.WriteFile(infoFilePath, jsonData, 0644); err != nil {
+		return fmt.Errorf("写入git信息文件失败: %w", err)
+	}
+
+	if branchName != "" && commitHash != "" {
+		log.Printf("成功保存构建信息到 %s (分支: %s, commit: %s, 索引文件: %d个)", infoFilePath, branchName, commitHash[:8], indexedFiles)
+	} else {
+		log.Printf("成功保存构建信息到 %s (非git仓库, 索引文件: %d个)", infoFilePath, indexedFiles)
+	}
 	return nil
 }
 
@@ -242,18 +374,30 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 										if err != nil {
 											return err
 										}
-										if info.IsDir() {
-											// 跳过exclude.json中指定的路径
-											excludeFile := filepath.Join(gitgoDir, "exclude.json")
-											jsonFile, err := utils.ReadJSONArrayFile(excludeFile)
-											if err == nil {
-												if utils.IsExcludedPath(path, jsonFile) {
-													log.Printf("跳过指定目录: %s", path)
-													return filepath.SkipDir
-												}
+										// 跳过exclude.json中指定的路径
+										fullWalkPath := filepath.Join(projDir, path)
+										excludeFile := filepath.Join(gitgoDir, "exclude.json")
+										jsonFile, err := utils.ReadJSONArrayFile(excludeFile)
+										if err == nil {
+											if utils.IsExcludedPath(fullWalkPath, jsonFile) {
+												log.Printf("跳过指定文件: %s", fullWalkPath)
+												return filepath.SkipDir
 											}
+										}
+										if info.IsDir() {
 											// 跳过以点开头的隐藏目录
-											if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") && info.Name() != "node_modules" {
+											if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") && !utils.Contains([]string{
+												"node_modules",
+												"mini.js",
+												"dist",
+												"build",
+												"target",
+												"out",
+												"bin",
+												"gen",
+												"static",
+												"public",
+											}, fullWalkPath) {
 												return filepath.SkipDir
 											}
 											return nil
@@ -294,18 +438,30 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 										if err != nil {
 											return err
 										}
-										if info.IsDir() {
-											// 跳过exclude.json中指定的路径
-											excludeFile := filepath.Join(gitgoDir, "exclude.json")
-											jsonFile, err := utils.ReadJSONArrayFile(excludeFile)
-											if err == nil {
-												if utils.IsExcludedPath(path, jsonFile) {
-													log.Printf("跳过指定目录: %s", path)
-													return filepath.SkipDir
-												}
+										// 跳过exclude.json中指定的路径
+										fullWalkPath := filepath.Join(projDir, path)
+										excludeFile := filepath.Join(gitgoDir, "exclude.json")
+										jsonFile, err := utils.ReadJSONArrayFile(excludeFile)
+										if err == nil {
+											if utils.IsExcludedPath(fullWalkPath, jsonFile) {
+												log.Printf("跳过指定目录: %s", fullWalkPath)
+												return filepath.SkipDir
 											}
+										}
+										if info.IsDir() {
 											// 跳过以点开头的隐藏目录
-											if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") && info.Name() != "node_modules" {
+											if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") && !utils.Contains([]string{
+												"node_modules",
+												"mini.js",
+												"dist",
+												"build",
+												"target",
+												"out",
+												"bin",
+												"gen",
+												"static",
+												"public",
+											}, fullWalkPath) {
 												return filepath.SkipDir
 											}
 											return nil
@@ -354,18 +510,30 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 									if err != nil {
 										return err
 									}
-									if info.IsDir() {
-										// 跳过exclude.json中指定的路径
-										excludeFile := filepath.Join(gitgoDir, "exclude.json")
-										jsonFile, err := utils.ReadJSONArrayFile(excludeFile)
-										if err == nil {
-											if utils.IsExcludedPath(path, jsonFile) {
-												log.Printf("跳过指定目录: %s", path)
-												return filepath.SkipDir
-											}
+									// 跳过exclude.json中指定的路径
+									fullWalkPath := filepath.Join(projDir, path)
+									excludeFile := filepath.Join(gitgoDir, "exclude.json")
+									jsonFile, err := utils.ReadJSONArrayFile(excludeFile)
+									if err == nil {
+										if utils.IsExcludedPath(fullWalkPath, jsonFile) {
+											log.Printf("跳过指定目录: %s", fullWalkPath)
+											return filepath.SkipDir
 										}
+									}
+									if info.IsDir() {
 										// 跳过以点开头的隐藏目录
-										if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") && info.Name() != "node_modules" {
+										if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") && !utils.Contains([]string{
+											"node_modules",
+											"mini.js",
+											"dist",
+											"build",
+											"target",
+											"out",
+											"bin",
+											"gen",
+											"static",
+											"public",
+										}, fullWalkPath) {
 											return filepath.SkipDir
 										}
 										return nil
@@ -458,17 +626,29 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 				if err != nil {
 					return err
 				}
-				if info.IsDir() {
-					// 跳过exclude.json中指定的路径
-					excludeFile := filepath.Join(gitgoDir, "exclude.json")
-					jsonFile, err := utils.ReadJSONArrayFile(excludeFile)
-					if err == nil {
-						if utils.IsExcludedPath(path, jsonFile) {
-							log.Printf("跳过指定目录: %s", path)
-							return filepath.SkipDir
-						}
+				// 跳过exclude.json中指定的路径
+				fullWalkPath := filepath.Join(fullPath, path)
+				excludeFile := filepath.Join(gitgoDir, "exclude.json")
+				jsonFile, err := utils.ReadJSONArrayFile(excludeFile)
+				if err == nil {
+					if utils.IsExcludedPath(fullWalkPath, jsonFile) {
+						log.Printf("跳过指定目录: %s", fullWalkPath)
+						return filepath.SkipDir
 					}
-					if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") && info.Name() != "node_modules" {
+				}
+				if info.IsDir() {
+					if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") && !utils.Contains([]string{
+						"node_modules",
+						"mini.js",
+						"dist",
+						"build",
+						"target",
+						"out",
+						"bin",
+						"gen",
+						"static",
+						"public",
+					}, fullWalkPath) {
 						return filepath.SkipDir
 					}
 					return nil
@@ -527,19 +707,31 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 			if err != nil {
 				return err
 			}
-			if info.IsDir() {
-				// 跳过exclude.json中指定的路径
-				excludeFile := filepath.Join(gitgoDir, "exclude.json")
-				jsonFile, err := utils.ReadJSONArrayFile(excludeFile)
-				if err == nil {
-					if utils.IsExcludedPath(path, jsonFile) {
-						log.Printf("跳过指定目录: %s", path)
-						return filepath.SkipDir
-					}
+			// 跳过exclude.json中指定的路径
+			fullWalkPath := filepath.Join(projDir, path)
+			excludeFile := filepath.Join(gitgoDir, "exclude.json")
+			jsonFile, err := utils.ReadJSONArrayFile(excludeFile)
+			if err == nil {
+				if utils.IsExcludedPath(fullWalkPath, jsonFile) {
+					log.Printf("跳过指定文件: %s", fullWalkPath)
+					return filepath.SkipDir
 				}
+			}
+			if info.IsDir() {
 				// 跳过以点开头的隐藏目录
-				if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") && info.Name() != "node_modules" {
-					log.Printf("跳过目录: %s", info.Name())
+				if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") && !utils.Contains([]string{
+					"node_modules",
+					"mini.js",
+					"dist",
+					"build",
+					"target",
+					"out",
+					"bin",
+					"gen",
+					"static",
+					"public",
+				}, fullWalkPath) {
+					logs.Warnf("跳过目录: %s or %s", info.Name(), fullWalkPath)
 					return filepath.SkipDir
 				}
 				return nil
@@ -559,22 +751,49 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 		log.Println("No source code files found in the provided directory.")
 		return errors.New("No source code files found in the provided directory.")
 	}
-
-	// 2. 解析所有文件
-	var allFuncs []parser.FunctionInfo
-	for _, file := range files {
-		lang := parser.DetectLang(file)
-		if lang == "" {
-			continue
-		}
-		p := parser.NewParserDb(lang, db, projDir)
-		funcs, err := p.ParseFile(file)
-		if err != nil {
-			log.Printf("Error parsing file %s: %v\n", file, err)
-			continue
-		}
-		allFuncs = append(allFuncs, funcs...)
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		logs.Errorf("加载配置文件失败: %v", err)
+		return err
 	}
+	// 2. 并发解析所有文件
+	var allFuncs []parser.FunctionInfo
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	concurrency := cfg.DefaultMaxWorker
+	logs.Infof("正在索引 %d 个文件，并发度为 %d", len(files), concurrency)
+	fileChan := make(chan string, len(files))
+
+	// 将文件放入channel
+	for _, file := range files {
+		fileChan <- file
+	}
+	close(fileChan)
+
+	// 启动并发worker
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for file := range fileChan {
+				lang := parser.DetectLang(file)
+				if lang == "" {
+					continue
+				}
+				p := parser.NewParserDb(lang, db, projDir)
+				funcs, err := p.ParseFile(file)
+				if err != nil {
+					log.Printf("Error parsing file %s: %v\n", file, err)
+					continue
+				}
+				mu.Lock()
+				allFuncs = append(allFuncs, funcs...)
+				mu.Unlock()
+			}
+		}()
+	}
+
+	wg.Wait()
 	fmt.Printf("Parsed %d files, extracted %d functions.\n", len(files), len(allFuncs))
 
 	if err != nil {
@@ -583,19 +802,9 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 
 	log.Println("正在分析代码...")
 	// 3. 分析函数（考虑依赖关系顺序）
-	llmAnalyzer := analyzer.NewLLMAnalyzerHttp(&sync.Map{}, true, 3, db, projDir)
+	llmAnalyzer := analyzer.NewLLMAnalyzerHttp(&sync.Map{}, true, cfg.DefaultMaxWorker, db, projDir)
 	results := llmAnalyzer.AnalyzeAll(allFuncs)
 	fmt.Printf("Analyzed %d functions with AI summaries.\n", len(results))
-
-	log.Println("正在构建知识图谱...")
-	// 4. 构建知识图谱
-	kg := graph.BuildGraph(results)
-	// （可选）保存图结构用于调试
-	err = kg.SaveGraphJSON(filepath.Join(projDir, ".gitgo", "graph.json"))
-	if err != nil {
-		logs.Errorf("保存图结构失败: %v", err)
-		return err
-	}
 
 	log.Println("正在索引代码...")
 	// 5. 初始化索引存储（SQLite和Faiss）
@@ -677,8 +886,22 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 		}
 	}
 
+	log.Println("正在构建知识图谱...")
+	// 构建知识图谱
+	kg := graph.BuildGraph(results, projDir)
+	// （可选）保存图结构用于调试
+	err = kg.SaveGraphJSON(filepath.Join(projDir, ".gitgo", "graph.json"))
+	if err != nil {
+		logs.Errorf("保存图结构失败: %v", err)
+		return err
+	}
 	// 12. （可选） 展示统计
 	//visualize.PrintStats(visualize.ComputePackageStats(kg))
+
+	// 13. 保存git信息到.gitgo/info.json
+	if err := SaveGitBuildInfo(projDir, filePath, len(files), len(allFuncs)); err != nil {
+		log.Printf("保存git构建信息失败: %v", err)
+	}
 
 	// 确保退出时删除临时文件
 	defer func() {
@@ -710,13 +933,18 @@ func ListGraph(projDir, subPath string) (err error) {
 		logs.Warnf("创建索引临时文件失败 %q: %v", tempFilePath, err)
 	}
 	f.Close()
+	// 确保退出时删除临时文件
+	defer func() {
+		if err := os.Remove(tempFilePath); err != nil && !os.IsNotExist(err) {
+			log.Printf("删除索引临时文件失败 %q: %v", tempFilePath, err)
+		}
+		logs.Infof("索引完成，已删除索引临时文件 %q", tempFilePath)
+	}()
 	var files []string
 	var totalPath string
 	// 如果提供了子路径，则更新 projDir 路径
-	if subPath != "" {
-		totalPath = filepath.Join(projDir, subPath)
-		logs.Infof("更新 projDir + subPath 路径为: %s", totalPath)
-	}
+	totalPath = filepath.Join(projDir, subPath)
+	logs.Infof("更新 projDir + subPath 路径为: %s", totalPath)
 
 	// 全量索引模式：遍历整个项目目录，或者子路径中的文件
 	log.Printf("遍历路径: %s", totalPath)
@@ -724,20 +952,34 @@ func ListGraph(projDir, subPath string) (err error) {
 		if err != nil {
 			return err
 		}
+		// 跳过exclude.json中指定的路径
+		fullWalkPath := filepath.Join(totalPath, path)
+		excludeFile := filepath.Join(projDir, ".gitgo", "exclude.json")
+		jsonFile, err := utils.ReadJSONArrayFile(excludeFile)
+		if err == nil {
+			if utils.IsExcludedPath(fullWalkPath, jsonFile) {
+				log.Printf("跳过指定文件: %s", fullWalkPath)
+				return filepath.SkipDir
+			}
+		} else {
+			log.Printf("读取排除文件 %s 失败: %v", excludeFile, err)
+		}
 		// 如果是目录，进行排除处理
 		if info.IsDir() {
-			// 跳过exclude.json中指定的路径
-			excludeFile := filepath.Join(totalPath, ".gitgo", "exclude.json")
-			jsonFile, err := utils.ReadJSONArrayFile(excludeFile)
-			if err == nil {
-				if utils.IsExcludedPath(path, jsonFile) {
-					log.Printf("跳过指定目录: %s", path)
-					return filepath.SkipDir
-				}
-			}
 			// 跳过以点开头的隐藏目录
-			if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") && info.Name() != "node_modules" {
-				log.Printf("跳过目录: %s", info.Name())
+			if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") && !utils.Contains([]string{
+				"node_modules",
+				"mini.js",
+				"dist",
+				"build",
+				"target",
+				"out",
+				"bin",
+				"gen",
+				"static",
+				"public",
+			}, fullWalkPath) {
+				logs.Warnf("跳过目录: %s or %s", info.Name(), fullWalkPath)
 				return filepath.SkipDir
 			}
 			return nil
@@ -760,44 +1002,68 @@ func ListGraph(projDir, subPath string) (err error) {
 		return fmt.Errorf("初始化索引DB失败: %w", err)
 	}
 	defer db.Close()
-
-	var allFuncs []parser.FunctionInfo
-	// 遍历文件并解析
-	for _, file := range files {
-		lang := parser.DetectLang(file)
-		if lang == "" {
-			continue
-		}
-		p := parser.NewParserDb(lang, db, projDir)
-		funcs, err := p.ParseFile(file)
-		if err != nil {
-			log.Printf("Error parsing file %s: %v\n", file, err)
-			continue
-		}
-		allFuncs = append(allFuncs, funcs...)
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		logs.Errorf("加载配置文件失败: %v", err)
+		return err
 	}
+	var allFuncs []parser.FunctionInfo
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	concurrency := cfg.DefaultMaxWorker
+	logs.Infof("正在索引 %d 个文件，并发度为 %d", len(files), concurrency)
+	fileChan := make(chan string, len(files))
+
+	// 将文件放入channel
+	for _, file := range files {
+		fileChan <- file
+	}
+	close(fileChan)
+
+	// 启动并发worker进行文件解析
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for file := range fileChan {
+				lang := parser.DetectLang(file)
+				if lang == "" {
+					continue
+				}
+				p := parser.NewParserDb(lang, db, projDir)
+				funcs, err := p.ParseFile(file)
+				if err != nil {
+					log.Printf("Error parsing file %s: %v\n", file, err)
+					continue
+				}
+				mu.Lock()
+				allFuncs = append(allFuncs, funcs...)
+				mu.Unlock()
+			}
+		}()
+	}
+
+	wg.Wait()
 	fmt.Printf("Parsed %d files, extracted %d functions.\n", len(files), len(allFuncs))
 	log.Println("正在分析代码...")
 
 	// 3. 分析函数（考虑依赖关系顺序）
-	llmAnalyzer := analyzer.NewLLMAnalyzerHttp(&sync.Map{}, true, 3, db, projDir)
+	llmAnalyzer := analyzer.NewLLMAnalyzerHttp(&sync.Map{}, true, cfg.DefaultMaxWorker, db, projDir)
 	results := llmAnalyzer.AnalyzeAll(allFuncs)
 	fmt.Printf("Analyzed %d functions with AI summaries.\n", len(results))
 	log.Println("正在构建知识图谱...")
 
 	// 4. 构建知识图谱
-	kg := graph.BuildGraph(results)
+	kg := graph.BuildGraph(results, projDir)
 	// （可选）保存图结构用于调试
 	err = kg.SaveGraphJSONOnlyFunctions(filepath.Join(projDir, ".gitgo", "graph.json"))
 	// 12. （可选） 展示统计
 	visualize.PrintStats(visualize.ComputePackageStats(kg))
-	// 确保退出时删除临时文件
-	defer func() {
-		if err := os.Remove(tempFilePath); err != nil && !os.IsNotExist(err) {
-			log.Printf("删除索引临时文件失败 %q: %v", tempFilePath, err)
-		}
-		logs.Infof("索引完成，已删除索引临时文件 %q", tempFilePath)
-	}()
+
+	// 13. 保存git信息到.gitgo/info.json
+	if err := SaveGitBuildInfo(projDir, subPath, len(files), len(allFuncs)); err != nil {
+		log.Printf("保存git构建信息失败: %v", err)
+	}
 	return err
 }
 
