@@ -1,27 +1,42 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # build-linux.sh
-# 该脚本用于将 Go 程序编译为适用于 Linux amd64 架构的二进制文件
-# 它会遍历 cmd/app/app.go 和 cmd/bot/bot.go 两个文件进行打包
-# 使用方法: ./build-linux.sh
+# 将 Go 程序交叉编译成 Linux/amd64 可执行文件
+# 用法：./build-linux.sh
 
-set -e  # 出错时退出
+set -euo pipefail
 
-echo "开始编译，目标平台：Linux amd64..."
+echo "➡️  开始编译，目标平台：Linux amd64..."
+
+## 1⃣️ 依赖检查 --------------------------------------------------------------
+if ! command -v zig >/dev/null 2>&1; then
+  echo "❌  未找到 zig，请先手动执行：brew install zig"
+  exit 1
+fi
+
+## 2⃣️ 交叉编译环境变量 ------------------------------------------------------
 export GOOS=linux
 export GOARCH=amd64
 export CGO_ENABLED=1
+export CC="zig cc -target x86_64-linux-musl"
 
-# 定义需要编译的 Go 文件列表
-files=("cmd/app/fm_http.go" "cmd/main/fm.go")
+## 3⃣️ 待编译源文件列表 ------------------------------------------------------
+sources=(
+  "cmd/app/fm_http.go"
+  "cmd/main/fm.go"
+)
 
-# 遍历编译每个文件
-for filepath in "${files[@]}"; do
-    # 获取不带路径和扩展名的基本名称（例如 "app" 或 "bot"）
-    base=$(basename "$filepath" .go)
-    output="${base}_linux"  # 构造输出文件名
-    echo "正在编译 ${filepath} -> ${output} ..."
-    go build -o "$output" "$filepath"
+## 4⃣️ 循环编译 --------------------------------------------------------------
+for src in "${sources[@]}"; do
+  if [[ ! -r "$src" ]]; then
+    echo "⚠️  源文件 $src 不可读，请检查权限"
+    exit 1
+  fi
+
+  bin="$(basename "${src%.go}")_linux"
+  echo "🔨  go build -o $bin $src"
+  go build -trimpath -ldflags='-s -w' -o "$bin" "$src"
 done
 
-echo "编译成功，生成的二进制文件："
-ls -1 *_linux
+## 5⃣️ 结果展示 --------------------------------------------------------------
+echo -e "\n✅ 编译完成，生成的文件："
+ls -lh *_linux
