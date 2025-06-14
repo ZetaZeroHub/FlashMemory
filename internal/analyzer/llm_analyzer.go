@@ -4,10 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/kinglegendzzh/flashmemory/config"
-	"github.com/kinglegendzzh/flashmemory/internal/parser"
-	"github.com/kinglegendzzh/flashmemory/internal/utils"
-	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"io/ioutil"
 	"log"
 	"os"
@@ -15,6 +11,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/kinglegendzzh/flashmemory/config"
+	"github.com/kinglegendzzh/flashmemory/internal/parser"
+	"github.com/kinglegendzzh/flashmemory/internal/ranking"
+	"github.com/kinglegendzzh/flashmemory/internal/utils"
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
 // LLMAnalysisResult 保存函数的分析结果
@@ -140,6 +142,33 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo, startLlm bool) LLM
 			logs.Infof("代码内容过长，截取前%d个字符", cfg.PromptLimit)
 			prompt = prompt[:cfg.CodeLimit]
 		}
+		// 该函数的路径、类名和引入包
+
+		// 只取最后一级目录和文件名
+		filePath := fn.File
+		// 统一将路径分隔符转换为系统分隔符
+		filePath = filepath.FromSlash(filePath)
+		// 使用filepath.Split来分割路径,支持跨平台
+		dir, file := filepath.Split(filePath)
+		dir = filepath.Clean(dir)
+		var displayPath string
+		// 获取父目录名
+		parentDir := filepath.Base(dir)
+		if parentDir != "." && parentDir != "/" {
+			displayPath = filepath.Join(parentDir, file)
+		} else {
+			displayPath = file
+		}
+		// 转换回统一的斜杠格式用于显示
+		displayPath = filepath.ToSlash(displayPath)
+		if fn.Package != "" {
+			prompt += fmt.Sprintf("%s \n%s(%s)\n", cfg.AnaPrompts.Route, displayPath, fn.Package)
+		} else {
+			prompt += fmt.Sprintf("%s \n%s\n", cfg.AnaPrompts.Route, fn.File)
+		}
+		if fn.Imports != nil {
+			prompt += fmt.Sprintf("%s \n%s\n", cfg.AnaPrompts.Imports, strings.Join(fn.Imports, ", "))
+		}
 		if len(internalDeps) > 0 {
 			// 附加内部依赖的描述（如果已有）
 			tip := 1
@@ -227,9 +256,9 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo, startLlm bool) LLM
 		res.Description = result
 	}
 
-	// 计算简单的重要性评分（例如：内部依赖数量 + 0.1*代码行数）
-	res.ImportanceScore = float64(len(internalDeps)) + 0.1*float64(fn.Lines)
-	logs.Infof("重要性评分: %.2f", res.ImportanceScore)
+	// 计算简单的重要性评分
+	res.ImportanceScore = fn.Score
+	logs.Infof("%s 重要性评分: %.5f", res.Func.Name, res.ImportanceScore)
 	return res
 }
 
@@ -239,7 +268,29 @@ func (a *LLMAnalyzer) AnalyzeAll(funcs []parser.FunctionInfo) []LLMAnalysisResul
 		log.Printf("[DEBUG] 开始批量分析 %d 个函数", len(funcs))
 	}
 
-	resultChan := make(chan LLMAnalysisResult, len(funcs))
+	// 使用函数重要性排序算法对函数进行重排序
+	// 配置权重：重视调用层次（从依赖最底层到最顶层）
+	rankingConfig := &ranking.RankingConfig{
+		Alpha: 0.4, // Fan-In权重
+		Beta:  0.2, // Fan-Out权重
+		Gamma: 0.5, // 深度权重（重视调用层次）
+		Delta: 0.1, // 复杂度权重
+	}
+	logs.Infof("配置权重：重视调用层次（从依赖最底层到最顶层）")
+	logs.Infof("Alpha: %.2f, Beta: %.2f, Gamma: %.2f, Delta: %.2f", rankingConfig.Alpha, rankingConfig.Beta, rankingConfig.Gamma, rankingConfig.Delta)
+	ranker := ranking.NewFunctionRanker(rankingConfig)
+
+	// 对函数进行重要性排序（升序：从低分到高分，即从依赖最底层到最顶层）
+	sortedFuncs := ranker.RankFunctions(funcs)
+	if a.debug {
+		log.Printf("[DEBUG] 函数重要性排序完成，按从底层到顶层顺序分析")
+		for i, fn := range sortedFuncs {
+			log.Printf("[DEBUG] 排序 %d: %s (Score: %.3f, FanIn: %d, FanOut: %d, Depth: %d)",
+				i+1, fn.Name, fn.Score, fn.FanIn, fn.FanOut, fn.Depth)
+		}
+	}
+
+	resultChan := make(chan LLMAnalysisResult, len(sortedFuncs))
 	done := make(chan bool)
 	results := []LLMAnalysisResult{}
 
@@ -248,17 +299,18 @@ func (a *LLMAnalyzer) AnalyzeAll(funcs []parser.FunctionInfo) []LLMAnalysisResul
 	knownDescMutex := sync.Mutex{} // 用于保护 knownDesc 的并发访问
 
 	// 归类函数
-	for _, f := range funcs {
+	for _, f := range sortedFuncs {
 		key := fmt.Sprintf("%s_%s_%s", f.File, f.Name, f.FunctionType)
 		classifiedMutex.Lock()
 		classified[key] = append(classified[key], f)
 		classifiedMutex.Unlock()
 	}
 
-	remaining := funcs
-	sort.SliceStable(remaining, func(i, j int) bool {
-		return len(remaining[i].Calls) < len(remaining[j].Calls)
-	})
+	remaining := sortedFuncs
+	// 注释掉原有的简单排序，使用ranking算法的结果
+	// sort.SliceStable(remaining, func(i, j int) bool {
+	//	return len(remaining[i].Calls) < len(remaining[j].Calls)
+	// })
 
 	// 启动结果收集goroutine
 	go func() {

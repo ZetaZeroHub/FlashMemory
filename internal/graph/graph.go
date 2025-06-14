@@ -3,9 +3,11 @@ package graph
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/kinglegendzzh/flashmemory/internal/analyzer"
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
 // KnowledgeGraph holds the nodes (functions) and relationships.
@@ -18,7 +20,7 @@ type KnowledgeGraph struct {
 }
 
 // BuildGraph constructs the knowledge graph from analysis results.
-func BuildGraph(results []analyzer.LLMAnalysisResult) KnowledgeGraph {
+func BuildGraph(results []analyzer.LLMAnalysisResult, projDir string) KnowledgeGraph {
 	// 先清空所有 CodeSnippet
 	for i := range results {
 		results[i].CodeSnippet = ""
@@ -32,21 +34,39 @@ func BuildGraph(results []analyzer.LLMAnalysisResult) KnowledgeGraph {
 		Externals: make(map[string][]string),
 	}
 	// 后面的逻辑就不用再清空 CodeSnippet 了
-	for _, res := range kg.Functions {
-		name := res.Func.Name
-		if res.Func.Package != "" {
-			name = res.Func.Package + "." + name
+	for i := range kg.Functions {
+		// 如果传入了项目根目录，则转换为相对路径
+		path := kg.Functions[i].Func.File
+		if projDir != "" {
+			filePath := path
+			// 如果不是绝对路径，就把它视作相对于 projDir 的子路径
+			if !filepath.IsAbs(filePath) {
+				filePath = filepath.Join(projDir, filePath)
+			}
+			rel, err := filepath.Rel(projDir, filePath)
+			if err != nil {
+				logs.Warnf("[WARN] 无法计算相对路径: %v, 使用原始路径", err)
+			} else {
+				path = filepath.ToSlash(rel)
+			}
 		}
-		pkg := res.Func.Package
+		kg.Functions[i].Func.File = path
+		logs.Infof("[DEBUG][BuildGraph] 正在转换文件路径: %s", kg.Functions[i].Func.File)
+
+		name := kg.Functions[i].Func.Name
+		if kg.Functions[i].Func.Package != "" {
+			name = kg.Functions[i].Func.Package + "." + name
+		}
+		pkg := kg.Functions[i].Func.Package
 		if pkg == "" {
 			pkg = "(root)"
 		}
 		kg.Packages[pkg] = append(kg.Packages[pkg], name)
-		for _, callee := range res.InternalDeps {
+		for _, callee := range kg.Functions[i].InternalDeps {
 			kg.Calls[name] = append(kg.Calls[name], callee)
 			kg.CalledBy[callee] = append(kg.CalledBy[callee], name)
 		}
-		for _, lib := range res.ExternalDeps {
+		for _, lib := range kg.Functions[i].ExternalDeps {
 			kg.Externals[lib] = append(kg.Externals[lib], name)
 		}
 	}
