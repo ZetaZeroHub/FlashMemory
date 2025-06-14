@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/kinglegendzzh/flashmemory/internal/back"
 	"log"
 	"net/http"
 	"os"
@@ -12,7 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kinglegendzzh/flashmemory/cmd/common"
 	"github.com/kinglegendzzh/flashmemory/internal/analyzer"
+	"github.com/kinglegendzzh/flashmemory/internal/back"
 	"github.com/kinglegendzzh/flashmemory/internal/graph"
 	"github.com/kinglegendzzh/flashmemory/internal/index"
 	"github.com/kinglegendzzh/flashmemory/internal/parser"
@@ -20,20 +21,6 @@ import (
 	"github.com/kinglegendzzh/flashmemory/internal/utils"
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"github.com/kinglegendzzh/flashmemory/internal/visualize"
-)
-
-var (
-	SupportedLanguages = []string{
-		".go",
-		".py",
-		".js", ".jsx",
-		".ts", ".tsx",
-		".java",
-		".cpp", ".cc", ".cc", ".cxx", ".c++", ".hpp", ".h",
-		".c",
-		".rb",
-		".php",
-	}
 )
 
 func main() {
@@ -387,7 +374,7 @@ func main() {
 										}
 										// 仅考虑特定的文件扩展名
 										ext := filepath.Ext(path)
-										if utils.Contains(SupportedLanguages, ext) {
+										if utils.Contains(common.SupportedLanguages, ext) {
 											allFiles = append(allFiles, path)
 										}
 										return nil
@@ -430,7 +417,7 @@ func main() {
 										}
 										// 仅考虑特定的文件扩展名
 										ext := filepath.Ext(path)
-										if utils.Contains(SupportedLanguages, ext) {
+										if utils.Contains(common.SupportedLanguages, ext) {
 											allFiles = append(allFiles, path)
 										}
 										return nil
@@ -481,7 +468,7 @@ func main() {
 									}
 									// 仅考虑特定的文件扩展名
 									ext := filepath.Ext(path)
-									if utils.Contains(SupportedLanguages, ext) {
+									if utils.Contains(common.SupportedLanguages, ext) {
 										allFiles = append(allFiles, path)
 									}
 									return nil
@@ -567,7 +554,7 @@ func main() {
 					return nil
 				}
 				ext := filepath.Ext(path)
-				if utils.Contains(SupportedLanguages, ext) {
+				if utils.Contains(common.SupportedLanguages, ext) {
 					// 删除该文件的旧索引记录
 					relPath, err := filepath.Rel(*projDir, path)
 					relPath = filepath.ToSlash(relPath)
@@ -608,7 +595,7 @@ func main() {
 			if _, err := os.Stat(absPath); err == nil {
 				// 检查文件扩展名
 				ext := filepath.Ext(absPath)
-				if utils.Contains(SupportedLanguages, ext) {
+				if utils.Contains(common.SupportedLanguages, ext) {
 					files = append(files, absPath)
 				}
 			}
@@ -630,7 +617,7 @@ func main() {
 			}
 			// 仅考虑特定的文件扩展名
 			ext := filepath.Ext(path)
-			if utils.Contains(SupportedLanguages, ext) {
+			if utils.Contains(common.SupportedLanguages, ext) {
 				files = append(files, path)
 			}
 			return nil
@@ -646,21 +633,43 @@ func main() {
 
 	log.Println("正在解析代码...")
 
-	// 2. 解析所有文件
+	// 2. 并发解析所有文件
 	var allFuncs []parser.FunctionInfo
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	concurrency := 3
+	fileChan := make(chan string, len(files))
+
+	// 将文件放入channel
 	for _, file := range files {
-		lang := parser.DetectLang(file)
-		if lang == "" {
-			continue
-		}
-		p := parser.NewParser(lang)
-		funcs, err := p.ParseFile(file)
-		if err != nil {
-			log.Printf("Error parsing file %s: %v\n", file, err)
-			continue
-		}
-		allFuncs = append(allFuncs, funcs...)
+		fileChan <- file
 	}
+	close(fileChan)
+
+	// 启动并发worker
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for file := range fileChan {
+				lang := parser.DetectLang(file)
+				if lang == "" {
+					continue
+				}
+				p := parser.NewParser(lang)
+				funcs, err := p.ParseFile(file)
+				if err != nil {
+					log.Printf("Error parsing file %s: %v\n", file, err)
+					continue
+				}
+				mu.Lock()
+				allFuncs = append(allFuncs, funcs...)
+				mu.Unlock()
+			}
+		}()
+	}
+
+	wg.Wait()
 	fmt.Printf("Parsed %d files, extracted %d functions.\n", len(files), len(allFuncs))
 
 	log.Println("正在分析代码...")
@@ -668,12 +677,6 @@ func main() {
 	llmAnalyzer := analyzer.NewLLMAnalyzer(&sync.Map{}, true, 3)
 	results := llmAnalyzer.AnalyzeAll(allFuncs)
 	fmt.Printf("Analyzed %d functions with AI summaries.\n", len(results))
-
-	log.Println("正在构建知识图谱...")
-	// 4. 构建知识图谱
-	kg := graph.BuildGraph(results)
-	// （可选）保存图结构用于调试
-	// _ = kg.SaveGraphJSON(filepath.Join(*projDir, ".gitgo", "graph.json"))
 
 	log.Println("正在索引代码...")
 	// 5. 初始化索引存储（SQLite和Faiss）
@@ -768,6 +771,12 @@ func main() {
 	}
 
 	log.Println("索引完成。")
+	log.Println("正在构建知识图谱...")
+	// 构建知识图谱
+	kg := graph.BuildGraph(results, *projDir)
+	// （可选）保存图结构用于调试
+	// _ = kg.SaveGraphJSON(filepath.Join(*projDir, ".gitgo", "graph.json"))
+
 	// 6. 计算并打印统计信息
 	stats := visualize.ComputePackageStats(kg)
 	visualize.PrintStats(stats)
