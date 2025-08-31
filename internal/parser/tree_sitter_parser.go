@@ -576,7 +576,6 @@ func (tp *TreeSitterParser) extractPackageAndClasses(rootNode *sitter.Node, data
 
 					classes = append(classes, classInfo)
 					tp.debugLog("Found class: %s (lines %d-%d)", className, classInfo.StartLine, classInfo.EndLine)
-					break
 				}
 			}
 
