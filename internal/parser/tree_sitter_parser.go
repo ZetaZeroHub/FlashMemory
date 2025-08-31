@@ -40,6 +40,7 @@ func (tp *TreeSitterParser) debugLog(format string, a ...interface{}) {
 
 // ParseFile 使用 Tree-sitter 解析指定文件，提取函数信息
 func (tp *TreeSitterParser) ParseFile(path string) ([]FunctionInfo, error) {
+	logs.Infof("正在使用TreeSitterParser %s 解析器解析文件: %s", tp.Lang, path)
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -85,9 +86,19 @@ func (tp *TreeSitterParser) ParseFile(path string) ([]FunctionInfo, error) {
 	tree := parserTS.Parse(nil, data)
 	rootNode := tree.RootNode()
 
-	// 尝试提取 package 名称
-	pkgName := tp.extractPackageName(rootNode, data, language)
+	// 尝试提取 package 名称和类信息
+	pkgName, classes := tp.extractPackageAndClasses(rootNode, data, language)
 	tp.debugLog("Extracted Package/Namespace for %s: '%s'", tp.Lang, pkgName)
+
+	// 创建类名到类信息的映射，用于后续查找函数所属的类
+	classMap := make(map[uint32]string) // 行号 -> 类名
+	for _, class := range classes {
+		// 将类的每一行都映射到类名
+		for line := class.StartLine; line <= class.EndLine; line++ {
+			classMap[line] = class.Name
+		}
+		tp.debugLog("Mapped class %s to lines %d-%d", class.Name, class.StartLine, class.EndLine)
+	}
 
 	// 提取导入信息
 	imports := tp.extractImports(rootNode, data, language)
@@ -105,6 +116,8 @@ func (tp *TreeSitterParser) ParseFile(path string) ([]FunctionInfo, error) {
 	qc := sitter.NewQueryCursor()
 	qc.Exec(query, rootNode)
 
+	// 注意：此处直接 append，不做任何基于 Name 的去重，确保同名不同位置的函数都能保留。
+	// 如果后续需要唯一性判断，务必用 文件名+类名+函数名+起始行号 做 key。
 	funcs := []FunctionInfo{}
 	for {
 		match, ok := qc.NextMatch()
@@ -170,11 +183,21 @@ func (tp *TreeSitterParser) ParseFile(path string) ([]FunctionInfo, error) {
 			// 提取函数内部的调用信息
 			calls := tp.extractCalls(node, data, language)
 
+			// 确定函数所属的类（如果有）
+			funcPackage := pkgName
+			if tp.Lang == "python" && len(classes) > 0 {
+				// 对于Python，查找函数所在的类
+				if className, ok := classMap[startLine]; ok {
+					funcPackage = className
+					tp.debugLog("Function %s belongs to class %s", funcName, className)
+				}
+			}
+
 			fn := FunctionInfo{
 				Name:         funcName,
 				Receiver:     receiver,
 				File:         path,
-				Package:      pkgName,
+				Package:      funcPackage,
 				Imports:      imports,
 				Calls:        calls,
 				Lines:        int(linesCount),
@@ -200,7 +223,6 @@ func (tp *TreeSitterParser) ParseFile(path string) ([]FunctionInfo, error) {
 			return nil, err
 		}
 		funcs = append(funcs, fn...)
-		logs.Infof("LLMParser 解析函数信息成功，fn=%v", fn)
 	}
 	//}
 	return funcs, nil
@@ -226,8 +248,8 @@ func getTreeSitterFunctionQuery(lang string) string {
 	case "java":
 		return `(method_declaration) @func_decl`
 	case "ruby":
-		// 可能为 def 或 method 节点
-		return `((def) @func_decl | (method) @func_decl)`
+		// Ruby的Tree-sitter中方法定义使用method节点
+		return `(method) @func_decl`
 	case "rust":
 		return `(function_item) @func_decl`
 	case "typescript":
@@ -428,11 +450,19 @@ func (tp *TreeSitterParser) extractCalls(funcNode *sitter.Node, data []byte, lan
 	return filterBuiltInCalls(calls)
 }
 
-func (tp *TreeSitterParser) extractPackageName(rootNode *sitter.Node, data []byte, language *sitter.Language) string {
+// ClassInfo stores information about a class including its name and position in the file
+type ClassInfo struct {
+	Name      string
+	StartLine uint32
+	EndLine   uint32
+}
+
+// extractPackageAndClasses extracts the package name and all class definitions from the file
+func (tp *TreeSitterParser) extractPackageAndClasses(rootNode *sitter.Node, data []byte, language *sitter.Language) (string, []ClassInfo) {
 	qc := sitter.NewQueryCursor()
 	var pkgQueryStr string
 	var classQueryStr string
-	var className string
+	classes := []ClassInfo{}
 	var packageName string
 
 	// Step 1: Extract the package name based on language
@@ -450,7 +480,8 @@ func (tp *TreeSitterParser) extractPackageName(rootNode *sitter.Node, data []byt
 	case "elixir":
 		pkgQueryStr = "(module_definition name: (alias) @namespace)"
 	case "python":
-		return "" // Cannot reliably extract from single file syntax
+		// For Python, we'll use an empty string as package name but still detect classes
+		packageName = "" // Cannot reliably extract package from single file syntax
 	case "javascript", "typescript":
 		pkgQueryStr = `
 			(import_statement source: (string) @import_path) |
@@ -459,10 +490,10 @@ func (tp *TreeSitterParser) extractPackageName(rootNode *sitter.Node, data []byt
 	case "rust":
 		pkgQueryStr = "(mod_item) @module"
 	case "c", "bash":
-		return "" // No package concept
+		return "", nil // No package concept
 	default:
 		tp.debugLog("Package/namespace extraction not implemented for language: %s", tp.Lang)
-		return ""
+		return "", nil
 	}
 
 	// Step 2: Execute the query for package name extraction
@@ -510,30 +541,53 @@ func (tp *TreeSitterParser) extractPackageName(rootNode *sitter.Node, data []byt
 
 	//tp.debugLog("Syntax tree: %s", rootNode.Content(data))
 	if classQueryStr != "" {
+		tp.debugLog("Class query for %s: %s", tp.Lang, classQueryStr)
 		classQuery, err := sitter.NewQuery([]byte(classQueryStr), language)
 		if err != nil {
 			tp.debugLog("Error creating class query for %s: %v", tp.Lang, err)
 		} else {
-			qc.Exec(classQuery, rootNode)
-			// Extract the class name
-			if match, ok := qc.NextMatch(); ok {
-				tp.debugLog("Match found: %v", match)
-				for _, capture := range match.Captures {
-					className = capture.Node.Content(data)
-					tp.debugLog("Found class name: %s", className)
+			// Create a new query cursor for class extraction to avoid state issues
+			classQc := sitter.NewQueryCursor()
+			classQc.Exec(classQuery, rootNode)
+
+			// Extract all class names and their positions
+			for {
+				match, ok := classQc.NextMatch()
+				if !ok {
 					break
 				}
+
+				for _, capture := range match.Captures {
+					classNode := capture.Node
+					className := classNode.Content(data)
+
+					// Get the class node's parent to get the full class definition including methods
+					parentNode := classNode.Parent()
+					if parentNode == nil {
+						parentNode = classNode // Fallback to the class node itself
+					}
+
+					// Record class information with its position
+					classInfo := ClassInfo{
+						Name:      className,
+						StartLine: parentNode.StartPoint().Row + 1, // 1-indexed
+						EndLine:   parentNode.EndPoint().Row + 1,   // 1-indexed
+					}
+
+					classes = append(classes, classInfo)
+					tp.debugLog("Found class: %s (lines %d-%d)", className, classInfo.StartLine, classInfo.EndLine)
+					break
+				}
+			}
+
+			if len(classes) == 0 {
+				tp.debugLog("No class matches found for %s", tp.Lang)
 			}
 		}
 	}
 
-	// Step 4: Return the concatenated result "packageName::className"
-	if className != "" {
-		return fmt.Sprintf("%s::%s", packageName, className)
-	}
-
-	// If no class name is found, just return the package name
-	return packageName
+	// Return the package name and all found classes
+	return packageName, classes
 }
 
 // filterBuiltInCalls 根据内置白名单过滤掉系统内置函数调用，保留用户自定义调用
