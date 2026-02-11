@@ -54,6 +54,18 @@ CREATE TABLE IF NOT EXISTS externals (
     function TEXT,
     external TEXT
 );
+CREATE TABLE IF NOT EXISTS code_desc (
+    id INTEGER PRIMARY KEY,
+    name TEXT,                  -- 文件名或文件夹名
+    type TEXT,                  -- 类型：'file' 或 'directory'
+    path TEXT,                  -- 相对路径
+    parent_path TEXT,           -- 上层目录路径
+    function_count INTEGER,     -- 子函数数量
+    file_count INTEGER,         -- 子文件数量
+    description TEXT,           -- 模块功能描述
+    updated_at TIMESTAMP,       -- 更新时间
+    created_at TIMESTAMP        -- 创建时间
+);
 `
 	_, err = db.Exec(schema)
 	if err != nil {
@@ -63,6 +75,16 @@ CREATE TABLE IF NOT EXISTS externals (
 	_, err = db.Exec(`
 CREATE UNIQUE INDEX IF NOT EXISTS idx_func_unique
   ON functions(name, package, file, start_line, end_line, function_type);
+`)
+	if err != nil {
+		return nil, err
+	}
+
+	// 为 code_desc 表添加索引，提高按路径查询的性能
+	_, err = db.Exec(`
+CREATE INDEX IF NOT EXISTS idx_code_desc_path ON code_desc(path);
+CREATE INDEX IF NOT EXISTS idx_code_desc_parent ON code_desc(parent_path);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_code_desc_unique ON code_desc(path, type);
 `)
 	if err != nil {
 		return nil, err
@@ -289,4 +311,37 @@ func (idx *Indexer) GetIndexCacheStats() map[string]interface{} {
 // LoadIndexFromFile 从文件加载索引
 func (idx *Indexer) LoadIndexFromFile(path string) error {
 	return idx.FaissIndex.LoadFromFile(path)
+}
+
+// InitCodeDescDb 初始化 code_desc 表
+func InitCodeDescDb(db *sql.DB) error {
+	_, err := db.Exec(`
+CREATE TABLE IF NOT EXISTS code_desc (
+    id INTEGER PRIMARY KEY,
+    name TEXT,                  -- 文件名或文件夹名
+    type TEXT,                  -- 类型：'file' 或 'directory'
+    path TEXT,                  -- 相对路径
+    parent_path TEXT,           -- 上层目录路径
+    function_count INTEGER,     -- 子函数数量
+    file_count INTEGER,         -- 子文件数量
+    description TEXT,           -- 模块功能描述
+    updated_at TIMESTAMP,       -- 更新时间
+    created_at TIMESTAMP        -- 创建时间
+);
+`)
+	if err != nil {
+		return err
+	}
+	logs.Infof("初始化 code_desc 表成功")
+	// 为 code_desc 表添加索引，提高按路径查询的性能
+	_, err = db.Exec(`
+CREATE INDEX IF NOT EXISTS idx_code_desc_path ON code_desc(path);
+CREATE INDEX IF NOT EXISTS idx_code_desc_parent ON code_desc(parent_path);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_code_desc_unique ON code_desc(path, type);
+`)
+	if err != nil {
+		return err
+	}
+	logs.Infof("初始化 code_desc 索引成功")
+	return nil
 }

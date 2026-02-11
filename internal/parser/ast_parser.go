@@ -48,10 +48,15 @@ func (p *GoASTParser) ParseFile(path string) ([]FunctionInfo, error) {
 			Imports: importList,
 			Calls:   []string{},
 		}
+		var receiverVarName string
+		var receiverType string
 		// If method (has receiver)
 		if funcDecl.Recv != nil && len(funcDecl.Recv.List) > 0 {
 			// e.g. "*User" or "User" type name
 			var recvType string
+			if len(funcDecl.Recv.List[0].Names) > 0 {
+				receiverVarName = funcDecl.Recv.List[0].Names[0].Name
+			}
 			switch t := funcDecl.Recv.List[0].Type.(type) {
 			case *ast.StarExpr:
 				// Pointer receiver (e.g. *StructWithMethods)
@@ -66,6 +71,7 @@ func (p *GoASTParser) ParseFile(path string) ([]FunctionInfo, error) {
 				recvType = fmt.Sprintf("%v", funcDecl.Recv.List[0].Type)
 			}
 			fn.Receiver = recvType
+			receiverType = recvType
 			// Prepend receiver type to function name for uniqueness (like User.Save)
 			fn.Name = recvType + "." + fn.Name
 		}
@@ -101,7 +107,11 @@ func (p *GoASTParser) ParseFile(path string) ([]FunctionInfo, error) {
 					case *ast.SelectorExpr:
 						// e.g. pkg.Func or obj.Method
 						if pkgIdent, ok := f.X.(*ast.Ident); ok {
-							callName = pkgIdent.Name + "." + f.Sel.Name
+							if receiverType != "" && receiverVarName != "" && pkgIdent.Name == receiverVarName {
+								callName = receiverType + "." + f.Sel.Name
+							} else {
+								callName = pkgIdent.Name + "." + f.Sel.Name
+							}
 						} else {
 							callName = f.Sel.Name
 						}

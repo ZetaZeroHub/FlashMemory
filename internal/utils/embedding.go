@@ -3,14 +3,16 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/kinglegendzzh/flashmemory/config"
-	"github.com/kinglegendzzh/flashmemory/internal/cloud"
-	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kinglegendzzh/flashmemory/cmd/common"
+	"github.com/kinglegendzzh/flashmemory/config"
+	"github.com/kinglegendzzh/flashmemory/internal/cloud"
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
 var (
@@ -44,27 +46,21 @@ func getConfig() (*config.Config, error) {
 	return cfg, cfgErr
 }
 
-// EmbeddingsList 调用 Ollama 的 embedding API 获取多条查询的向量
-func EmbeddingsList(queries []string, dim int) ([][]float32, error) {
+func EmbeddingsListOnlyOllama(queries []string, dim int) ([][]float32, error) {
 	cfg, err := getConfig()
 	if cfg == nil || err != nil {
 		return nil, err
 	}
-	if cfg.EmbeddingCloudModel.Enabled {
-		logs.Infof("Use Cloud Model: %s", cfg.EmbeddingCloudModel.Model)
-		return cloud.EmbeddingInvoke(&cfg.EmbeddingCloudModel, queries, dim)
-	}
-
 	url := cfg.ApiBaseUrl + cfg.EmbeddingApi
 	payload := map[string]interface{}{
 		"model": cfg.EmbeddingModel,
 		"input": queries,
 	}
-	logs.Infof("EmbeddingsList: %s, %v", url, payload)
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
+	logs.Infof("EmbeddingsList: %s, %v", url, string(jsonPayload))
 
 	req, err := http.NewRequest("POST", url, strings.NewReader(string(jsonPayload)))
 	if err != nil {
@@ -75,31 +71,31 @@ func EmbeddingsList(queries []string, dim int) ([][]float32, error) {
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		logs.Errorf("Warn: [httpClient]no config file found or parse error, fallback to env or default. Err: %v", err)
-		return nil, err
+		return nil, common.NewLLMResponseError(err.Error())
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logs.Errorf("Warn: [ReadAll]no config file found or parse error, fallback to env or default. Err: %v", err)
-		return nil, err
+		return nil, common.NewLLMResponseError(err.Error())
 	}
 
 	var result map[string]interface{}
 	if err = json.Unmarshal(body, &result); err != nil {
 		logs.Errorf("Warn: [Unmarshal]no config file found or parse error, fallback to env or default. Err: %v", err)
-		return nil, err
+		return nil, common.NewLLMResponseError(err.Error())
 	}
 
 	raw, ok := result["embeddings"]
 	if !ok {
 		logs.Errorf("Warn: [result[\"embeddings\"]]no config file found or parse error, fallback to env or default. Err: %v", err)
-		return nil, fmt.Errorf("no embeddings field in response")
+		return nil, common.NewLLMResponseError(fmt.Errorf("no embeddings field in response").Error())
 	}
 	rawList, ok := raw.([]interface{})
 	if !ok {
 		logs.Errorf("Warn: [raw.([]interface{})]no config file found or parse error, fallback to env or default. Err: %v", err)
-		return nil, fmt.Errorf("embeddings field is not a list")
+		return nil, common.NewLLMResponseError(fmt.Errorf("embeddings field is not a list").Error())
 	}
 
 	embeddings := make([][]float32, len(rawList))
@@ -107,7 +103,7 @@ func EmbeddingsList(queries []string, dim int) ([][]float32, error) {
 		sliceRaw, ok := item.([]interface{})
 		if !ok {
 			logs.Errorf("Warn: [sliceRaw, ok :=]no config file found or parse error, fallback to env or default. Err: %v", err)
-			return nil, fmt.Errorf("embeddings[%d] is not a list", i)
+			return nil, common.NewLLMResponseError(fmt.Errorf("embeddings[%d] is not a list", i).Error())
 		}
 		vec := make([]float32, 0, len(sliceRaw))
 		for _, v := range sliceRaw {
@@ -125,4 +121,25 @@ func EmbeddingsList(queries []string, dim int) ([][]float32, error) {
 		embeddings[i] = vec
 	}
 	return embeddings, nil
+}
+
+// EmbeddingsList 调用 Ollama 的 embedding API 获取多条查询的向量
+func EmbeddingsList(queries []string, dim int) ([][]float32, error) {
+	cfg, err := getConfig()
+	if cfg == nil || err != nil {
+		return nil, err
+	}
+	var res [][]float32
+	if cfg.EmbeddingCloudModel.Enabled {
+		logs.Infof("Use Cloud Model: %s", cfg.EmbeddingCloudModel.Model)
+		res, err = cloud.EmbeddingInvoke(&cfg.EmbeddingCloudModel, queries, dim)
+		if err != nil {
+			logs.Infof("Back To use Ollama Model: %s", cfg.EmbeddingModel)
+			res, err = EmbeddingsListOnlyOllama(queries, dim)
+		}
+	} else {
+		logs.Infof("Use Ollama Model: %s", cfg.EmbeddingModel)
+		res, err = EmbeddingsListOnlyOllama(queries, dim)
+	}
+	return res, err
 }

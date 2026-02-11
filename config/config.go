@@ -87,29 +87,68 @@ type KeywordPrompts struct {
 	User   string `mapstructure:"user" yaml:"user" json:"user,omitempty"`
 }
 
+type ModuleAnalyzerPrompts struct {
+	Header          string `mapstructure:"header" yaml:"header" json:"header,omitempty"`
+	Footer          string `mapstructure:"footer" yaml:"footer" json:"footer,omitempty"`
+	SubModuleHeader string `mapstructure:"sub_module_header" yaml:"sub_module_header" json:"sub_module_header,omitempty"`
+	SubModuleFile   string `mapstructure:"sub_module_file" yaml:"sub_module_file" json:"sub_module_file,omitempty"`
+	SubModuleDir    string `mapstructure:"sub_module_dir" yaml:"sub_module_dir" json:"sub_module_dir,omitempty"`
+	SubModuleDesc   string `mapstructure:"sub_module_desc" yaml:"sub_module_desc" json:"sub_module_desc,omitempty"`
+}
+
+type RepoAnalyzerPrompts struct {
+	Header          string `mapstructure:"header" yaml:"header" json:"header,omitempty"`
+	Footer          string `mapstructure:"footer" yaml:"footer" json:"footer,omitempty"`
+	SubModuleHeader string `mapstructure:"sub_module_header" yaml:"sub_module_header" json:"sub_module_header,omitempty"`
+	SubModuleFile   string `mapstructure:"sub_module_file" yaml:"sub_module_file" json:"sub_module_file,omitempty"`
+	SubModuleDir    string `mapstructure:"sub_module_dir" yaml:"sub_module_dir" json:"sub_module_dir,omitempty"`
+	SubModuleDesc   string `mapstructure:"sub_module_desc" yaml:"sub_module_desc" json:"sub_module_desc,omitempty"`
+}
+
+type FileAnalyzerPrompts struct {
+	Header          string `mapstructure:"header" yaml:"header" json:"header,omitempty"`
+	Footer          string `mapstructure:"footer" yaml:"footer" json:"footer,omitempty"`
+	SubModuleHeader string `mapstructure:"sub_module_header" yaml:"sub_module_header" json:"sub_module_header,omitempty"`
+}
+
 type Config struct {
-	LlmParserPrompts     string         `mapstructure:"llm_parser_prompts" yaml:"llm_parser_prompts" json:"llm_parser_prompts,omitempty"`
-	AnaPrompts           AnaPrompts     `mapstructure:"ana_prompts" yaml:"ana_prompts" json:"ana_prompts,omitempty"`
-	KeywordPrompts       KeywordPrompts `mapstructure:"keyword_prompts" yaml:"keyword_prompts" json:"keyword_prompts,omitempty"`
-	ApiBaseUrl           string         `mapstructure:"api_base_url" yaml:"api_base_url" json:"api_base_url,omitempty"`
-	CompletionApi        string         `mapstructure:"completion_api" yaml:"completion_api" json:"completion_api,omitempty"`
-	EmbeddingApi         string         `mapstructure:"embedding_api" yaml:"embedding_api" json:"embedding_api,omitempty"`
-	DefaultModel         string         `mapstructure:"default_model" yaml:"default_model" json:"default_model,omitempty"`
-	DefaultFormat        string         `mapstructure:"default_format" yaml:"default_format" json:"default_format,omitempty"`
-	DefaultTemp          float64        `mapstructure:"default_temperature" yaml:"default_temperature" json:"default_temp,omitempty"`
-	DefaultLowVram       bool           `mapstructure:"default_low_vram" yaml:"default_low_vram" json:"default_low_vram,omitempty"`
-	DefaultMaxWorker     int            `mapstructure:"default_max_worker" yaml:"default_max_worker" json:"default_max_worker,omitempty"`
-	NormalizeModel       string         `mapstructure:"normalize_model" yaml:"normalize_model" json:"normalize_model,omitempty"`
-	EmbeddingModel       string         `mapstructure:"embedding_model" yaml:"embedding_model" json:"embedding_model,omitempty"`
-	EmbeddingMaxBatch    int            `mapstructure:"embedding_max_batch" yaml:"embedding_max_batch" json:"embedding_max_batch,omitempty"`
-	EmbeddingMaxWorker   int            `mapstructure:"embedding_max_worker" yaml:"embedding_max_worker" json:"embedding_max_worker,omitempty"`
-	EmbeddingCloudModel  CloudModel     `mapstructure:"embedding_cloud_model" yaml:"embedding_cloud_model" json:"embedding_cloud_model,omitempty"`
-	DefaultCloudModel    CloudModel     `mapstructure:"default_cloud_model" yaml:"default_cloud_model" json:"default_cloud_model,omitempty"`
-	ModelConfigs         []ModelConfig  `mapstructure:"model_configs" yaml:"model_configs" json:"model_configs,omitempty"`
-	CodeLimit            int            `mapstructure:"code_limit" yaml:"code_limit" json:"code_limit,omitempty"`
-	PromptLimit          int            `mapstructure:"prompt_limit" yaml:"prompt_limit" json:"prompt_limit,omitempty"`
-	ParserCodeLineLimit  int            `mapstructure:"parser_code_line_limit" yaml:"parser_code_line_limit" json:"parser_code_line_limit,omitempty"`
-	ParserCodeChunkLimit int            `mapstructure:"parser_code_chunk_limit" yaml:"parser_code_chunk_limit" json:"parser_code_chunk_limit,omitempty"`
+	PipPath               string                `mapstructure:"pip_path" yaml:"pip_path" json:"pip_path,omitempty"`
+	LlmParserPrompts      string                `mapstructure:"llm_parser_prompts" yaml:"llm_parser_prompts" json:"llm_parser_prompts,omitempty"`
+	AnaPrompts            AnaPrompts            `mapstructure:"ana_prompts" yaml:"ana_prompts" json:"ana_prompts,omitempty"`
+	KeywordPrompts        KeywordPrompts        `mapstructure:"keyword_prompts" yaml:"keyword_prompts" json:"keyword_prompts,omitempty"`
+	ModuleAnalyzerPrompts ModuleAnalyzerPrompts `mapstructure:"module_analyzer_prompts" yaml:"module_analyzer_prompts" json:"module_analyzer_prompts,omitempty"`
+	RepoAnalyzerPrompts   RepoAnalyzerPrompts   `mapstructure:"repo_analyzer_prompts" yaml:"repo_analyzer_prompts" json:"repo_analyzer_prompts,omitempty"`
+	FileAnalyzerPrompts   FileAnalyzerPrompts   `mapstructure:"file_analyzer_prompts" yaml:"file_analyzer_prompts" json:"file_analyzer_prompts,omitempty"`
+	ApiBaseUrl            string                `mapstructure:"api_base_url" yaml:"api_base_url" json:"api_base_url,omitempty"`
+	CompletionApi         string                `mapstructure:"completion_api" yaml:"completion_api" json:"completion_api,omitempty"`
+	EmbeddingApi          string                `mapstructure:"embedding_api" yaml:"embedding_api" json:"embedding_api,omitempty"`
+	DefaultModel          string                `mapstructure:"default_model" yaml:"default_model" json:"default_model,omitempty"`
+	DefaultFormat         string                `mapstructure:"default_format" yaml:"default_format" json:"default_format,omitempty"`
+	DefaultTemp           float64               `mapstructure:"default_temperature" yaml:"default_temperature" json:"default_temp,omitempty"`
+	DefaultLowVram        bool                  `mapstructure:"default_low_vram" yaml:"default_low_vram" json:"default_low_vram,omitempty"`
+	DefaultMaxWorker      int                   `mapstructure:"default_max_worker" yaml:"default_max_worker" json:"default_max_worker,omitempty"`
+	NormalizeModel        string                `mapstructure:"normalize_model" yaml:"normalize_model" json:"normalize_model,omitempty"`
+	EmbeddingModel        string                `mapstructure:"embedding_model" yaml:"embedding_model" json:"embedding_model,omitempty"`
+	EmbeddingMaxBatch     int                   `mapstructure:"embedding_max_batch" yaml:"embedding_max_batch" json:"embedding_max_batch,omitempty"`
+	EmbeddingMaxWorker    int                   `mapstructure:"embedding_max_worker" yaml:"embedding_max_worker" json:"embedding_max_worker,omitempty"`
+	EmbeddingCloudModel   CloudModel            `mapstructure:"embedding_cloud_model" yaml:"embedding_cloud_model" json:"embedding_cloud_model,omitempty"`
+	DefaultCloudModel     CloudModel            `mapstructure:"default_cloud_model" yaml:"default_cloud_model" json:"default_cloud_model,omitempty"`
+	ModelConfigs          []ModelConfig         `mapstructure:"model_configs" yaml:"model_configs" json:"model_configs,omitempty"`
+	CodeLimit             int                   `mapstructure:"code_limit" yaml:"code_limit" json:"code_limit,omitempty"`
+	PromptLimit           int                   `mapstructure:"prompt_limit" yaml:"prompt_limit" json:"prompt_limit,omitempty"`
+	ParserCodeLineLimit   int                   `mapstructure:"parser_code_line_limit" yaml:"parser_code_line_limit" json:"parser_code_line_limit,omitempty"`
+	ParserCodeChunkLimit  int                   `mapstructure:"parser_code_chunk_limit" yaml:"parser_code_chunk_limit" json:"parser_code_chunk_limit,omitempty"`
+	DbWriterQueueSize     int                   `mapstructure:"db_writer_queue_size" yaml:"db_writer_queue_size" json:"db_writer_queue_size,omitempty"`
+	DbWriterMaxRetries    int                   `mapstructure:"db_writer_max_retries" yaml:"db_writer_max_retries" json:"db_writer_max_retries,omitempty"`
+	DbWriterRetryInterval int                   `mapstructure:"db_writer_retry_interval_ms" yaml:"db_writer_retry_interval_ms" json:"db_writer_retry_interval_ms,omitempty"`
+	LLMLocalTimeoutSec    int                   `mapstructure:"llm_local_timeout_sec" yaml:"llm_local_timeout_sec" json:"llm_local_timeout_sec,omitempty"`
+	LLMCloudTimeoutSec    int                   `mapstructure:"llm_cloud_timeout_sec" yaml:"llm_cloud_timeout_sec" json:"llm_cloud_timeout_sec,omitempty"`
+	// API配置字段
+	ApiToken     string `mapstructure:"api_token" yaml:"api_token" json:"api_token,omitempty"`
+	ApiUrl       string `mapstructure:"api_url" yaml:"api_url" json:"api_url,omitempty"`
+	ApiModel     string `mapstructure:"api_model" yaml:"api_model" json:"api_model,omitempty"`
+	AuthBaseUrl  string `mapstructure:"auth_base_url" yaml:"auth_base_url" json:"auth_base_url,omitempty"`
+	ApiUrlSimple string `mapstructure:"api_url_simple" yaml:"api_url_simple" json:"api_url_simple,omitempty"`
 }
 
 // LoadConfig 加载配置（优先文件，其次环境变量），并保证仅加载一次

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // 启动Faiss服务
@@ -121,4 +122,16 @@ func StopFaissService(process *os.Process) error {
 
 	log.Println("Faiss服务已停止")
 	return nil
+}
+
+// runCmdContextWindows Unix下的命令执行函数（与通用版本相同）
+func runCmdContextWindows(dir, name string, args []string, timeout time.Duration) ([]byte, error) {
+	// Unix下直接调用通用版本
+	return runCmdContext(dir, name, args, timeout)
+}
+
+// isPackageInstalledWindows Unix下的包检查函数（与通用版本相同）
+func isPackageInstalledWindows(envPython, packageName string) bool {
+	// Unix下直接调用通用版本
+	return isPackageInstalled(envPython, packageName)
 }

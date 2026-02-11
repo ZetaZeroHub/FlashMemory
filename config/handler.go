@@ -3,10 +3,12 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
-	"gopkg.in/yaml.v3"
 	"io/ioutil"
 	"net/http"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
 // Response API响应结构
@@ -125,19 +127,18 @@ func UpdateConfig(filePath string, jsonData []byte) error {
 	return nil
 }
 
-// mergeMaps 递归合并两个 map，updateMap 的键值将替换 baseMap 中对应的键
+// mergeMaps 以第一层配置为准合并两个 map，跳过 null 值和空字符串的更新
 func mergeMaps(baseMap, updateMap map[string]interface{}) map[string]interface{} {
 	for k, v := range updateMap {
-		// 如果更新值 v 同时为 map，则检查原始配置对应的值，若为 map，则递归合并
-		if vMap, ok := v.(map[string]interface{}); ok {
-			if baseVal, exists := baseMap[k]; exists {
-				if baseValMap, ok := baseVal.(map[string]interface{}); ok {
-					baseMap[k] = mergeMaps(baseValMap, vMap)
-					continue
-				}
-			}
+		// 跳过 null 值或空字符串的更新
+		if v == nil {
+			continue
 		}
-		// 否则直接覆盖或添加
+		if strVal, ok := v.(string); ok && strVal == "" {
+			continue
+		}
+
+		// 以第一层配置为准：只更新第一层的键值，不进行递归合并
 		baseMap[k] = v
 	}
 	return baseMap

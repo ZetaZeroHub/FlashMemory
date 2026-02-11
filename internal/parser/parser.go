@@ -4,8 +4,6 @@ import (
 	"database/sql"
 	"path/filepath"
 	"strings"
-
-	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
 // FunctionInfo 保存函数或方法的关键信息
@@ -29,6 +27,7 @@ type FunctionInfo struct {
 	Complexity   int
 	Depth        int
 	Score        float64
+	Parser       interface{} // 解析器实例，用于访问特定解析器的功能
 }
 
 // Parser is an interface to parse a file and extract functions and imports.
@@ -72,7 +71,7 @@ func DetectLang(path string) string {
 func NewParser(lang string) Parser {
 	switch lang {
 	case "go", "python", "javascript", "typescript", "java", "cpp", "c", "h", "ruby", "rust", "bash", "elixir", "php":
-		return &TreeSitterParser{Lang: lang, Debug: true}
+		return &TreeSitterParser{Lang: lang, Debug: false}
 	default:
 		return &LLMParser{Lang: lang}
 	}
@@ -81,7 +80,7 @@ func NewParser(lang string) Parser {
 func NewParserDb(lang string, db *sql.DB, projDir string) Parser {
 	switch lang {
 	case "go", "python", "javascript", "typescript", "java", "cpp", "c", "h", "ruby", "rust", "bash", "elixir", "php":
-		return &TreeSitterParser{Lang: lang, Debug: true, Db: db, ProjDir: projDir}
+		return &TreeSitterParser{Lang: lang, Debug: false, Db: db, ProjDir: projDir}
 	default:
 		return &LLMParser{Lang: lang, Db: db, ProjDir: projDir}
 	}
@@ -90,10 +89,8 @@ func NewParserDb(lang string, db *sql.DB, projDir string) Parser {
 func NewParserNoLLM(lang string) Parser {
 	switch lang {
 	case "go", "python", "javascript", "typescript", "java", "cpp", "c", "h", "ruby", "rust", "bash", "elixir", "php":
-		logs.Infof("正在使用TreeSitterParser %s 解析器", lang)
-		return &TreeSitterParser{Lang: lang, Debug: true, NoLLM: true}
+		return &TreeSitterParser{Lang: lang, Debug: false, NoLLM: true}
 	default:
-		logs.Infof("正在使用LLMParser %s 解析器", lang)
 		return &LLMParser{Lang: lang, NoLLM: true}
 	}
 }

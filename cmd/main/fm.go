@@ -13,7 +13,7 @@ import (
 
 	"github.com/kinglegendzzh/flashmemory/cmd/common"
 	"github.com/kinglegendzzh/flashmemory/internal/analyzer"
-	"github.com/kinglegendzzh/flashmemory/internal/back"
+	"github.com/kinglegendzzh/flashmemory/internal/embedding"
 	"github.com/kinglegendzzh/flashmemory/internal/graph"
 	"github.com/kinglegendzzh/flashmemory/internal/index"
 	"github.com/kinglegendzzh/flashmemory/internal/parser"
@@ -199,7 +199,7 @@ func main() {
 			log.Fatalf("加载现有Faiss索引失败: %v", err)
 		}
 
-		err = back.EnsureEmbeddingsBatch(idx)
+		err = embedding.EnsureEmbeddingsBatch(idx)
 		if err != nil {
 			log.Fatalf("加载嵌入向量失败: %v", err)
 		}
@@ -225,7 +225,7 @@ func main() {
 
 		fmt.Println()
 		fmt.Printf("查找: %s (模式: %s)\n", *query, opts.SearchMode)
-		results := engine.Query(*query, opts)
+		results, _ := engine.Query(*query, opts)
 
 		if len(results) == 0 {
 			fmt.Println("未找到相关结果")
@@ -374,7 +374,7 @@ func main() {
 										}
 										// 仅考虑特定的文件扩展名
 										ext := filepath.Ext(path)
-										if utils.Contains(common.SupportedLanguages, ext) {
+										if utils.Contains(common.SupportedLanguages, ext) && !strings.HasSuffix(path, "__init__.py") {
 											allFiles = append(allFiles, path)
 										}
 										return nil
@@ -417,7 +417,7 @@ func main() {
 										}
 										// 仅考虑特定的文件扩展名
 										ext := filepath.Ext(path)
-										if utils.Contains(common.SupportedLanguages, ext) {
+										if utils.Contains(common.SupportedLanguages, ext) && !strings.HasSuffix(path, "__init__.py") {
 											allFiles = append(allFiles, path)
 										}
 										return nil
@@ -468,7 +468,7 @@ func main() {
 									}
 									// 仅考虑特定的文件扩展名
 									ext := filepath.Ext(path)
-									if utils.Contains(common.SupportedLanguages, ext) {
+									if utils.Contains(common.SupportedLanguages, ext) && !strings.HasSuffix(path, "__init__.py") {
 										allFiles = append(allFiles, path)
 									}
 									return nil
@@ -554,7 +554,7 @@ func main() {
 					return nil
 				}
 				ext := filepath.Ext(path)
-				if utils.Contains(common.SupportedLanguages, ext) {
+				if utils.Contains(common.SupportedLanguages, ext) && !strings.HasSuffix(path, "__init__.py") {
 					// 删除该文件的旧索引记录
 					relPath, err := filepath.Rel(*projDir, path)
 					relPath = filepath.ToSlash(relPath)
@@ -595,7 +595,7 @@ func main() {
 			if _, err := os.Stat(absPath); err == nil {
 				// 检查文件扩展名
 				ext := filepath.Ext(absPath)
-				if utils.Contains(common.SupportedLanguages, ext) {
+				if utils.Contains(common.SupportedLanguages, ext) && !strings.HasSuffix(absPath, "__init__.py") {
 					files = append(files, absPath)
 				}
 			}
@@ -617,7 +617,7 @@ func main() {
 			}
 			// 仅考虑特定的文件扩展名
 			ext := filepath.Ext(path)
-			if utils.Contains(common.SupportedLanguages, ext) {
+			if utils.Contains(common.SupportedLanguages, ext) && !strings.HasSuffix(path, "__init__.py") {
 				files = append(files, path)
 			}
 			return nil
@@ -675,7 +675,11 @@ func main() {
 	log.Println("正在分析代码...")
 	// 3. 分析函数（考虑依赖关系顺序）
 	llmAnalyzer := analyzer.NewLLMAnalyzer(&sync.Map{}, true, 3)
-	results := llmAnalyzer.AnalyzeAll(allFuncs)
+	results, err := llmAnalyzer.AnalyzeAll(allFuncs)
+	if err != nil {
+		logs.Errorf("Error analyzing functions: %v", err)
+		return
+	}
 	fmt.Printf("Analyzed %d functions with AI summaries.\n", len(results))
 
 	log.Println("正在索引代码...")
@@ -715,7 +719,7 @@ func main() {
 	}
 
 	// 为每个分析结果添加向量
-	err = back.EnsureEmbeddingsBatch(idx)
+	err = embedding.EnsureEmbeddingsBatch(idx)
 	if err != nil {
 		log.Printf("为函数添加向量失败: %v", err)
 		return
@@ -801,7 +805,7 @@ func main() {
 
 		fmt.Println()
 		logs.Infof("查找: %s (模式: %s)\n", *query, opts.SearchMode)
-		results := engine.Query(*query, opts)
+		results, _ := engine.Query(*query, opts)
 
 		if len(results) == 0 {
 			logs.Infof("未找到相关结果")

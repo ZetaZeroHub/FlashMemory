@@ -2,14 +2,58 @@ import os
 import json
 import numpy as np
 import faiss
+import atexit
+import signal
+import sys
+import time
+import threading
+import psutil
+import logging
+from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from apscheduler.schedulers.background import BackgroundScheduler
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('faiss_server.log')
+    ]
+)
+logger = logging.getLogger('faiss_server')
 
 app = Flask(__name__)
 CORS(app, resources={r"/health": {"origins": "*"}})
 
 # 存储索引的全局变量
 indices = {}
+
+# 配置参数
+CONFIG = {
+    'AUTO_SAVE_INTERVAL': 300,  # 自动保存间隔（秒）
+    'MEMORY_CHECK_INTERVAL': 60,  # 内存检查间隔（秒）
+    'MAX_MEMORY_PERCENT': 80,  # 最大内存使用百分比
+    'VECTOR_COUNT_THRESHOLD': 10000,  # 向量数量阈值，超过此值触发保存
+    'DEFAULT_SAVE_DIR': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'saved_indices'),  # 默认保存目录
+    'ENABLE_AUTO_CLEANUP': True,  # 是否启用自动清理
+}
+
+# 确保保存目录存在
+os.makedirs(CONFIG['DEFAULT_SAVE_DIR'], exist_ok=True)
+
+# 统计信息
+STATS = {
+    'add_vector_count': 0,  # 添加向量的总数
+    'last_cleanup_time': time.time(),  # 上次清理时间
+    'last_save_time': time.time(),  # 上次保存时间
+    'operation_count': 0,  # 操作计数
+}
+
+# 线程锁，用于保护关键操作
+index_lock = threading.RLock()
 
 @app.route('/create_index', methods=['POST'])
 def create_index():
@@ -47,7 +91,9 @@ def create_index():
 
 @app.route('/add_vector', methods=['POST'])
 def add_vector():
-    """添加一个向量到索引"""
+    """添加一个向量到索引，如果func_id已存在则先删除旧向量"""
+    global STATS
+    
     data = request.json
     index_id = data.get('index_id', 'default')
     func_id = data.get('func_id')
@@ -60,42 +106,84 @@ def add_vector():
         return jsonify({'status': 'error', 'message': 'Missing func_id or vector'}), 400
     
     try:
-        index_data = indices[index_id]
-        index = index_data['index']
-        dimension = index_data['dimension']
-        
-        # 确保向量维度正确
-        vector_np = np.array(vector, dtype=np.float32)
-        if len(vector_np) != dimension:
-            # 调整向量大小
-            resized = np.zeros(dimension, dtype=np.float32)
-            resized[:min(len(vector_np), dimension)] = vector_np[:min(len(vector_np), dimension)]
-            vector_np = resized
-        
-        # 对于内积相似度，需要归一化向量
-        if index_data['metric_type'] == 1:  # 内积度量
-            norm = np.linalg.norm(vector_np)
-            if norm > 0:
-                vector_np = vector_np / norm
-        
-        # 获取当前索引中的向量数量作为内部ID
-        internal_id = index.ntotal
-        index_data['id_map'][internal_id] = func_id
-        
-        # 添加向量到索引
-        index.add(vector_np.reshape(1, -1))
+        # 使用线程锁保护索引操作
+        with index_lock:
+            index_data = indices[index_id]
+            index = index_data['index']
+            dimension = index_data['dimension']
+            
+            # 检查是否已存在相同的func_id，如果存在则删除
+            existing_internal_ids = []
+            for internal_id, existing_func_id in list(index_data['id_map'].items()):
+                if existing_func_id == func_id:
+                    existing_internal_ids.append(internal_id)
+            
+            # 如果找到了已存在的func_id，删除对应的向量
+            if existing_internal_ids:
+                # 从id_map中删除
+                for internal_id in existing_internal_ids:
+                    del index_data['id_map'][internal_id]
+                
+                # 记录删除操作，实际向量会在重建索引时被移除
+                logger.info(f"Removed existing vector(s) for func_id {func_id} from index {index_id}")
+            
+            # 确保向量维度正确
+            vector_np = np.array(vector, dtype=np.float32)
+            if len(vector_np) != dimension:
+                # 调整向量大小
+                resized = np.zeros(dimension, dtype=np.float32)
+                resized[:min(len(vector_np), dimension)] = vector_np[:min(len(vector_np), dimension)]
+                vector_np = resized
+            
+            # 对于内积相似度，需要归一化向量
+            if index_data['metric_type'] == 1:  # 内积度量
+                norm = np.linalg.norm(vector_np)
+                if norm > 0:
+                    vector_np = vector_np / norm
+            
+            # 获取当前索引中的向量数量作为内部ID
+            internal_id = index.ntotal
+            index_data['id_map'][internal_id] = func_id
+            
+            # 添加向量到索引
+            index.add(vector_np.reshape(1, -1))
+            
+            # 更新统计信息
+            STATS['add_vector_count'] += 1
+            STATS['operation_count'] += 1
+            
+            # 检查是否需要触发自动保存或清理
+            if STATS['add_vector_count'] >= CONFIG['VECTOR_COUNT_THRESHOLD']:
+                # 在后台线程中执行，避免阻塞当前请求
+                threading.Thread(target=auto_save_indices, daemon=True).start()
+                logger.info(f"触发自动保存：已添加 {STATS['add_vector_count']} 个向量，超过阈值 {CONFIG['VECTOR_COUNT_THRESHOLD']}")
+                STATS['add_vector_count'] = 0  # 重置计数器
+            
+            # 每100次操作检查一次内存使用情况
+            if STATS['operation_count'] % 100 == 0:
+                memory_usage = get_memory_usage()
+                logger.info(f"当前内存使用: {memory_usage['percent']:.2f}% (进程), {memory_usage['system_percent']:.2f}% (系统)")
+                
+                # 如果内存使用过高，触发清理
+                if memory_usage['percent'] > CONFIG['MAX_MEMORY_PERCENT'] or memory_usage['system_percent'] > CONFIG['MAX_MEMORY_PERCENT']:
+                    # 在后台线程中执行，避免阻塞当前请求
+                    threading.Thread(target=check_and_cleanup_memory, daemon=True).start()
         
         return jsonify({
             'status': 'success', 
-            'message': f'Added vector for func_id {func_id}',
+            'message': f'Added vector for func_id {func_id}' + 
+                      (f' (replaced {len(existing_internal_ids)} existing vectors)' if existing_internal_ids else ''),
             'internal_id': internal_id
         })
     except Exception as e:
+        logger.error(f"添加向量时出错: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/add_vectors_batch', methods=['POST'])
 def add_vectors_batch():
-    """批量添加向量到索引"""
+    """批量添加向量到索引，如果func_id已存在则先删除旧向量"""
+    global STATS
+    
     data = request.json
     index_id = data.get('index_id', 'default')
     func_ids = data.get('func_ids', [])
@@ -108,38 +196,85 @@ def add_vectors_batch():
         return jsonify({'status': 'error', 'message': 'Missing func_ids or vectors'}), 400
     
     try:
-        index_data = indices[index_id]
-        index = index_data['index']
-        dimension = index_data['dimension']
-        
-        # 将向量列表转换为numpy数组
-        vectors_np = np.array(vectors, dtype=np.float32).reshape(len(func_ids), dimension)
-        
-        # 对于内积相似度，需要归一化向量
-        if index_data['metric_type'] == 1:  # 内积度量
-            # 计算每个向量的范数
-            norms = np.linalg.norm(vectors_np, axis=1, keepdims=True)
-            # 避免除以零
-            norms[norms == 0] = 1.0
-            # 归一化向量
-            vectors_np = vectors_np / norms
-        
-        # 获取当前索引中的向量数量作为起始内部ID
-        start_id = index.ntotal
-        
-        # 添加向量到索引
-        index.add(vectors_np)
-        
-        # 更新ID映射
-        for i, func_id in enumerate(func_ids):
-            index_data['id_map'][start_id + i] = func_id
+        # 使用线程锁保护索引操作
+        with index_lock:
+            index_data = indices[index_id]
+            index = index_data['index']
+            dimension = index_data['dimension']
+            
+            # 检查是否有已存在的func_id，如果有则记录需要删除的internal_id
+            removed_count = 0
+            for func_id in func_ids:
+                existing_internal_ids = []
+                for internal_id, existing_func_id in list(index_data['id_map'].items()):
+                    if existing_func_id == func_id:
+                        existing_internal_ids.append(internal_id)
+                        del index_data['id_map'][internal_id]
+                        removed_count += 1
+                
+                if existing_internal_ids:
+                    logger.info(f"Removed existing vector(s) for func_id {func_id} from index {index_id}")
+            
+            # 将向量列表转换为numpy数组
+            vectors_np = np.array(vectors, dtype=np.float32)
+            
+            # 确保向量维度正确
+            if vectors_np.shape[1] != dimension:
+                # 创建正确维度的数组
+                resized_vectors = np.zeros((len(func_ids), dimension), dtype=np.float32)
+                # 复制数据，确保不超出边界
+                min_dim = min(vectors_np.shape[1], dimension)
+                resized_vectors[:, :min_dim] = vectors_np[:, :min_dim]
+                vectors_np = resized_vectors
+            
+            # 对于内积相似度，需要归一化向量
+            if index_data['metric_type'] == 1:  # 内积度量
+                # 计算每个向量的范数
+                norms = np.linalg.norm(vectors_np, axis=1, keepdims=True)
+                # 避免除以零
+                norms[norms == 0] = 1.0
+                # 归一化向量
+                vectors_np = vectors_np / norms
+            
+            # 获取当前索引中的向量数量作为起始内部ID
+            start_id = index.ntotal
+            
+            # 添加向量到索引
+            index.add(vectors_np)
+            
+            # 更新ID映射
+            for i, func_id in enumerate(func_ids):
+                index_data['id_map'][start_id + i] = func_id
+            
+            # 更新统计信息
+            STATS['add_vector_count'] += len(func_ids)
+            STATS['operation_count'] += 1
+            
+            # 检查是否需要触发自动保存或清理
+            if STATS['add_vector_count'] >= CONFIG['VECTOR_COUNT_THRESHOLD']:
+                # 在后台线程中执行，避免阻塞当前请求
+                threading.Thread(target=auto_save_indices, daemon=True).start()
+                logger.info(f"触发自动保存：已添加 {STATS['add_vector_count']} 个向量，超过阈值 {CONFIG['VECTOR_COUNT_THRESHOLD']}")
+                STATS['add_vector_count'] = 0  # 重置计数器
+            
+            # 每10次批量操作检查一次内存使用情况
+            if STATS['operation_count'] % 10 == 0:
+                memory_usage = get_memory_usage()
+                logger.info(f"当前内存使用: {memory_usage['percent']:.2f}% (进程), {memory_usage['system_percent']:.2f}% (系统)")
+                
+                # 如果内存使用过高，触发清理
+                if memory_usage['percent'] > CONFIG['MAX_MEMORY_PERCENT'] or memory_usage['system_percent'] > CONFIG['MAX_MEMORY_PERCENT']:
+                    # 在后台线程中执行，避免阻塞当前请求
+                    threading.Thread(target=check_and_cleanup_memory, daemon=True).start()
         
         return jsonify({
             'status': 'success', 
-            'message': f'Added {len(func_ids)} vectors',
+            'message': f'Added {len(func_ids)} vectors' + 
+                      (f' (replaced {removed_count} existing vectors)' if removed_count else ''),
             'start_internal_id': start_id
         })
     except Exception as e:
+        logger.error(f"批量添加向量时出错: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/search_vectors', methods=['POST'])
@@ -335,5 +470,190 @@ def health_check():
         'message': 'FAISS service is running'
     })
 
+def get_memory_usage():
+    """获取当前进程的内存使用情况"""
+    process = psutil.Process(os.getpid())
+    memory_info = process.memory_info()
+    return {
+        'rss': memory_info.rss,  # 物理内存使用
+        'vms': memory_info.vms,  # 虚拟内存使用
+        'percent': process.memory_percent(),  # 内存使用百分比
+        'system_percent': psutil.virtual_memory().percent  # 系统内存使用百分比
+    }
+
+def auto_save_indices():
+    """自动保存所有索引到磁盘"""
+    with index_lock:
+        logger.info("开始自动保存索引...")
+        for index_id, index_data in list(indices.items()):
+            try:
+                # 生成保存路径
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                save_path = os.path.join(CONFIG['DEFAULT_SAVE_DIR'], f"{index_id}_{timestamp}.index")
+                
+                # 保存索引
+                faiss.write_index(index_data['index'], save_path)
+                
+                # 保存元数据
+                metadata_path = save_path + '.meta'
+                with open(metadata_path, 'w') as f:
+                    json.dump({
+                        'dimension': index_data['dimension'],
+                        'metric_type': index_data['metric_type'],
+                        'id_map': {str(k): v for k, v in index_data['id_map'].items()}
+                    }, f)
+                
+                logger.info(f"自动保存索引 {index_id} 到 {save_path} 成功")
+            except Exception as e:
+                logger.error(f"自动保存索引 {index_id} 时出错: {e}")
+        
+        STATS['last_save_time'] = time.time()
+
+def check_and_cleanup_memory():
+    """检查内存使用情况，必要时进行清理"""
+    if not CONFIG['ENABLE_AUTO_CLEANUP']:
+        return
+    
+    memory_usage = get_memory_usage()
+    logger.info(f"内存使用情况: {memory_usage['percent']:.2f}% (进程), {memory_usage['system_percent']:.2f}% (系统)")
+    
+    # 如果内存使用超过阈值，执行清理
+    if memory_usage['percent'] > CONFIG['MAX_MEMORY_PERCENT'] or memory_usage['system_percent'] > CONFIG['MAX_MEMORY_PERCENT']:
+        logger.warning(f"内存使用超过阈值 {CONFIG['MAX_MEMORY_PERCENT']}%，执行自动清理")
+        
+        with index_lock:
+            # 先保存所有索引
+            auto_save_indices()
+            
+            # 然后清理内存
+            for index_id in list(indices.keys()):
+                try:
+                    # 记录索引大小
+                    index_size = indices[index_id]['index'].ntotal
+                    logger.info(f"清理索引 {index_id}，包含 {index_size} 个向量")
+                    
+                    # 删除索引
+                    del indices[index_id]
+                except Exception as e:
+                    logger.error(f"清理索引 {index_id} 时出错: {e}")
+            
+            # 强制垃圾回收
+            import gc
+            gc.collect()
+            
+            # 更新清理时间
+            STATS['last_cleanup_time'] = time.time()
+            STATS['add_vector_count'] = 0
+            
+            logger.info("内存清理完成")
+
+def cleanup_resources():
+    """清理所有资源，防止资源泄漏"""
+    global indices
+    
+    # 停止调度器
+    if hasattr(app, 'scheduler') and app.scheduler:
+        logger.info("停止调度器...")
+        app.scheduler.shutdown()
+    
+    # 保存所有索引
+    try:
+        auto_save_indices()
+    except Exception as e:
+        logger.error(f"退出时保存索引出错: {e}")
+    
+    # 清理所有索引
+    for index_id in list(indices.keys()):
+        try:
+            del indices[index_id]
+        except Exception as e:
+            logger.error(f"清理索引 {index_id} 时出错: {e}")
+    
+    # 确保indices被清空
+    indices = {}
+    logger.info("所有FAISS资源已清理")
+
+# 注册退出时的清理函数
+atexit.register(cleanup_resources)
+
+# 注册信号处理器
+def signal_handler(sig, frame):
+    print(f"接收到信号 {sig}，正在清理资源...")
+    cleanup_resources()
+    sys.exit(0)
+
+# 注册常见的终止信号
+signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+signal.signal(signal.SIGTERM, signal_handler)  # 终止信号
+
+# 初始化定时任务调度器
+def init_scheduler():
+    """初始化定时任务调度器"""
+    scheduler = BackgroundScheduler()
+    
+    # 添加定时保存任务
+    scheduler.add_job(
+        auto_save_indices, 
+        'interval', 
+        seconds=CONFIG['AUTO_SAVE_INTERVAL'],
+        id='auto_save_job',
+        replace_existing=True
+    )
+    
+    # 添加内存检查任务
+    scheduler.add_job(
+        check_and_cleanup_memory, 
+        'interval', 
+        seconds=CONFIG['MEMORY_CHECK_INTERVAL'],
+        id='memory_check_job',
+        replace_existing=True
+    )
+    
+    # 启动调度器
+    scheduler.start()
+    logger.info("定时任务调度器已启动")
+    
+    # 将调度器保存到app对象中，以便在退出时关闭
+    app.scheduler = scheduler
+
+# 添加一个新的API端点来查看统计信息
+@app.route('/stats', methods=['GET'])
+def get_stats():
+    """获取服务统计信息"""
+    memory_usage = get_memory_usage()
+    
+    # 收集每个索引的信息
+    indices_info = {}
+    for index_id, index_data in indices.items():
+        indices_info[index_id] = {
+            'vector_count': index_data['index'].ntotal,
+            'dimension': index_data['dimension'],
+            'metric_type': 'inner_product' if index_data['metric_type'] == 1 else 'L2'
+        }
+    
+    return jsonify({
+        'status': 'success',
+        'stats': {
+            'memory_usage': {
+                'percent': f"{memory_usage['percent']:.2f}%",
+                'system_percent': f"{memory_usage['system_percent']:.2f}%",
+                'rss_mb': f"{memory_usage['rss'] / (1024 * 1024):.2f} MB"
+            },
+            'operation_stats': {
+                'add_vector_count': STATS['add_vector_count'],
+                'operation_count': STATS['operation_count'],
+                'last_cleanup_time': datetime.fromtimestamp(STATS['last_cleanup_time']).strftime('%Y-%m-%d %H:%M:%S'),
+                'last_save_time': datetime.fromtimestamp(STATS['last_save_time']).strftime('%Y-%m-%d %H:%M:%S')
+            },
+            'indices': indices_info,
+            'config': CONFIG
+        }
+    })
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5533, debug=True)
+    # 初始化定时任务调度器
+    init_scheduler()
+    
+    # 在生产环境中关闭debug模式
+    logger.info("启动FAISS服务器在端口5533...")
+    app.run(host='0.0.0.0', port=5533, debug=False, threaded=True)

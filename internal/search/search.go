@@ -4,14 +4,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/kinglegendzzh/flashmemory/internal/index"
-	"github.com/kinglegendzzh/flashmemory/internal/utils"
-	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"log"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/kinglegendzzh/flashmemory/internal/index"
+	"github.com/kinglegendzzh/flashmemory/internal/utils"
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
 // SearchResult represents a single search result with metadata.
@@ -25,6 +26,9 @@ type SearchResult struct {
 	CodeSnippet string  // 提取的代码片段（如果请求包含代码）
 	StartLine   int     // 代码片段的起始行
 	EndLine     int
+	Type        string // 模块类型
+	Path        string // 模块路径
+	ParentPath  string // 父模块路径
 }
 
 // SearchOptions configures the search behavior.
@@ -42,6 +46,7 @@ type SearchEngine struct {
 	Descriptions map[int]string
 	ProjDir      string
 	Keywords     []string
+	Module       bool
 }
 
 // Searcher encapsulates different search implementations.
@@ -55,7 +60,7 @@ func NewSearcher(engine *SearchEngine) *Searcher {
 }
 
 // Query 根据SearchOptions的SearchMode调用相应的搜索策略
-func (se *SearchEngine) Query(query string, opts SearchOptions) []SearchResult {
+func (se *SearchEngine) Query(query string, opts SearchOptions) ([]SearchResult, error) {
 	var results []SearchResult
 	var err error
 	if opts.SearchMode != "semantic" {
@@ -95,11 +100,11 @@ func (se *SearchEngine) Query(query string, opts SearchOptions) []SearchResult {
 	}
 	if err != nil {
 		log.Printf("Search error: %v", err)
-		return nil
+		return nil, err
 	}
 	if len(results) == 0 {
 		fmt.Println("No relevant functions found for query.")
-		return nil
+		return nil, nil
 	}
 	// 打印结果
 	fmt.Println("Search Results:")
@@ -110,7 +115,7 @@ func (se *SearchEngine) Query(query string, opts SearchOptions) []SearchResult {
 			fmt.Printf(" Has Code Snippet.\n")
 		}
 	}
-	return results
+	return results, nil
 }
 
 // semanticSearch performs vector similarity search using embeddings.
@@ -134,8 +139,15 @@ func semanticSearch(se *SearchEngine, query string, opts SearchOptions) ([]Searc
 
 	results := make([]SearchResult, 0, len(funcIDs))
 	for _, id := range funcIDs {
-		res, err := fetchFunctionFromDB(se.Indexer.DB, id, opts.IncludeCode, se.ProjDir)
+		var res SearchResult
+		var err error
+		if se.Module {
+			res, err = fetchModuleFromDB(se.Indexer.DB, id, opts.IncludeCode, se.ProjDir)
+		} else {
+			res, err = fetchFunctionFromDB(se.Indexer.DB, id, opts.IncludeCode, se.ProjDir)
+		}
 		if err != nil {
+			logs.Warnf("fetch function from db error: %v", err)
 			continue
 		}
 		// 获取语义相似得分
@@ -215,6 +227,81 @@ func keywordSearch(se *SearchEngine, query string, opts SearchOptions) ([]Search
 		results = append(results, r)
 	}
 
+	// 7. 查询 code_desc 表
+	// 为 code_desc 表构建类似的查询条件
+	var (
+		codeDescConditions []string
+		codeDescArgs       []interface{}
+	)
+
+	for _, term := range allTerms {
+		pat := "%" + term + "%"
+		// 针对 code_desc 表的 name/type/path/description 字段都做 LIKE
+		codeDescConditions = append(codeDescConditions,
+			"name LIKE ?",
+			"type LIKE ?",
+			"path LIKE ?",
+			"description LIKE ?",
+		)
+		codeDescArgs = append(codeDescArgs, pat, pat, pat, pat)
+	}
+
+	// LIMIT 参数
+	codeDescArgs = append(codeDescArgs, opts.Limit)
+
+	// 为 code_desc 表动态拼接 SQL
+	codeDescQuery := fmt.Sprintf(`
+        SELECT rowid, name, type, path, parent_path, description
+        FROM code_desc
+        WHERE %s
+        LIMIT ?`,
+		strings.Join(codeDescConditions, " OR "),
+	)
+
+	// 直接尝试查询 code_desc 表，如不存在则捕获错误
+	codeDescRows, err := se.Indexer.DB.Query(codeDescQuery, codeDescArgs...)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			logs.Infof("code_desc table not exists, skip.")
+		} else {
+			logs.Warnf("查询 code_desc 表失败: %v", err)
+		}
+	} else {
+		logs.Infof("code_desc table exists, start search.")
+		defer codeDescRows.Close()
+		var count int
+		for codeDescRows.Next() {
+			var r SearchResult
+			var id int
+			var name, typ, path, parentPath, description string
+			if err := codeDescRows.Scan(&id, &name, &typ, &path, &parentPath, &description); err != nil {
+				logs.Errorf("Row scan error for code_desc: %v", err)
+				continue
+			}
+
+			r.ID = id
+			r.Name = name
+			r.Type = typ
+			r.Path = path
+			r.ParentPath = parentPath
+			r.Description = description
+			// 简单给一个固定分数，与函数搜索结果相同
+			r.Score = 1
+
+			// 如果是文件类型且需要代码片段，则获取代码
+			if opts.IncludeCode && typ == "file" && path != "" {
+				logs.Infof("Fetching code snippet for module: %s", path)
+				if snippet, err := getCodeSnippet(path, 0, 0, se.ProjDir); err == nil {
+					r.CodeSnippet = snippet
+				}
+			}
+
+			results = append(results, r)
+			count++
+		}
+		logs.Infof("code_desc table searched count: %d", count)
+	}
+
 	return results, nil
 }
 
@@ -273,7 +360,7 @@ func hybridSearch(se *SearchEngine, query string, opts SearchOptions) ([]SearchR
 func SimpleEmbedding(query string, dim int) []float32 {
 	embedding, err := utils.EmbeddingsList([]string{query}, dim)
 	if err != nil {
-		log.Printf("Ollama embedding error: %v, falling back to dummy embedding", err)
+		log.Printf("embedding error: %v, falling back to dummy embedding", err)
 		return dummyEmbedding(query, dim)
 	}
 	logs.Infof("Ollama embedding success:dim=%d", dim)
@@ -283,7 +370,7 @@ func SimpleEmbedding(query string, dim int) []float32 {
 func SimpleEmbeddingBatch(query []string, dim int) ([][]float32, error) {
 	embedding, err := utils.EmbeddingsList(query, dim)
 	if err != nil {
-		log.Printf("Ollama embedding error: %v, falling back to dummy embedding", err)
+		log.Printf("batch embedding error: %v", err)
 		return nil, err
 	}
 	logs.Infof("batch Ollama embedding success:len=%v, dim=%d", len(embedding), dim)
@@ -291,6 +378,7 @@ func SimpleEmbeddingBatch(query []string, dim int) ([][]float32, error) {
 }
 
 // dummyEmbedding 为故障情况下的备用实现（与原实现类似）
+// Deprecated: 不推荐使用，仅作为 embedding 失败时的兜底方案。
 func dummyEmbedding(query string, dim int) []float32 {
 	vec := make([]float32, dim)
 	words := strings.Fields(query)
@@ -346,21 +434,57 @@ func fetchFunctionFromDB(db *sql.DB, id int, includeCode bool, projDir string) (
 	return res, nil
 }
 
-// getCodeSnippet 从指定文件中提取从 startLine 到 endLine 的代码片段
+func fetchModuleFromDB(db *sql.DB, id int, includeCode bool, projDir string) (SearchResult, error) {
+	var name, type_, path, parentPath, desc string
+	err := db.QueryRow("SELECT name, type, path, parent_path, description FROM code_desc WHERE rowid = ?", id).
+		Scan(&name, &type_, &path, &parentPath, &desc)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	res := SearchResult{
+		ID:          id,
+		Name:        name,
+		Type:        type_,
+		Path:        path,
+		ParentPath:  parentPath,
+		Description: desc,
+	}
+	if includeCode && path != "" && type_ == "file" {
+		logs.Tokenf("正在获取代码片段: %s\n", path)
+		if snippet, err := getCodeSnippet(path, 0, 0, projDir); err == nil {
+			res.CodeSnippet = snippet
+		}
+	}
+	return res, nil
+}
+
+// getCodeSnippet 从指定文件中提取从 startLine 到 endLine 的代码片段。如果 startLine 和 endLine 都为0，则默认读取全部（最大限制2000行）
+// 如果文件不存在或读取失败，返回空字符串而不是错误
 func getCodeSnippet(filePath string, startLine, endLine int, projDir string) (string, error) {
 	if projDir == "" {
-		return "", fmt.Errorf("projDir 不能为空")
+		logs.Warnf("projDir 为空，无法读取代码片段")
+		return "", nil
 	}
 
 	fullPath := filepath.Join(projDir, filePath)
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
-		logs.Errorf("读取文件失败 %s: %v", fullPath, err)
-		return "", err
+		logs.Warnf("读取文件失败 %s: %v，返回空字符串", fullPath, err)
+		return "", nil
 	}
 
 	lines := strings.Split(string(data), "\n")
 	total := len(lines)
+
+	// 默认全量读取（最大2000行）
+	if startLine == 0 && endLine == 0 {
+		startLine = 1
+		if total > 2000 {
+			endLine = 2000
+		} else {
+			endLine = total
+		}
+	}
 
 	// 边界调整
 	if startLine < 1 {

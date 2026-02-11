@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/kinglegendzzh/flashmemory/cmd/common"
@@ -19,19 +21,25 @@ import (
 
 // LLMParser uses a language model to enhance code understanding
 type LLMParser struct {
-	Lang    string
-	NoLLM   bool
-	Db      *sql.DB
-	ProjDir string
+	Lang     string
+	NoLLM    bool
+	Db       *sql.DB
+	ProjDir  string
+	DbWriter *utils.DbWriter // 数据库写入管理器
 }
 
 // NewLLMParser creates a new LLM-enhanced parser with a base parser for initial parsing
 func NewLLMParser(lang string, NoLLM bool, db *sql.DB, projDir string) *LLMParser {
+	var dbWriter *utils.DbWriter
+	if db != nil {
+		dbWriter = utils.NewDbWriter(db)
+	}
 	return &LLMParser{
-		Lang:    lang,
-		NoLLM:   NoLLM,
-		Db:      db,
-		ProjDir: projDir,
+		Lang:     lang,
+		NoLLM:    NoLLM,
+		Db:       db,
+		ProjDir:  projDir,
+		DbWriter: dbWriter,
 	}
 }
 
@@ -93,6 +101,11 @@ func (lp *LLMParser) ParseFile(path string) ([]FunctionInfo, error) {
 				logs.Warnf("单文件代码块数超出限制，跳过模型调用: %s [%d-%d]", file, chunk.StartLine, chunk.EndLine)
 				break
 			}
+			// 区块小于5行，不调用LLM
+			if chunk.LineCount < 5 {
+				logs.Warnf("单文件代码块数小于5行，跳过模型调用: %s [%d-%d]", file, chunk.StartLine, chunk.EndLine)
+				break
+			}
 			if lp.NoLLM {
 				// 主要用于listFunctions接口做统计
 				funcs = append(funcs, FunctionInfo{
@@ -106,8 +119,12 @@ func (lp *LLMParser) ParseFile(path string) ([]FunctionInfo, error) {
 				continue
 			}
 			if lp.Db != nil && lp.ProjDir != "" {
-				if _, found := lp.loadStoredResult(path, lp.ProjDir); found {
-					logs.Infof("已从数据库中找到结果，跳过模型调用: %s [%d-%d]", path, chunk.StartLine, chunk.EndLine)
+				// 传入当前代码块的行号范围，查询是否已存在与该范围有重叠的记录
+				if results, found := lp.loadStoredResult(path, lp.ProjDir, chunk.StartLine, chunk.EndLine); found {
+					logs.Infof("已从数据库中找到结果，跳过模型调用: %s [%d-%d]，找到 %d 条记录",
+						path, chunk.StartLine, chunk.EndLine, len(results))
+					// 将找到的结果添加到 funcs 中，避免重复解析
+					funcs = append(funcs, results...)
 					continue
 				}
 			}
@@ -116,13 +133,18 @@ func (lp *LLMParser) ParseFile(path string) ([]FunctionInfo, error) {
 			var resp string
 			resp, err = cloud.ParserInvoke(ctx, cfg, segment)
 			if err != nil {
+				if common.IsLLMError(err) {
+					logs.Errorf("LLM enhance failed (%s [%d-%d]): %v",
+						file, chunk.StartLine, chunk.EndLine, err)
+					return nil, err
+				}
 				logs.Warnf("LLM enhance failed (%s [%d-%d]): %v",
 					file, chunk.StartLine, chunk.EndLine, err)
 				continue
 			}
 
 			// parseLLMResponse 返回本片段解析出的 []FunctionInfo
-			updated := lp.parseLLMResponse(
+			updated, err := lp.parseLLMResponse(
 				resp,
 				funcs,
 				file,
@@ -130,6 +152,11 @@ func (lp *LLMParser) ParseFile(path string) ([]FunctionInfo, error) {
 				chunk.EndLine,
 				chunk.LineCount,
 			)
+			if err != nil {
+				logs.Warnf("LLM enhance failed (%s [%d-%d]): %v",
+					file, chunk.StartLine, chunk.EndLine, err)
+				continue
+			}
 			funcs = append(funcs, updated...)
 			if lp.Db != nil && lp.ProjDir != "" {
 				for i := range updated {
@@ -152,7 +179,7 @@ func (lp *LLMParser) ParseFile(path string) ([]FunctionInfo, error) {
 func isSupportedFile(path string) bool {
 	ext := filepath.Ext(path)
 	for _, e := range common.SupportedLanguages {
-		if e == ext {
+		if e == ext && !strings.HasSuffix(path, "__init__.py") {
 			return true
 		}
 	}
@@ -201,10 +228,18 @@ func getNames(funcs []FunctionInfo) []string {
 }
 
 // parseLLMResponse 将 LLM 返回的 JSON 或文本解析成 []FunctionInfo
-func (lp *LLMParser) parseLLMResponse(response string, base []FunctionInfo, path string, startLine, endLine, lineCount int) []FunctionInfo {
+func (lp *LLMParser) parseLLMResponse(response string, base []FunctionInfo, path string, startLine, endLine, lineCount int) ([]FunctionInfo, error) {
 	// 1. 过滤掉非 JSON 部分，拿到干净的 JSON 字符串
 	raw := utils.FilterJSONContent(response)
-	logs.Infof("LLM enhance result: %s", raw)
+	// 用json.Indent让raw内容更易读并输出
+	var prettyRaw bytes.Buffer
+	if err := json.Indent(&prettyRaw, []byte(raw), "", "  "); err == nil {
+		logs.Infof("LLM enhance result raw (pretty):\n%s", prettyRaw.String())
+	} else {
+		logs.Warnf("LLM enhance result raw (pretty)失败: %s", raw)
+		return nil, fmt.Errorf("LLM enhance result raw (pretty)失败: %s", raw)
+	}
+
 	// 2. 定义一个临时结构体用来反序列化
 	type llmItem struct {
 		FunctionName string `json:"function_name"`
@@ -218,35 +253,35 @@ func (lp *LLMParser) parseLLMResponse(response string, base []FunctionInfo, path
 		// JSON 数组
 		if err := json.Unmarshal([]byte(raw), &items); err != nil {
 			logs.Warnf("LLM enhance failed: %v", err)
-			base = append(base, FunctionInfo{
-				Name:         path,
-				Description:  raw,
-				File:         path,
-				FunctionType: "llm_parser",
-				StartLine:    startLine,
-				EndLine:      endLine,
-				Lines:        lineCount,
-			})
-			return base
+			// base = append(base, FunctionInfo{
+			// 	Name:         path,
+			// 	Description:  raw,
+			// 	File:         path,
+			// 	FunctionType: "llm_parser",
+			// 	StartLine:    startLine,
+			// 	EndLine:      endLine,
+			// 	Lines:        lineCount,
+			// })
+			return base, err
 		}
-		logs.Infof("LLM enhance array result: %v", items)
+		logs.Infof("LLM enhance array result: %+v", items)
 	} else {
 		// 单个 JSON 对象
 		var single llmItem
 		if err := json.Unmarshal([]byte(raw), &single); err != nil {
 			logs.Warnf("LLM enhance failed(solo): %v", err)
-			base = append(base, FunctionInfo{
-				Name:         path,
-				Description:  raw,
-				File:         path,
-				FunctionType: "llm_parser",
-				StartLine:    startLine,
-				EndLine:      endLine,
-				Lines:        lineCount,
-			})
-			return base
+			// base = append(base, FunctionInfo{
+			// 	Name:         path,
+			// 	Description:  raw,
+			// 	File:         path,
+			// 	FunctionType: "llm_parser",
+			// 	StartLine:    startLine,
+			// 	EndLine:      endLine,
+			// 	Lines:        lineCount,
+			// })
+			return base, err
 		}
-		logs.Infof("LLM enhance solo result: %v", single)
+		logs.Infof("LLM enhance solo result: %+v", single)
 		items = []llmItem{single}
 	}
 
@@ -262,8 +297,55 @@ func (lp *LLMParser) parseLLMResponse(response string, base []FunctionInfo, path
 			Lines:        lineCount,
 		})
 	}
-	logs.Infof("LLM enhance result: %v", base)
-	return base
+
+	// 如果模型返回空数组或空对象，也要保存一条记录以标记该代码块已处理
+	if len(items) == 0 {
+		logs.Infof("LLM返回空结果，保存占位记录以避免重复解析: %s [%d-%d]", path, startLine, endLine)
+		base = append(base, FunctionInfo{
+			Name:         "", // 函数名为空
+			Description:  "", // 描述为空
+			File:         path,
+			FunctionType: "llm_parser",
+			StartLine:    startLine,
+			EndLine:      endLine,
+			Lines:        lineCount,
+		})
+	}
+
+	// 5. 对 base 中的对象进行英文名称正则检查
+	var validBase []FunctionInfo
+	englishNameRegex := regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+	for _, info := range base {
+		// 如果函数名为空（占位记录），直接加入有效列表
+		if info.Name == "" {
+			validBase = append(validBase, info)
+		} else if englishNameRegex.MatchString(info.Name) {
+			validBase = append(validBase, info)
+		} else {
+			logs.Warnf("Function name not in English, skipped: %s", info.Name)
+		}
+	}
+
+	// 6. 对 base 中所有对象根据 name/file/function_type/start_line/end_line 进行去重
+	deduped := make([]FunctionInfo, 0, len(validBase))
+	seen := make(map[string]bool)
+
+	for _, info := range validBase {
+		// 创建唯一标识符
+		key := fmt.Sprintf("%s|%s|%s|%d|%d",
+			info.Name, info.File, info.FunctionType, info.StartLine, info.EndLine)
+
+		if !seen[key] {
+			seen[key] = true
+			deduped = append(deduped, info)
+		} else {
+			logs.Infof("Duplicate function info skipped: %s", key)
+		}
+	}
+
+	logs.Infof("LLM enhance result: original=%d, valid=%d, deduped=%d",
+		len(base), len(validBase), len(deduped))
+	return deduped, nil
 }
 
 // mergeFunctionInfos 将更新后的信息合并到原列表中
@@ -282,47 +364,41 @@ func mergeFunctionInfos(orig, updated []FunctionInfo) []FunctionInfo {
 	return out
 }
 
-// SaveSingleResultToDB 将单个分析结果写入数据库。
+// SaveSingleResultToDB 将单个解析结果写入数据库。
 // - 对 functions 表用 INSERT OR REPLACE，以便更新已有描述。
 // - 对 calls 和 externals 表用 INSERT OR IGNORE，跳过已存在的行。
-// - 不使用事务，每条结果直接写入。
+// - 使用 DbWriter 进行串行化写入和自动重试。
 func SaveSingleResultToDB(db *sql.DB, res FunctionInfo, projDir string) error {
+	if db == nil {
+		return fmt.Errorf("无数据库连接")
+	}
+
 	// 判断是否存在临时文件，如果不存在则抛出特殊异常码
 	gitgoDir := filepath.Join(projDir, ".gitgo")
 	tempFilePath := filepath.Join(gitgoDir, "indexing.temp")
 	if _, err := os.Stat(tempFilePath); os.IsNotExist(err) {
-		panic("索引临时文件已被删除，终止扫描")
+		logs.Errorf("索引临时文件已被删除，终止扫描")
+		return fmt.Errorf("索引临时文件已被删除，终止扫描")
 	}
-	// 1. 准备 statements
-	funcStmt, err := db.Prepare(`
-        INSERT OR REPLACE INTO functions
-        (name, package, file, description, start_line, end_line, function_type)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    `)
-	if err != nil {
-		return fmt.Errorf("prepare functions 失败: %w", err)
-	}
-	defer funcStmt.Close()
 
-	callStmt, err := db.Prepare(`
-        INSERT OR IGNORE INTO calls (caller, callee)
-        VALUES (?, ?)
-    `)
-	if err != nil {
-		return fmt.Errorf("prepare calls 失败: %w", err)
+	// 创建临时 DbWriter 或使用已有的
+	var dbWriter *utils.DbWriter
+	if lp, ok := res.Parser.(*LLMParser); ok && lp != nil && lp.DbWriter != nil {
+		// 如果是 LLMParser 的结果，使用其 DbWriter
+		dbWriter = lp.DbWriter
+		logs.Infof("使用 LLMParser 的 DbWriter 进行写入")
+	} else {
+		// 否则创建一个新的 DbWriter
+		dbWriter = utils.NewDbWriter(db)
+		defer dbWriter.Close()
+		logs.Infof("创建新的 DbWriter 进行写入")
 	}
-	defer callStmt.Close()
 
-	extStmt, err := db.Prepare(`
-        INSERT OR IGNORE INTO externals (function, external)
-        VALUES (?, ?)
-    `)
-	if err != nil {
-		return fmt.Errorf("prepare externals 失败: %w", err)
-	}
-	defer extStmt.Close()
+	return saveSingleResultToDBWithWriter(dbWriter, res, projDir)
+}
 
-	// 2. 处理相对路径
+func saveSingleResultToDBWithWriter(dbWriter *utils.DbWriter, res FunctionInfo, projDir string) error {
+	// 1. 处理文件路径
 	if projDir != "" {
 		filePath := res.File
 		// 如果不是绝对路径，就把它视作相对于 projDir 的子路径
@@ -338,8 +414,15 @@ func SaveSingleResultToDB(db *sql.DB, res FunctionInfo, projDir string) error {
 		}
 	}
 
-	// 3. 插入 functions
-	if _, err := funcStmt.Exec(
+	// 2. 准备 SQL 语句
+	funcSQL := `
+		INSERT OR REPLACE INTO functions
+		(name, package, file, description, start_line, end_line, function_type)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`
+
+	// 3. 使用 DbWriter 写入 functions 表
+	err := dbWriter.Write("function_insert", funcSQL,
 		res.Name,
 		res.Package,
 		res.File,
@@ -347,14 +430,18 @@ func SaveSingleResultToDB(db *sql.DB, res FunctionInfo, projDir string) error {
 		res.StartLine,
 		res.EndLine,
 		res.FunctionType,
-	); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("functions 写入失败: %w", err)
 	}
 
 	return nil
 }
 
-func (lp *LLMParser) loadStoredResult(path string, projDir string) ([]FunctionInfo, bool) {
+// loadStoredResult 从数据库加载指定文件和行号范围内的解析结果
+// 如果 startLine 和 endLine 都为 0，则查询整个文件的所有结果
+// 如果指定了行号范围，则只返回与该范围有重叠的结果
+func (lp *LLMParser) loadStoredResult(path string, projDir string, startLine int, endLine int) ([]FunctionInfo, bool) {
 	// 1. 如果没有数据库连接，直接返回
 	if lp.Db == nil {
 		logs.Warnf("[ERROR] 无数据库连接")
@@ -378,17 +465,34 @@ func (lp *LLMParser) loadStoredResult(path string, projDir string) ([]FunctionIn
 	}
 
 	// 2. 查询可能存在的多条记录
-	query := `
-        SELECT name, file, description, start_line, end_line, function_type
-        FROM functions
-        WHERE file = ?
-          AND description IS NOT NULL
-          AND description != ''
-          AND name != ''
-          AND name IS NOT NULL
-          AND function_type = 'llm_parser'
-    `
-	rows, err := lp.Db.Query(query, path)
+	var query string
+	var args []interface{}
+
+	if startLine > 0 && endLine > 0 {
+		// 如果指定了行号范围，则查询与该范围有重叠的记录
+		// 重叠条件：(start_line <= endLine) AND (end_line >= startLine)
+		query = `
+			SELECT name, file, description, start_line, end_line, function_type
+			FROM functions
+			WHERE file = ?
+			  AND function_type = 'llm_parser'
+			  AND start_line <= ?
+			  AND end_line >= ?
+		`
+		args = []interface{}{path, endLine, startLine}
+		logs.Infof("[DEBUG] 查询行号范围内的结果: %s [%d-%d]", path, startLine, endLine)
+	} else {
+		// 如果没有指定行号范围，则查询整个文件的所有记录
+		query = `
+			SELECT name, file, description, start_line, end_line, function_type
+			FROM functions
+			WHERE file = ?
+			  AND function_type = 'llm_parser'
+		`
+		args = []interface{}{path}
+	}
+
+	rows, err := lp.Db.Query(query, args...)
 	if err != nil {
 		logs.Errorf("[ERROR] 查询已存结果失败: %v", err)
 		return []FunctionInfo{}, false
@@ -410,9 +514,9 @@ func (lp *LLMParser) loadStoredResult(path string, projDir string) ([]FunctionIn
 			continue
 		}
 
-		logs.Infof("[DEBUG] 读取已存结果: %s, desc: %s (lines %d-%d)", dto.File, dto.Description, dto.StartLine, dto.EndLine)
-		if dto.Description == "" {
-			logs.Warnf("[WARN] 描述为空，暂且当作成功")
+		logs.Infof("[DEBUG] 读取已存结果: %s, name: %s, desc: %s (lines %d-%d)", dto.File, dto.Name, dto.Description, dto.StartLine, dto.EndLine)
+		if dto.Description == "" && dto.Name == "" {
+			logs.Infof("[INFO] 找到占位记录，该代码块已处理过")
 		}
 
 		fi := FunctionInfo{

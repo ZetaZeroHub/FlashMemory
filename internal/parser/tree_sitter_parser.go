@@ -219,7 +219,7 @@ func (tp *TreeSitterParser) ParseFile(path string) ([]FunctionInfo, error) {
 		llmParser := NewLLMParser(tp.Lang, tp.NoLLM, tp.Db, tp.ProjDir)
 		fn, err := llmParser.ParseFile(path)
 		if err != nil {
-			logs.Errorf("LLMParser 解析函数信息失败: %w", err)
+			logs.Errorf("LLMParser 解析函数信息失败: %v", err)
 			return nil, err
 		}
 		funcs = append(funcs, fn...)

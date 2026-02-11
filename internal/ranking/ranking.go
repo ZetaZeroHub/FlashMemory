@@ -3,6 +3,7 @@ package ranking
 import (
 	"math"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/kinglegendzzh/flashmemory/internal/parser"
@@ -59,26 +60,40 @@ func (fr *FunctionRanker) buildCallGraph(functions []parser.FunctionInfo) *callG
 		depthMap:  make(map[string]int),
 	}
 
-	// 构建函数名映射（简化为直接使用函数名）
+	// 构建函数名映射
 	for i := range functions {
 		fn := &functions[i]
-		funcName := fn.Name
-		graph.functions[funcName] = fn
-		graph.callers[funcName] = []string{}
-		graph.callees[funcName] = []string{}
+		funcKey := fr.getFunctionKey(fn)
+		graph.functions[funcKey] = fn
+		graph.callers[funcKey] = []string{}
+		graph.callees[funcKey] = []string{}
 	}
 
-	// 构建调用关系（简化逻辑，直接通过函数名匹配）
+	// 构建调用关系
 	for _, fn := range functions {
-		callerName := fn.Name
+		callerKey := fr.getFunctionKey(&fn)
 		// 对fn.Calls进行去重
 		uniqueCalls := fr.deduplicateCalls(fn.Calls)
 		for _, call := range uniqueCalls {
-			// 直接检查被调用的函数名是否在函数列表中
-			if _, exists := graph.functions[call]; exists {
-				// 添加到调用关系中
-				graph.callees[callerName] = append(graph.callees[callerName], call)
-				graph.callers[call] = append(graph.callers[call], callerName)
+			calleeKey := call
+			if _, exists := graph.functions[calleeKey]; !exists {
+				if strings.Contains(call, ".") {
+					calleeKey = strings.TrimSpace(call)
+				} else {
+					candidates := make([]string, 0, 2)
+					for key, f := range graph.functions {
+						if f != nil && f.Name == call {
+							candidates = append(candidates, key)
+						}
+					}
+					if len(candidates) == 1 {
+						calleeKey = candidates[0]
+					}
+				}
+			}
+			if _, exists := graph.functions[calleeKey]; exists {
+				graph.callees[callerKey] = append(graph.callees[callerKey], calleeKey)
+				graph.callers[calleeKey] = append(graph.callers[calleeKey], callerKey)
 			}
 		}
 	}
@@ -91,7 +106,13 @@ func (fr *FunctionRanker) buildCallGraph(functions []parser.FunctionInfo) *callG
 
 // getFunctionKey 获取函数的唯一标识（简化为直接使用函数名）
 func (fr *FunctionRanker) getFunctionKey(fn *parser.FunctionInfo) string {
-	return fn.Name
+	if fn == nil {
+		return ""
+	}
+	if fn.Package == "" {
+		return fn.Name
+	}
+	return fn.Package + "." + fn.Name
 }
 
 // deduplicateCalls 对函数调用列表进行去重
@@ -187,16 +208,26 @@ func (fr *FunctionRanker) calculateMetrics(functions []parser.FunctionInfo) {
 
 // calculateSingleFunctionMetrics 计算单个函数的指标
 func (fr *FunctionRanker) calculateSingleFunctionMetrics(fn *parser.FunctionInfo, graph *callGraph) {
-	funcName := fn.Name
+	// 如果是llm_parser类型的函数，将所有指标设为0
+	if fn.FunctionType == "llm_parser" {
+		fn.FanIn = 0
+		fn.FanOut = 0
+		fn.Depth = 0
+		fn.Complexity = 0
+		fn.Score = 0
+		return
+	}
+
+	funcKey := fr.getFunctionKey(fn)
 
 	// Fan-In: 调用该函数的其他函数数量
-	fn.FanIn = len(graph.callers[funcName])
+	fn.FanIn = len(graph.callers[funcKey])
 
 	// Fan-Out: 该函数调用的其他函数数量
-	fn.FanOut = len(graph.callees[funcName])
+	fn.FanOut = len(graph.callees[funcKey])
 
 	// 深度: 函数在调用图中的层级深度
-	fn.Depth = graph.depthMap[funcName]
+	fn.Depth = graph.depthMap[funcKey]
 
 	// 复杂度: 基于代码行数的简单复杂度估算
 	fn.Complexity = fr.calculateComplexity(fn)
@@ -207,6 +238,11 @@ func (fr *FunctionRanker) calculateSingleFunctionMetrics(fn *parser.FunctionInfo
 
 // calculateComplexity 计算函数复杂度
 func (fr *FunctionRanker) calculateComplexity(fn *parser.FunctionInfo) int {
+	// 如果是llm_parser类型的函数，复杂度为0
+	if fn.FunctionType == "llm_parser" {
+		return 0
+	}
+
 	// 基础复杂度基于代码行数
 	complexity := fn.Lines
 
@@ -228,6 +264,11 @@ func (fr *FunctionRanker) calculateComplexity(fn *parser.FunctionInfo) int {
 
 // calculateScore 计算函数的综合重要性得分
 func (fr *FunctionRanker) calculateScore(fn *parser.FunctionInfo) float64 {
+	// 如果是llm_parser类型的函数，得分为0
+	if fn.FunctionType == "llm_parser" {
+		return 0
+	}
+
 	fr.mu.RLock()
 	defer fr.mu.RUnlock()
 

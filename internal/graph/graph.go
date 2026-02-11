@@ -21,9 +21,11 @@ type KnowledgeGraph struct {
 
 // BuildGraph constructs the knowledge graph from analysis results.
 func BuildGraph(results []analyzer.LLMAnalysisResult, projDir string) KnowledgeGraph {
-	// 先清空所有 CodeSnippet
+	// 先清空所有 CodeSnippet 和 Description 字段
 	for i := range results {
 		results[i].CodeSnippet = ""
+		results[i].Description = ""
+		results[i].Func.Description = ""
 	}
 
 	kg := KnowledgeGraph{
@@ -100,9 +102,15 @@ func (kg *KnowledgeGraph) SaveGraphJSON(path string) error {
 	}
 	oldFuncMap := make(map[string]analyzer.LLMAnalysisResult)
 	for _, f := range oldKG.Functions {
+		// 清空旧数据的 Description 字段
+		f.Description = ""
+		f.Func.Description = ""
 		oldFuncMap[funcKey(f)] = f
 	}
 	for _, f := range kg.Functions {
+		// 清空新数据的 Description 字段
+		f.Description = ""
+		f.Func.Description = ""
 		oldFuncMap[funcKey(f)] = f // 新的覆盖旧的
 	}
 	mergedFuncs := make([]analyzer.LLMAnalysisResult, 0, len(oldFuncMap))
@@ -185,9 +193,15 @@ func (kg *KnowledgeGraph) SaveGraphJSONOnlyFunctions(path string) error {
 	}
 	oldFuncMap := make(map[string]analyzer.LLMAnalysisResult)
 	for _, f := range oldKG.Functions {
+		// 清空旧数据的 Description 字段
+		f.Description = ""
+		f.Func.Description = ""
 		oldFuncMap[funcKey(f)] = f
 	}
 	for _, f := range kg.Functions {
+		// 清空新数据的 Description 字段
+		f.Description = ""
+		f.Func.Description = ""
 		oldFuncMap[funcKey(f)] = f // 新的覆盖旧的
 	}
 	mergedFuncs := make([]analyzer.LLMAnalysisResult, 0, len(oldFuncMap))

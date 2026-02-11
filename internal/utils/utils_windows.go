@@ -4,7 +4,10 @@
 package utils
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -12,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // StartFaissService 在 Windows 下启动 Faiss 服务，
@@ -101,4 +105,44 @@ func StopFaissService(process *os.Process) error {
 	}
 	log.Println("Faiss 服务已停止")
 	return nil
+}
+
+// runCmdContextWindows Windows特定的命令执行函数，隐藏cmd窗口
+func runCmdContextWindows(dir, name string, args []string, timeout time.Duration) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+
+	// Windows下隐藏cmd窗口
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+	}
+
+	// 实时打印到主进程的 stdout/stderr
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	// 同时保留完整输出，万一超时或失败，能一并返回
+	var buf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+
+	if err := cmd.Run(); err != nil {
+		return buf.Bytes(), fmt.Errorf("命令 %s %v 失败: %w，输出:\n%s", name, args, err, buf.String())
+	}
+	return buf.Bytes(), nil
+}
+
+// isPackageInstalledWindows Windows特定的包检查函数，隐藏cmd窗口
+func isPackageInstalledWindows(envPython, packageName string) bool {
+	cmd := exec.Command(envPython, "-m", "pip", "show", packageName)
+
+	// Windows下隐藏cmd窗口
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+	}
+
+	err := cmd.Run()
+	return err == nil
 }

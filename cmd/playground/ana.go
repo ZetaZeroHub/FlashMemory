@@ -2,13 +2,14 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/kinglegendzzh/flashmemory/internal/analyzer"
-	"github.com/kinglegendzzh/flashmemory/internal/parser"
-	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/kinglegendzzh/flashmemory/internal/analyzer"
+	"github.com/kinglegendzzh/flashmemory/internal/parser"
+	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
 func main() {
@@ -30,7 +31,11 @@ func main() {
 	llmAnalyzer := analyzer.NewLLMAnalyzer(&sync.Map{}, true, 3)
 
 	// 分析函数
-	results := llmAnalyzer.AnalyzeAll(allFuncs)
+	results, err := llmAnalyzer.AnalyzeAll(allFuncs)
+	if err != nil {
+		logs.Errorf("Error analyzing functions: %v", err)
+		return
+	}
 
 	// 将验证结果以json格式保存至本地log
 	resultJSON, _ := json.MarshalIndent(results, "", "  ")

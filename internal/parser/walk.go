@@ -22,35 +22,22 @@ func WalkAndParse(root string, cb func(info FunctionInfo)) error {
 		// 跳过exclude.json中指定的路径
 		fullWalkPath := filepath.Join(root, path)
 		excludeFile := filepath.Join(root, ".gitgo", "exclude.json")
-		jsonFile, err := utils.ReadJSONArrayFile(excludeFile)
-		if err == nil {
-			if utils.IsExcludedPath(fullWalkPath, jsonFile) {
-				log.Printf("跳过指定文件: %s", fullWalkPath)
-				return filepath.SkipDir
-			}
+		jsonFile, _ := utils.ReadJSONArrayFile(excludeFile)
+		if utils.IsExcludedPath(fullWalkPath, jsonFile) {
+			log.Printf("跳过指定文件: %s", fullWalkPath)
+			return filepath.SkipDir
 		}
 		if info.IsDir() {
 
 			// 跳过以点开头的隐藏目录
-			if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") && !utils.Contains([]string{
-				"node_modules",
-				"mini.js",
-				"dist",
-				"build",
-				"target",
-				"out",
-				"bin",
-				"gen",
-				"static",
-				"public",
-			}, fullWalkPath) {
-				logs.Warnf("跳过目录: %s or %s", info.Name(), fullWalkPath)
+			if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") {
+				logs.Warnf("跳过目录: %s", info.Name())
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		ext := filepath.Ext(path)
-		if !utils.Contains(common.SupportedLanguages, ext) {
+		if !utils.Contains(common.SupportedLanguages, ext) || strings.HasSuffix(path, "__init__.py") {
 			return nil
 		}
 		lang := DetectLang(path)
@@ -85,7 +72,6 @@ func WalkAndParse(root string, cb func(info FunctionInfo)) error {
 			defer db.Close()
 
 			for _, fn := range funcs {
-				logs.Tokenf("正在解析文件 %v\n", fn)
 				// 将绝对路径 fn.File 转成相对于 root 的相对路径
 				relPath, err := filepath.Rel(root, fn.File)
 				if err != nil {
@@ -108,7 +94,6 @@ func WalkAndParse(root string, cb func(info FunctionInfo)) error {
 		} else {
 			// 数据库不存在，全部标记为未扫描
 			for _, fn := range funcs {
-				logs.Tokenf("正在解析文件 %v\n", fn)
 				// 同样转换文件路径，保证 fn.File 统一为相对路径
 				if relPath, err := filepath.Rel(root, fn.File); err == nil {
 					fn.File = filepath.ToSlash(relPath)

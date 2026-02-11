@@ -4,13 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/kinglegendzzh/flashmemory/internal/cloud"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/kinglegendzzh/flashmemory/cmd/common"
 	"github.com/kinglegendzzh/flashmemory/config"
+	"github.com/kinglegendzzh/flashmemory/internal/cloud"
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
@@ -46,28 +48,33 @@ func NormalizeResponseWithSmallModel(rawResponse string) (string, error) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		// 如果是EOF错误，直接返回普通错误而不是LLMResponseError
+		if strings.Contains(err.Error(), "EOF") {
+			logs.Warnf("NormalizeResponseWithSmallModel遇到EOF错误: %v", err)
+			return "", err
+		}
+		return "", common.NewLLMResponseError(err.Error())
 	}
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return "", common.NewLLMResponseError(err.Error())
 	}
 	var result map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("invalid JSON response from small model: %v", err)
+		return "", common.NewLLMResponseError(fmt.Errorf("invalid JSON response from small model: %v", err).Error())
 	}
 	response, ok := result["response"]
 	if !ok {
-		return "", fmt.Errorf("no response field in small model result")
+		return "", common.NewLLMResponseError("no response field in small model result")
 	}
 	responseStr := response.(string)
 	var responseObj map[string]interface{}
 	if err := json.Unmarshal([]byte(responseStr), &responseObj); err != nil {
-		return "", fmt.Errorf("invalid JSON in small model response: %v", err)
+		return "", common.NewLLMResponseError(fmt.Errorf("invalid JSON in small model response: %v", err).Error())
 	}
 	if _, ok := responseObj["功能描述"]; !ok {
-		return "", fmt.Errorf("missing '功能描述' field in small model response")
+		return "", common.NewLLMResponseError("missing '功能描述' field in small model response")
 	}
 	return responseStr, nil
 }
@@ -172,33 +179,61 @@ func Completion(prompt string) (string, error) {
 			lastErr = err
 			continue
 		}
-		client := &http.Client{Timeout: 30 * time.Minute}
+		// 改进HTTP客户端配置，禁用连接复用避免EOF错误
+		transport := &http.Transport{
+			DisableKeepAlives:   true, // 禁用连接复用
+			DisableCompression:  false,
+			MaxIdleConns:        0, // 不保持空闲连接
+			MaxIdleConnsPerHost: 0, // 不保持每个主机的空闲连接
+			IdleConnTimeout:     0, // 立即关闭空闲连接
+		}
+		client := &http.Client{
+			Timeout:   30 * time.Minute,
+			Transport: transport,
+		}
+
 		req, err := http.NewRequest("POST", cfg.ApiBaseUrl+cfg.CompletionApi, strings.NewReader(string(jsonPayload)))
 		if err != nil {
 			lastErr = err
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Connection", "close") // 明确要求关闭连接
 		resp, err := client.Do(req)
 		if err != nil {
-			lastErr = err
+			// 添加详细的网络错误日志
+			logs.Errorf("HTTP请求失败 (重试 %d/3): %v", retries+1, err)
+			logs.Errorf("请求详情 - URL: %s, 提示词长度: %d", cfg.ApiBaseUrl+cfg.CompletionApi, len(prompt))
+			if strings.Contains(err.Error(), "EOF") {
+				logs.Warnf("检测到EOF错误，可能是服务器提前关闭连接")
+				// EOF错误直接返回普通错误，不包装为LLMResponseError
+				lastErr = err
+			} else if strings.Contains(err.Error(), "connection reset") {
+				logs.Warnf("检测到连接重置错误，可能是网络不稳定")
+				lastErr = common.NewLLMResponseError(err.Error())
+			} else if strings.Contains(err.Error(), "timeout") {
+				logs.Warnf("检测到超时错误，可能是服务器响应慢")
+				lastErr = common.NewLLMResponseError(err.Error())
+			} else {
+				lastErr = common.NewLLMResponseError(err.Error())
+			}
 			continue
 		}
 		defer resp.Body.Close()
-		body, err := ioutil.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			lastErr = err
+			lastErr = common.NewLLMResponseError(err.Error())
 			continue
 		}
 		var result map[string]interface{}
 		if err := json.Unmarshal(body, &result); err != nil {
 			logs.Infof("Response is not valid JSON, retrying...")
-			lastErr = fmt.Errorf("invalid JSON response: %v", err)
+			lastErr = common.NewLLMResponseError(fmt.Errorf("invalid JSON response: %v", err).Error())
 			continue
 		}
 		response, ok := result["response"]
 		if !ok {
-			lastErr = fmt.Errorf("no response field in result")
+			lastErr = common.NewLLMResponseError("no response field in result")
 			continue
 		}
 		responseStr := response.(string)
@@ -213,33 +248,42 @@ func Completion(prompt string) (string, error) {
 			var responseObj map[string]interface{}
 			if err := json.Unmarshal([]byte(responseStr), &responseObj); err != nil {
 				tempjson = responseStr
-				// 尝试使用小模型规范化返回结果
-				normalizedResponse, err := NormalizeResponseWithSmallModel(responseStr)
-				if err != nil {
-					logs.Infof("Normalized Response content is not valid JSON: %s", normalizedResponse)
+				normalizedResponse, normErr := NormalizeResponseWithSmallModel(responseStr)
+				if normErr != nil {
+					logs.Errorf("NormalizeResponseWithSmallModel failed (attempt %d/3), raw response: %.200s, err: %v", retries+1, responseStr, normErr)
+					lastErr = normErr
 					continue
 				}
 				responseStr = normalizedResponse
-				logs.Infof("Normalized Response: %s", normalizedResponse)
+				logs.Infof("Normalized Response: %.200s", normalizedResponse)
 			}
 			if err := json.Unmarshal([]byte(responseStr), &responseObj); err != nil {
 				logs.Infof("Response content is not valid JSON, retrying...")
-				lastErr = fmt.Errorf("invalid JSON in response content: %v", err)
+				lastErr = common.NewLLMResponseError(fmt.Errorf("invalid JSON in response content: %v", err).Error())
 				continue
 			}
 			if _, ok := responseObj["description"]; !ok {
 				logs.Infof("Response missing 'description' field, retrying...")
-				lastErr = fmt.Errorf("missing 'description' field in response")
+				lastErr = common.NewLLMResponseError("missing 'description' field in response")
 				continue
 			}
 		}
 		return responseStr, nil
 	}
 	if lastErr != nil {
-		logs.Infof("All retries failed with large model, attempting to normalize last response with small model")
-		if normalizedResponse, err := NormalizeResponseWithSmallModel(tempjson); err == nil {
-			return normalizedResponse, nil
+		if tempjson != "" {
+			logs.Infof("All retries failed with large model output, attempting final normalization with small model")
+			if normalizedResponse, err := NormalizeResponseWithSmallModel(tempjson); err == nil {
+				return normalizedResponse, nil
+			} else {
+				logs.Errorf("Final NormalizeResponseWithSmallModel failed, raw response: %.200s, err: %v", tempjson, err)
+				return "", fmt.Errorf("small model failed to normalize response after retries: %v", err)
+			}
 		}
+		if strings.Contains(lastErr.Error(), "EOF") {
+			return "", lastErr
+		}
+		return "", common.NewLLMResponseError(fmt.Errorf("all retry attempts failed, last error: %v", lastErr).Error())
 	}
-	return "", fmt.Errorf("all retry attempts failed, last error: %v", lastErr)
+	return "", fmt.Errorf("all retry attempts failed without specific error")
 }
