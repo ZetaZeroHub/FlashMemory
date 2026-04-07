@@ -164,7 +164,7 @@ def ensure_binary(binary_name):
 
         # 设置执行权限 (非 Windows)
         if os_name != "windows":
-            for name in ["fm", "fm_http"]:
+            for name in ["fm", "fm_core", "fm_http"]:
                 p = os.path.join(INSTALL_DIR, name)
                 if os.path.isfile(p):
                     st = os.stat(p)
@@ -200,7 +200,9 @@ def main_fm():
 
 
 def main_fm_http():
-    """fm_http 命令入口"""
+    """fm_http 命令入口 (已弃用，请使用 fm serve)"""
+    print("⚠️  fm_http 已弃用，请使用: fm serve")
+    print("   Deprecated: please use 'fm serve' instead.\n")
     run_binary("fm_http")
 
 

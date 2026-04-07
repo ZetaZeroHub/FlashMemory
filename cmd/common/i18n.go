@@ -41,3 +41,11 @@ func GetLang() string {
 func IsZH() bool {
 	return GetLang() == "zh"
 }
+
+// I18n returns the Chinese or English string based on current language
+func I18n(zh, en string) string {
+	if IsZH() {
+		return zh
+	}
+	return en
+}

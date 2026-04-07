@@ -23,6 +23,10 @@ if (fs.existsSync(faissDir)) {
   process.env.FAISS_SERVICE_PATH = faissDir;
 }
 
+// Deprecation notice
+console.warn("⚠️  fm_http 已弃用，请使用: fm serve");
+console.warn("   Deprecated: please use 'fm serve' instead.\n");
+
 try {
   execFileSync(binPath, process.argv.slice(2), { stdio: "inherit" });
 } catch (e) {

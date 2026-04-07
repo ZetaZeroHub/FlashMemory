@@ -175,7 +175,7 @@ async function main() {
 
     // 设置执行权限 (非 Windows)
     if (platform !== "windows") {
-      const bins = ["fm", "fm_http"];
+      const bins = ["fm", "fm_core", "fm_http"];
       for (const bin of bins) {
         const binPath = path.join(VENDOR_DIR, bin);
         if (fs.existsSync(binPath)) {

@@ -37,11 +37,12 @@ class Flashmemory < Formula
   end
 
   def install
-    # Execute binaries should go to libexec to avoid PATH conflicts when we write wrappers
-    libexec.install "fm_http"
+    # Place actual binaries in libexec to avoid PATH conflicts
     libexec.install "fm"
+    libexec.install "fm_core"
+    libexec.install "fm_http"
 
-    # Install FAISSService to libexec so it's available but not in PATH
+    # Install FAISSService to libexec
     if File.directory?("FAISSService")
       (libexec/"FAISSService").install Dir["FAISSService/*"]
     end
@@ -51,13 +52,20 @@ class Flashmemory < Formula
       (etc/"flashmemory").install "fm.yaml.example" => "fm.yaml"
     end
 
-    # Create wrapper scripts in `bin` that set FAISS_SERVICE_PATH before calling the real binaries
+    # Create wrapper scripts in `bin` that set FAISS_SERVICE_PATH
     (bin/"fm").write <<~EOS
       #!/bin/bash
       export FAISS_SERVICE_PATH="#{libexec}/FAISSService"
       exec "#{libexec}/fm" "$@"
     EOS
     (bin/"fm").chmod 0755
+
+    (bin/"fm_core").write <<~EOS
+      #!/bin/bash
+      export FAISS_SERVICE_PATH="#{libexec}/FAISSService"
+      exec "#{libexec}/fm_core" "$@"
+    EOS
+    (bin/"fm_core").chmod 0755
 
     (bin/"fm_http").write <<~EOS
       #!/bin/bash
@@ -68,6 +76,6 @@ class Flashmemory < Formula
   end
 
   test do
-    assert_match "OK", shell_output("#{bin}/fm --help 2>&1", 0)
+    assert_match "FlashMemory", shell_output("#{bin}/fm version 2>&1", 0)
   end
 end

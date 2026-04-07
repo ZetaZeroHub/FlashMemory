@@ -89,7 +89,7 @@ jobs:
           go build -trimpath -ldflags='-s -w -X main.version=${{ github.ref_name }}' \
             -o fm_http${{ matrix.ext }} cmd/app/fm_http.go
 
-      - name: Build fm
+      - name: Build fm_core (original indexer)
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -97,7 +97,17 @@ jobs:
           CC: ${{ matrix.cc }}
         run: |
           go build -trimpath -ldflags='-s -w -X main.version=${{ github.ref_name }}' \
-            -o fm${{ matrix.ext }} cmd/main/fm.go
+            -o fm_core${{ matrix.ext }} cmd/main/fm.go
+
+      - name: Build fm (unified CLI)
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+          CC: ${{ matrix.cc }}
+        run: |
+          go build -trimpath -ldflags='-s -w -X github.com/kinglegendzzh/flashmemory/cmd/cli.Version=${{ github.ref_name }}' \
+            -o fm${{ matrix.ext }} cmd/fm/main.go
 
       - name: Package release archive
         run: |
@@ -106,8 +116,9 @@ jobs:
           mkdir -p "${DIR_NAME}/FAISSService"
 
           # Copy binaries
-          cp fm_http${{ matrix.ext }} "${DIR_NAME}/"
           cp fm${{ matrix.ext }} "${DIR_NAME}/"
+          cp fm_core${{ matrix.ext }} "${DIR_NAME}/"
+          cp fm_http${{ matrix.ext }} "${DIR_NAME}/"
 
           # Copy FAISSService (exclude .env virtual env dir)
           # Prefer cmd/app/FAISSService, fallback to cmd/main/FAISSService
