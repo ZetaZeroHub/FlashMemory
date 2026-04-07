@@ -16,8 +16,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS Intel
-          - runner: macos-13
+          # macOS Intel (cross-compile on ARM runner)
+          - runner: macos-15
             goos: darwin
             goarch: amd64
             cc: ''
@@ -25,7 +25,7 @@ jobs:
             archive: tar.gz
             packages: ''
           # macOS Apple Silicon
-          - runner: macos-14
+          - runner: macos-15
             goos: darwin
             goarch: arm64
             cc: ''
@@ -68,6 +68,10 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Tidy modules
+        run: go mod tidy
 
       - name: Install cross-compiler
         if: matrix.packages != ''

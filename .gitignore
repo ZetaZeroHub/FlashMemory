@@ -7073,7 +7073,6 @@ fm_http_linux
 fm_http.exe
 fm_linux
 fm.exe
-go.sum
 
 *.zip
 .gitgo/exclude.json
