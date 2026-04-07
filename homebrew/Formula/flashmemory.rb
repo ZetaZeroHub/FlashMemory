@@ -17,22 +17,22 @@ class Flashmemory < Formula
   on_macos do
     on_intel do
       url "https://github.com/ZetaZeroHub/FlashMemory/releases/download/v#{version}/flashmemory_#{version}_darwin_amd64.tar.gz"
-      sha256 "7aff95b62fc2875f548db3952ec2efda708203912f5b9e2593afde4ca20034a8"
+      sha256 "78a8812a8202bf502f321400fb858e0f174b85f4bdb213cb81943f051c3c921a"
     end
     on_arm do
       url "https://github.com/ZetaZeroHub/FlashMemory/releases/download/v#{version}/flashmemory_#{version}_darwin_arm64.tar.gz"
-      sha256 "2324157a9ff405432309ff4115511c6ca984a04697ea76e586074a5e69f24249"
+      sha256 "7e8dcb756e2e79a64144319c4c7bfef5d2d81e68b453518281c739563edacfa3"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/ZetaZeroHub/FlashMemory/releases/download/v#{version}/flashmemory_#{version}_linux_amd64.tar.gz"
-      sha256 "7a5dbedad063da6f039cd730063efc7a147ed7f4f9d36a37eb988e38a9ac6540"
+      sha256 "a12a22a9765d9b22f380590a0cb6385b0705fa568b5fec1d63456f1d83df2cec"
     end
     on_arm do
       url "https://github.com/ZetaZeroHub/FlashMemory/releases/download/v#{version}/flashmemory_#{version}_linux_arm64.tar.gz"
-      sha256 "16f602b5183fb5595062eef1e9a4702defb1433ea43161c4e5b3bd59773f9cab"
+      sha256 "6a76f677eb7f76c00bfbfc1e8b3e445b6d744b3b8d387c3509077765221afe2f"
     end
   end
 
