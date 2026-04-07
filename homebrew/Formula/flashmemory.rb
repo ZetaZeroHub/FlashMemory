@@ -11,7 +11,7 @@
 class Flashmemory < Formula
   desc "Cross-language code analysis and semantic search system"
   homepage "https://github.com/ZetaZeroHub/FlashMemory"
-  version "0.1.1"
+  version "0.1.2"
   license "MIT"
 
   on_macos do
