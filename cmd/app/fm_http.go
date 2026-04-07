@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -52,6 +53,29 @@ var apiURL = os.Getenv("API_URL")
 var apiModel = os.Getenv("API_MODEL")
 
 func main() {
+	// 提前嗅探 lang 参数，以便在定义 flag 时能判断语言
+	for i, arg := range os.Args {
+		if arg == "-lang" || arg == "--lang" {
+			if i+1 < len(os.Args) {
+				common.SetLang(os.Args[i+1])
+			}
+		} else if strings.HasPrefix(arg, "-lang=") {
+			common.SetLang(strings.TrimPrefix(arg, "-lang="))
+		} else if strings.HasPrefix(arg, "--lang=") {
+			common.SetLang(strings.TrimPrefix(arg, "--lang="))
+		}
+	}
+
+	i18nFlag := func(zhStr, enStr string) string {
+		if common.IsZH() {
+			return zhStr
+		}
+		return enStr
+	}
+
+	langFlag := flag.String("lang", "", i18nFlag("指定语言 (zh/en)", "Target language (zh/en)"))
+	_ = langFlag // keep declared
+
 	// 捕获 panic 错误并记录日志
 	defer func() {
 		if err := recover(); err != nil {
