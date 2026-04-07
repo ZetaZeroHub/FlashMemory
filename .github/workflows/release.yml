@@ -1,0 +1,158 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: '1.23'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS Intel
+          - runner: macos-13
+            goos: darwin
+            goarch: amd64
+            cc: ''
+            ext: ''
+            archive: tar.gz
+            packages: ''
+          # macOS Apple Silicon
+          - runner: macos-14
+            goos: darwin
+            goarch: arm64
+            cc: ''
+            ext: ''
+            archive: tar.gz
+            packages: ''
+          # Linux amd64
+          - runner: ubuntu-22.04
+            goos: linux
+            goarch: amd64
+            cc: ''
+            ext: ''
+            archive: tar.gz
+            packages: ''
+          # Linux arm64
+          - runner: ubuntu-22.04
+            goos: linux
+            goarch: arm64
+            cc: aarch64-linux-gnu-gcc
+            ext: ''
+            archive: tar.gz
+            packages: gcc-aarch64-linux-gnu
+          # Windows amd64
+          - runner: ubuntu-22.04
+            goos: windows
+            goarch: amd64
+            cc: x86_64-w64-mingw32-gcc
+            ext: '.exe'
+            archive: zip
+            packages: gcc-mingw-w64-x86-64
+
+    runs-on: ${{ matrix.runner }}
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install cross-compiler
+        if: matrix.packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.packages }}
+
+      - name: Build fm_http
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+          CC: ${{ matrix.cc }}
+        run: |
+          go build -trimpath -ldflags='-s -w -X main.version=${{ github.ref_name }}' \
+            -o fm_http${{ matrix.ext }} cmd/app/fm_http.go
+
+      - name: Build fm
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+          CC: ${{ matrix.cc }}
+        run: |
+          go build -trimpath -ldflags='-s -w -X main.version=${{ github.ref_name }}' \
+            -o fm${{ matrix.ext }} cmd/main/fm.go
+
+      - name: Package release archive
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          DIR_NAME="flashmemory_${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          mkdir -p "${DIR_NAME}/FAISSService"
+
+          # Copy binaries
+          cp fm_http${{ matrix.ext }} "${DIR_NAME}/"
+          cp fm${{ matrix.ext }} "${DIR_NAME}/"
+
+          # Copy FAISSService (exclude .env virtual env dir)
+          # Prefer cmd/app/FAISSService, fallback to cmd/main/FAISSService
+          if [ -d "cmd/app/FAISSService" ]; then
+            rsync -a --exclude='.env' --exclude='__pycache__' \
+              cmd/app/FAISSService/ "${DIR_NAME}/FAISSService/"
+          elif [ -d "cmd/main/FAISSService" ]; then
+            rsync -a --exclude='.env' --exclude='__pycache__' \
+              cmd/main/FAISSService/ "${DIR_NAME}/FAISSService/"
+          fi
+
+          # Copy default config template
+          if [ -f "fm.yaml" ]; then
+            cp fm.yaml "${DIR_NAME}/fm.yaml.example"
+          fi
+
+          # Create archive
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            zip -r "${DIR_NAME}.zip" "${DIR_NAME}/"
+          else
+            tar czf "${DIR_NAME}.tar.gz" "${DIR_NAME}/"
+          fi
+
+          echo "ARCHIVE_NAME=${DIR_NAME}.${{ matrix.archive }}" >> $GITHUB_ENV
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: flashmemory_*.${{ matrix.archive }}
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: build-*
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh flashmemory_*
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: flashmemory_*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
