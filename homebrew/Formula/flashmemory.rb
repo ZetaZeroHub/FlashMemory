@@ -37,8 +37,9 @@ class Flashmemory < Formula
   end
 
   def install
-    bin.install "fm_http"
-    bin.install "fm"
+    # Execute binaries should go to libexec to avoid PATH conflicts when we write wrappers
+    libexec.install "fm_http"
+    libexec.install "fm"
 
     # Install FAISSService to libexec so it's available but not in PATH
     if File.directory?("FAISSService")
@@ -50,25 +51,20 @@ class Flashmemory < Formula
       (etc/"flashmemory").install "fm.yaml.example" => "fm.yaml"
     end
 
-    # Create wrapper scripts that set FAISS_SERVICE_PATH
-    (bin/"fm").unlink if File.exist?(bin/"fm")
-    (bin/"fm_http").unlink if File.exist?(bin/"fm_http")
-
-    # Re-install with wrapper
-    (bin/"fm_raw").write buildpath/"fm" if File.exist?(buildpath/"fm")
-    (bin/"fm_http_raw").write buildpath/"fm_http" if File.exist?(buildpath/"fm_http")
-
+    # Create wrapper scripts in `bin` that set FAISS_SERVICE_PATH before calling the real binaries
     (bin/"fm").write <<~EOS
       #!/bin/bash
       export FAISS_SERVICE_PATH="#{libexec}/FAISSService"
-      exec "#{bin}/fm_raw" "$@"
+      exec "#{libexec}/fm" "$@"
     EOS
+    (bin/"fm").chmod 0755
 
     (bin/"fm_http").write <<~EOS
       #!/bin/bash
       export FAISS_SERVICE_PATH="#{libexec}/FAISSService"
-      exec "#{bin}/fm_http_raw" "$@"
+      exec "#{libexec}/fm_http" "$@"
     EOS
+    (bin/"fm_http").chmod 0755
   end
 
   test do
