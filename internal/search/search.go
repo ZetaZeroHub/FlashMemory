@@ -123,11 +123,11 @@ func semanticSearch(se *SearchEngine, query string, opts SearchOptions) ([]Searc
 	var vector []float32
 	if opts.SearchMode != "semantic" {
 		se.Keywords = append(se.Keywords, query)
-		logs.Infof("semanticSearch 混合语义搜索: %s", se.Keywords)
+		logs.Infof("semanticSearch mixed semantic search: %s", se.Keywords)
 		// 使用 Ollama 的 embedding 计算查询向量
 		vector = SimpleEmbedding(strings.Join(se.Keywords, " "), se.Indexer.FaissIndex.Dimension())
 	} else {
-		logs.Infof("semanticSearch 语义搜索: %s", query)
+		logs.Infof("semanticSearch semantic search: %s", query)
 		// 使用 Ollama 的 embedding 计算查询向量
 		vector = SimpleEmbedding(query, se.Indexer.FaissIndex.Dimension())
 	}
@@ -264,7 +264,7 @@ func keywordSearch(se *SearchEngine, query string, opts SearchOptions) ([]Search
 		if strings.Contains(err.Error(), "no such table") {
 			logs.Infof("code_desc table not exists, skip.")
 		} else {
-			logs.Warnf("查询 code_desc 表失败: %v", err)
+			logs.Warnf("Querying code_desc table failed: %v", err)
 		}
 	} else {
 		logs.Infof("code_desc table exists, start search.")
@@ -426,7 +426,7 @@ func fetchFunctionFromDB(db *sql.DB, id int, includeCode bool, projDir string) (
 		Description: desc,
 	}
 	if includeCode {
-		logs.Tokenf("正在获取代码片段: %s, %d, %d\n", file, startLine, endLine)
+		logs.Tokenf("Retrieving code snippets: %s, %d, %d\n", file, startLine, endLine)
 		if snippet, err := getCodeSnippet(file, startLine, endLine, projDir); err == nil {
 			res.CodeSnippet = snippet
 		}
@@ -450,7 +450,7 @@ func fetchModuleFromDB(db *sql.DB, id int, includeCode bool, projDir string) (Se
 		Description: desc,
 	}
 	if includeCode && path != "" && type_ == "file" {
-		logs.Tokenf("正在获取代码片段: %s\n", path)
+		logs.Tokenf("Retrieving code snippet: %s\n", path)
 		if snippet, err := getCodeSnippet(path, 0, 0, projDir); err == nil {
 			res.CodeSnippet = snippet
 		}
@@ -462,14 +462,14 @@ func fetchModuleFromDB(db *sql.DB, id int, includeCode bool, projDir string) (Se
 // 如果文件不存在或读取失败，返回空字符串而不是错误
 func getCodeSnippet(filePath string, startLine, endLine int, projDir string) (string, error) {
 	if projDir == "" {
-		logs.Warnf("projDir 为空，无法读取代码片段")
+		logs.Warnf("projDir is empty and the code snippet cannot be read")
 		return "", nil
 	}
 
 	fullPath := filepath.Join(projDir, filePath)
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
-		logs.Warnf("读取文件失败 %s: %v，返回空字符串", fullPath, err)
+		logs.Warnf("Failed to read file %s: %v, returning empty string", fullPath, err)
 		return "", nil
 	}
 

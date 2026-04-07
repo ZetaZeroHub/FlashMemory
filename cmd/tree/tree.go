@@ -64,7 +64,7 @@ func readCode(filePath string) (string, error) {
 		return string(data), nil
 	}
 	// 从标准输入读取代码（输入结束时输入单独一行 "EOF"）
-	fmt.Println("请输入代码（输入单独一行 'EOF' 结束）：")
+	fmt.Println("Please enter the code (enter a separate line ending with 'EOF'):")
 	scanner := bufio.NewScanner(os.Stdin)
 	var sb strings.Builder
 	for scanner.Scan() {
@@ -83,19 +83,19 @@ func main() {
 	langStr := flag.String("lang", "go", "代码语言，可选值：bash, c, cpp, elixir, go, java, js, php, py, ruby, rust")
 	flag.Parse()
 
-	logs.Infof("开始读取代码...")
+	logs.Infof("Start reading code...")
 	code, err := readCode(*filePath)
 	if err != nil {
-		logs.Errorf("读取代码错误: ", err)
+		logs.Errorf("Reading code error:", err)
 		os.Exit(1)
 	}
 
 	language := getLanguage(*langStr)
 	if language == nil {
-		logs.Errorf("不支持的语言: ", *langStr)
+		logs.Errorf("Unsupported languages:", *langStr)
 		os.Exit(1)
 	}
-	logs.Infof("使用语言: ", *langStr)
+	logs.Infof("Languages ​​used:", *langStr)
 
 	// 初始化 tree-sitter 解析器，并设置为所选语言
 	parser := sitter.NewParser()
@@ -104,7 +104,7 @@ func main() {
 	// 解析代码
 	tree := parser.Parse(nil, []byte(code))
 	if tree == nil {
-		logs.Errorf("代码解析失败")
+		logs.Errorf("Code parsing failed")
 		os.Exit(1)
 	}
 	rootNode := tree.RootNode()
@@ -112,12 +112,12 @@ func main() {
 	// 进入交互式查询循环
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Print("请输入 tree-sitter 查询语法（输入单独一行 'EOF' 结束）：")
+		fmt.Print("Please enter the tree-sitter query syntax (enter a single line ending with 'EOF'):")
 		var queryInput strings.Builder
 		for {
 			line, err := reader.ReadString('\n')
 			if err != nil {
-				logs.Errorf("读取输入错误: ", err)
+				logs.Errorf("Reading input error:", err)
 				break
 			}
 			line = strings.TrimSpace(line)
@@ -137,14 +137,14 @@ func main() {
 		// 编译查询语句，例如：(function_declaration name: (identifier) @func_name)
 		query, err := sitter.NewQuery([]byte(queryInputStr), language)
 		if err != nil {
-			logs.Errorf("查询语法错误: ", err)
+			logs.Errorf("Query syntax error:", err)
 			continue
 		}
 
 		cursor := sitter.NewQueryCursor()
 		cursor.Exec(query, rootNode)
 
-		fmt.Println("匹配结果:")
+		fmt.Println("Matching results:")
 		for {
 			match, ok := cursor.NextMatch()
 			if !ok {
@@ -153,7 +153,7 @@ func main() {
 			for _, capture := range match.Captures {
 				node := capture.Node
 				text := string(code[node.StartByte():node.EndByte()])
-				fmt.Printf("捕获: %s (类型: %s) [字节 %d 到 %d]\n", text, node.Type(), node.StartByte(), node.EndByte())
+				fmt.Printf("Capture: %s (type: %s) [bytes %d to %d]\n", text, node.Type(), node.StartByte(), node.EndByte())
 			}
 		}
 		cursor.Close()

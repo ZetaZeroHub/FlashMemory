@@ -63,23 +63,23 @@ func Example() {
 		},
 	}
 
-	fmt.Println("=== 函数重要性排序算法示例 ===")
-	fmt.Printf("原始函数数量: %d\n\n", len(functions))
+	fmt.Println("=== Example of function importance ranking algorithm ===")
+	fmt.Printf("Number of original functions: %d\n\n", len(functions))
 
 	// 2. 创建排序器（使用默认配置）
 	ranker := NewFunctionRanker(nil)
-	fmt.Println("使用默认配置:")
+	fmt.Println("Use default configuration:")
 	config := ranker.GetConfig()
-	fmt.Printf("  Alpha (Fan-In权重): %.2f\n", config.Alpha)
-	fmt.Printf("  Beta (Fan-Out权重): %.2f\n", config.Beta)
-	fmt.Printf("  Gamma (深度权重): %.2f\n", config.Gamma)
-	fmt.Printf("  Delta (复杂度权重): %.2f\n\n", config.Delta)
+	fmt.Printf("Alpha (Fan-In weight): %.2f\n", config.Alpha)
+	fmt.Printf("Beta (Fan-Out weight): %.2f\n", config.Beta)
+	fmt.Printf("Gamma (depth weight): %.2f\n", config.Gamma)
+	fmt.Printf("Delta (complexity weight): %.2f\n\n", config.Delta)
 
 	// 3. 执行排序（从低分到高分）
 	rankedFunctions := ranker.RankFunctions(functions)
 
 	// 4. 显示排序结果
-	fmt.Println("=== 排序结果（按重要性从低到高） ===")
+	fmt.Println("=== Sort results (from low to high importance) ===")
 	fmt.Printf("%-20s %-15s %-6s %-7s %-5s %-10s %-8s\n",
 		"函数名", "包名", "Fan-In", "Fan-Out", "深度", "复杂度", "得分")
 	fmt.Println(strings.Repeat("-", 80))
@@ -88,23 +88,23 @@ func Example() {
 		fmt.Printf("%-20s %-15s %-6d %-7d %-5d %-10d %-8.3f\n",
 			fn.Name, fn.Package, fn.FanIn, fn.FanOut, fn.Depth, fn.Complexity, fn.Score)
 		if i == 0 {
-			fmt.Println("  ↑ 最低重要性（建议最后分析）")
+			fmt.Println("↑ Minimum importance (last analysis recommended)")
 		} else if i == len(rankedFunctions)-1 {
-			fmt.Println("  ↑ 最高重要性（建议优先分析）")
+			fmt.Println("↑ Highest importance (recommended to be analyzed first)")
 		}
 	}
 
 	// 5. 演示降序排序（高分到低分）
-	fmt.Println("\n=== 降序排序结果（按重要性从高到低） ===")
+	fmt.Println("\n=== Sort results in descending order (from high to low importance) ===")
 	descendingFunctions := ranker.RankFunctionsByScore(functions, false)
 	for i, fn := range descendingFunctions {
 		if i < 3 { // 只显示前3个最重要的函数
-			fmt.Printf("%d. %s.%s (得分: %.3f)\n", i+1, fn.Package, fn.Name, fn.Score)
+			fmt.Printf("%d. %s.%s (score: %.3f)\n", i+1, fn.Package, fn.Name, fn.Score)
 		}
 	}
 
 	// 6. 演示自定义配置
-	fmt.Println("\n=== 使用自定义配置 ===")
+	fmt.Println("\n=== Use custom configuration ===")
 	customConfig := &RankingConfig{
 		Alpha: 0.6, // 更重视Fan-In
 		Beta:  0.1, // 降低Fan-Out权重
@@ -114,25 +114,25 @@ func Example() {
 	customRanker := NewFunctionRanker(customConfig)
 	customRanked := customRanker.RankFunctionsByScore(functions, false)
 
-	fmt.Println("自定义配置强调被调用次数(Fan-In)的重要性:")
+	fmt.Println("Custom configuration emphasizes the importance of the number of calls (Fan-In):")
 	for i, fn := range customRanked {
 		if i < 3 {
-			fmt.Printf("%d. %s.%s (Fan-In: %d, 得分: %.3f)\n",
+			fmt.Printf("%d. %s.%s (Fan-In: %d, Score: %.3f)\n",
 				i+1, fn.Package, fn.Name, fn.FanIn, fn.Score)
 		}
 	}
 
 	// 7. 性能统计
-	fmt.Println("\n=== 算法特性 ===")
-	fmt.Println("✓ 高性能：支持并发计算，适合大规模函数集合")
-	fmt.Println("✓ 高扩展性：可自定义权重配置")
-	fmt.Println("✓ 高并发：内部使用协程池进行并行计算")
-	fmt.Println("✓ 智能排序：综合考虑Fan-In、Fan-Out、深度和复杂度")
+	fmt.Println("\n=== Algorithm characteristics ===")
+	fmt.Println("✓ High performance: supports concurrent computing and is suitable for large-scale function collections")
+	fmt.Println("✓ High scalability: customizable weight configuration")
+	fmt.Println("✓ High concurrency: Internally uses coroutine pool for parallel computing")
+	fmt.Println("✓ Intelligent sorting: taking into account Fan-In, Fan-Out, depth and complexity")
 }
 
 // ExampleUsageInAnalysis 展示在代码分析中的实际应用
 func ExampleUsageInAnalysis(functions []parser.FunctionInfo) {
-	fmt.Println("=== 在代码分析中的应用示例 ===")
+	fmt.Println("=== Application examples in code analysis ===")
 
 	// 创建排序器
 	ranker := NewFunctionRanker(nil)
@@ -156,13 +156,13 @@ func ExampleUsageInAnalysis(functions []parser.FunctionInfo) {
 		}
 	}
 
-	fmt.Printf("高优先级函数: %d 个\n", len(highPriorityFunctions))
-	fmt.Printf("中优先级函数: %d 个\n", len(mediumPriorityFunctions))
-	fmt.Printf("低优先级函数: %d 个\n", len(lowPriorityFunctions))
+	fmt.Printf("High priority functions: %d\n", len(highPriorityFunctions))
+	fmt.Printf("Medium priority functions: %d\n", len(mediumPriorityFunctions))
+	fmt.Printf("Low priority functions: %d\n", len(lowPriorityFunctions))
 
 	// 建议的分析策略
-	fmt.Println("\n建议的分析策略:")
-	fmt.Println("1. 优先分析高优先级函数（核心业务逻辑）")
-	fmt.Println("2. 其次分析中优先级函数（重要支撑功能）")
-	fmt.Println("3. 最后分析低优先级函数（辅助工具函数）")
+	fmt.Println("\nRecommended analysis strategies:")
+	fmt.Println("1. Prioritize analysis of high-priority functions (core business logic)")
+	fmt.Println("2. Secondly, analyze the medium priority functions (important supporting functions)")
+	fmt.Println("3. Finally analyze low-priority functions (auxiliary tool functions)")
 }

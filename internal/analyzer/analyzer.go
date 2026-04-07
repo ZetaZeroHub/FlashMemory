@@ -114,7 +114,7 @@ func (a *Analyzer) AnalyzeAll(funcs []parser.FunctionInfo) []AnalysisResult {
 	for len(remaining) > 0 && pass < 999 {
 		pass++
 		newRemaining := []parser.FunctionInfo{}
-		log.Printf("第%d轮分析，剩余函数数量: %d", pass, len(remaining))
+		log.Printf("Round %d of analysis, number of remaining functions: %d", pass, len(remaining))
 
 		for _, f := range remaining {
 			allKnown := true
@@ -128,19 +128,19 @@ func (a *Analyzer) AnalyzeAll(funcs []parser.FunctionInfo) []AnalysisResult {
 			}
 
 			if !allKnown {
-				log.Printf("函数 %s.%s 被推迟，缺少依赖: %v", f.Package, f.Name, missingDeps)
+				log.Printf("Function %s.%s is deferred, missing dependencies: %v", f.Package, f.Name, missingDeps)
 				newRemaining = append(newRemaining, f)
 			} else {
 				res := a.AnalyzeFunction(f)
 				results = append(results, res)
 				knownDesc[f.Name] = res.Description
-				log.Printf("已分析函数: %s.%s (依赖数: %d)", f.Package, f.Name, len(f.Calls))
+				log.Printf("Analyzed function: %s.%s (number of dependencies: %d)", f.Package, f.Name, len(f.Calls))
 			}
 		}
 
-		log.Printf("本轮处理后剩余函数数量: %d", len(newRemaining))
+		log.Printf("Number of remaining functions after this round of processing: %d", len(newRemaining))
 		if len(newRemaining) == len(remaining) {
-			log.Printf("警告：检测到可能的循环依赖或未知标识符，未处理函数示例: %s.%s",
+			log.Printf("Warning: Possible circular dependency or unknown identifier detected, unhandled function example: %s.%s",
 				remaining[0].Package, remaining[0].Name)
 			break
 		}

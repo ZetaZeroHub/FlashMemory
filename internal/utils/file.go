@@ -15,7 +15,7 @@ func ExtractCodeSnippet(path string, startLine, endLine int) (string, error) {
 	lines := strings.Split(string(data), "\n")
 	// 注意：行号从1开始计数
 	if startLine < 1 || endLine > len(lines) || startLine > endLine {
-		return "", fmt.Errorf("无效的行号范围: %d-%d", startLine, endLine)
+		return "", fmt.Errorf("Invalid line number range: %d-%d", startLine, endLine)
 	}
 	snippet := strings.Join(lines[startLine-1:endLine], "\n")
 	return snippet, nil

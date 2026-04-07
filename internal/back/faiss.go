@@ -35,21 +35,21 @@ func InitFaissManager(projDir string, open bool) (fm *FaissManager, err error) {
 	ext := ".local"
 	var faissState bool
 	if open {
-		logs.Infof("启动 Faiss 服务中...")
+		logs.Infof("Starting Faiss service...")
 		//proc, _, err = InitFaiss()
 		ext = ".faiss"
 		faissState = true
 		if err != nil {
-			err = fmt.Errorf("初始化 Faiss 服务失败: %w", err)
-			return nil, fmt.Errorf("初始化 FaissManager 失败: %w", err)
+			err = fmt.Errorf("Failed to initialize Faiss service: %w", err)
+			return nil, fmt.Errorf("Failed to initialize FaissManager: %w", err)
 		}
 	}
 
 	// 2. 确保 .gitgo 目录存在
 	gitgo := filepath.Join(projDir, ".gitgo")
 	if e := os.MkdirAll(gitgo, 0755); e != nil {
-		err = fmt.Errorf("创建索引目录失败: %w", e)
-		return nil, fmt.Errorf("初始化 FaissManager 失败: %w", err)
+		err = fmt.Errorf("Failed to create index directory: %w", e)
+		return nil, fmt.Errorf("Failed to initialize FaissManager: %w", err)
 	}
 
 	// 3. 构造 FaissWrapper，并尝试加载已有索引文件
@@ -62,15 +62,15 @@ func InitFaissManager(projDir string, open bool) (fm *FaissManager, err error) {
 	idxFile := filepath.Join(gitgo, "code_index"+ext)
 	if _, statErr := os.Stat(idxFile); statErr == nil {
 		if loadErr := fw.LoadFromFile(idxFile); loadErr == nil {
-			fmt.Println("► 成功加载已有 Faiss 索引")
+			fmt.Println("► Successfully loaded existing Faiss index")
 		}
 	}
 
 	// 4. 打开或创建索引数据库
 	db, dbErr := index.EnsureIndexDB(projDir)
 	if dbErr != nil {
-		err = fmt.Errorf("初始化索引数据库失败: %w", dbErr)
-		return nil, fmt.Errorf("初始化 FaissManager 失败: %w", err)
+		err = fmt.Errorf("Failed to initialize index database: %w", dbErr)
+		return nil, fmt.Errorf("Failed to initialize FaissManager: %w", err)
 	}
 
 	// 5. 构建单例
@@ -92,10 +92,10 @@ func (m *FaissManager) Stop() {
 	}
 	err := utils.StopFaissService(m.process)
 	if err != nil {
-		fmt.Println("停止 Faiss 服务失败:", err)
+		fmt.Println("Failed to stop Faiss service:", err)
 		return
 	}
-	fmt.Println("► FaissManager 已停止")
+	fmt.Println("► FaissManager has stopped")
 }
 
 // Reset 清空内存中 Indexer 的 FaissWrapper，并删除磁盘上的 .faiss 文件
@@ -109,7 +109,7 @@ func (m *FaissManager) Reset() error {
 	// 2. 删除磁盘文件
 	idxFile := filepath.Join(m.gitgoDir, "code_index"+ext)
 	if err := os.Remove(idxFile); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("删除索引文件失败: %w", err)
+		return fmt.Errorf("Failed to delete index file: %w", err)
 	}
 	return nil
 }
@@ -124,13 +124,13 @@ func InitFaiss() (*os.Process, string, error) {
 	if faissServiceDir == "" {
 		// 方法1：尝试从源文件路径获取（适用于go run）
 		sourceDir, err := utils.GetSourceFileDir()
-		log.Printf("正在从源文件路径获取FAISSService目录: %s", sourceDir)
+		log.Printf("Obtaining FAISSService directory from source file path: %s", sourceDir)
 		if err == nil {
 			// 检查源文件目录下是否存在FAISSService
 			tempDir := filepath.Join(sourceDir, "FAISSService")
 			if _, err := os.Stat(tempDir); err == nil {
 				faissServiceDir = tempDir
-				log.Printf("从源文件目录找到FAISSService: %s", faissServiceDir)
+				log.Printf("Find FAISSService: %s from the source file directory", faissServiceDir)
 			}
 		}
 	}
@@ -139,14 +139,14 @@ func InitFaiss() (*os.Process, string, error) {
 	if faissServiceDir == "" {
 		execPath, err := os.Executable()
 		if err != nil {
-			log.Fatalf("无法获取可执行文件路径: %v", err)
+			log.Fatalf("Unable to get executable path: %v", err)
 		}
 		execDir := filepath.Dir(execPath)
 		tempDir := filepath.Join(execDir, "FAISSService")
-		log.Printf("正在从可执行文件路径获取FAISSService目录: %s", execDir)
+		log.Printf("Retrieving FAISSService directory from executable path: %s", execDir)
 		if _, err := os.Stat(tempDir); err == nil {
 			faissServiceDir = tempDir
-			log.Printf("从可执行文件目录找到FAISSService: %s", faissServiceDir)
+			log.Printf("Find FAISSService: %s from the executable directory", faissServiceDir)
 		}
 	}
 
@@ -154,33 +154,33 @@ func InitFaiss() (*os.Process, string, error) {
 	if faissServiceDir == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
-			log.Fatalf("无法获取当前工作目录: %v", err)
+			log.Fatalf("Unable to get current working directory: %v", err)
 		}
-		log.Printf("正在从当前工作目录获取FAISSService目录: %s", cwd)
+		log.Printf("Retrieving FAISSService directory from current working directory: %s", cwd)
 		tempDir := filepath.Join(cwd, "cmd", "main", "FAISSService")
 		if _, err := os.Stat(tempDir); err == nil {
 			faissServiceDir = tempDir
-			log.Printf("从当前工作目录找到FAISSService: %s", faissServiceDir)
+			log.Printf("FAISSService found from current working directory: %s", faissServiceDir)
 		}
 	}
 
 	// 如果所有方法都失败，报错退出
 	if faissServiceDir == "" {
-		log.Fatalf("无法找到FAISSService目录，请确保FAISSService目录存在于源文件目录或可执行文件目录下")
+		log.Fatalf("The FAISSService directory cannot be found. Please ensure that the FAISSService directory exists in the source file directory or executable file directory.")
 	}
 
 	// 1. 启动或确认 FAISS service 已就绪
 	if err := utils.CheckPythonEnvironment("cpu", faissServiceDir); err != nil {
-		return nil, faissServiceDir, fmt.Errorf("Python环境检查失败: %w", err)
+		return nil, faissServiceDir, fmt.Errorf("Python environment check failed: %w", err)
 	}
 
 	// 启动Faiss服务
 	faissProcess, err := utils.StartFaissService(faissServiceDir)
 	if err != nil {
-		log.Fatalf("启动Faiss服务失败: %v", err)
+		log.Fatalf("Failed to start Faiss service: %v", err)
 	}
 
-	log.Println("正在启动Faiss服务...")
+	log.Println("Starting Faiss service...")
 
 	// 轮询检测Faiss服务状态
 	maxRetries := 60
@@ -189,13 +189,13 @@ func InitFaiss() (*os.Process, string, error) {
 		resp, err := http.Get(index.DefaultFaissServerURL + "/health")
 		if err == nil && resp.StatusCode == http.StatusOK {
 			resp.Body.Close()
-			log.Println("Faiss服务已成功启动")
+			log.Println("Faiss service has been started successfully")
 			break
 		}
 		if i == maxRetries-1 {
-			log.Fatalf("Faiss服务启动超时，超过%d秒仍未响应", maxRetries)
+			log.Fatalf("Faiss service startup timed out and has not responded for more than %d seconds.", maxRetries)
 		}
-		log.Printf("等待Faiss服务启动... (尝试 %d/%d)", i+1, maxRetries)
+		log.Printf("Waiting for the Faiss service to start... (try %d/%d)", i+1, maxRetries)
 		time.Sleep(retryInterval)
 	}
 	return faissProcess, faissServiceDir, nil
@@ -303,7 +303,7 @@ func InitFaiss() (*os.Process, string, error) {
 
 // 	// 3. 准备 Worker Pool
 // 	var maxWorkers = cfg.EmbeddingMaxWorker
-// 	logs.Infof("正在生成向量，总量为 %d，批次大小为 %d，最大并发数为 %d", len(records), batchSize, maxWorkers)
+// 	logs.Infof("Generating vectors, total amount is %d, batch size is %d, maximum concurrency is %d", len(records), batchSize, maxWorkers)
 // 	jobs := make(chan batch)
 // 	var wg sync.WaitGroup
 
@@ -313,18 +313,18 @@ func InitFaiss() (*os.Process, string, error) {
 // 				// 3.1 批量调用
 // 				embs, err := search.SimpleEmbeddingBatch(b.texts, dim)
 // 				if err != nil || len(embs) != len(b.texts) {
-// 					logs.Warnf("为函数 %d 批量生成向量失败，降级到单条插入: %v", b.ids, err)
+// 					logs.Warnf("Batch vector generation failed for function %d, downgraded to single insertion: %v", b.ids, err)
 // 					for i, desc := range b.texts {
 // 						vec := search.SimpleEmbedding(desc, dim)
 // 						if e := idx.FaissIndex.AddVector(b.ids[i], vec); e != nil {
-// 							logs.Errorf("为函数 %d 添加向量失败: %v", b.ids[i], e)
+// 							logs.Errorf("Failed to add vector for function %d: %v", b.ids[i], e)
 // 						}
 // 					}
 // 				} else {
-// 					logs.Warnf("为函数 %d 批量生成向量成功，逐条入库", b.ids)
+// 					logs.Warnf("Successfully generated vectors in batches for function %d and entered them into the database one by one.", b.ids)
 // 					for i, vec := range embs {
 // 						if e := idx.FaissIndex.AddVector(b.ids[i], vec); e != nil {
-// 							logs.Errorf("为函数 %d 添加向量失败: %v", b.ids[i], e)
+// 							logs.Errorf("Failed to add vector for function %d: %v", b.ids[i], e)
 // 						}
 // 					}
 // 				}

@@ -24,7 +24,7 @@ func StartFaissService(faissServiceDir string) (*os.Process, error) {
 	// 构建 faiss_server.py 的完整路径
 	faissServerPath := filepath.Join(faissServiceDir, "faiss_server.py")
 	if _, err := os.Stat(faissServerPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("Faiss 服务脚本不存在: %s", faissServerPath)
+		return nil, fmt.Errorf("Faiss service script does not exist: %s", faissServerPath)
 	}
 
 	// 获取虚拟环境 Python 路径
@@ -33,12 +33,12 @@ func StartFaissService(faissServiceDir string) (*os.Process, error) {
 		return nil, err
 	}
 	if _, err = os.Stat(envPython); os.IsNotExist(err) {
-		return nil, fmt.Errorf(".env 虚拟环境中的 Python 解释器不存在: %s", envPython)
+		return nil, fmt.Errorf("The Python interpreter in the .env virtual environment does not exist: %s", envPython)
 	}
 
 	// Windows 下清理端口
 	if err := CheckAndKillPort(5533); err != nil {
-		return nil, fmt.Errorf("端口清理失败: %v", err)
+		return nil, fmt.Errorf("Port cleanup failed: %v", err)
 	}
 
 	// 启动 Faiss 服务，指定在新进程组中运行，以便后续可以统一终止
@@ -50,10 +50,10 @@ func StartFaissService(faissServiceDir string) (*os.Process, error) {
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("启动 Faiss 服务失败: %v", err)
+		return nil, fmt.Errorf("Failed to start Faiss service: %v", err)
 	}
 
-	log.Printf("Faiss 服务已启动 (Windows)，PID: %d", cmd.Process.Pid)
+	log.Printf("Faiss service started (Windows), PID: %d", cmd.Process.Pid)
 	return cmd.Process, nil
 }
 
@@ -65,7 +65,7 @@ func CheckAndKillPort(port int) error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// 如果查不到就跳过
-		log.Printf("无法查询端口 %d 的占用: %v", port, err)
+		log.Printf("Unable to query the occupancy of port %d: %v", port, err)
 		return nil
 	}
 	pidStr := strings.TrimSpace(string(out))
@@ -76,22 +76,22 @@ func CheckAndKillPort(port int) error {
 	// 解析 PID，确保它是一个有效的整数
 	pid, err := strconv.Atoi(pidStr)
 	if err != nil {
-		log.Printf("无法解析 PID: %v", err)
+		log.Printf("Unable to parse PID: %v", err)
 		return nil
 	}
 
-	log.Printf("端口 %d 被 PID=%d 占用，正在终止…", port, pid)
+	log.Printf("Port %d is occupied by PID=%d, terminating...", port, pid)
 
 	// 终止占用端口的进程
 	killCmd := exec.Command("taskkill", "/F", "/PID", fmt.Sprintf("%d", pid))
 	kout, kerr := killCmd.CombinedOutput()
 	if kerr != nil {
 		// 输出错误信息时增加字符编码的处理
-		log.Printf("taskkill 命令输出: %s", string(kout))
-		return fmt.Errorf("taskkill 失败: %v\n%s", kerr, string(kout))
+		log.Printf("taskkill command output: %s", string(kout))
+		return fmt.Errorf("taskkill failed: %v\n%s", kerr, string(kout))
 	}
 
-	log.Printf("已成功终止进程 %d", pid)
+	log.Printf("Process %d successfully terminated", pid)
 	return nil
 }
 
@@ -101,9 +101,9 @@ func StopFaissService(process *os.Process) error {
 	}
 	// Windows 下直接用 Kill
 	if err := process.Kill(); err != nil {
-		return fmt.Errorf("终止 Faiss 服务失败: %v", err)
+		return fmt.Errorf("Failed to terminate Faiss service: %v", err)
 	}
-	log.Println("Faiss 服务已停止")
+	log.Println("Faiss service has stopped")
 	return nil
 }
 
@@ -129,7 +129,7 @@ func runCmdContextWindows(dir, name string, args []string, timeout time.Duration
 	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
 
 	if err := cmd.Run(); err != nil {
-		return buf.Bytes(), fmt.Errorf("命令 %s %v 失败: %w，输出:\n%s", name, args, err, buf.String())
+		return buf.Bytes(), fmt.Errorf("Command %s %v failed: %w, output:\n%s", name, args, err, buf.String())
 	}
 	return buf.Bytes(), nil
 }

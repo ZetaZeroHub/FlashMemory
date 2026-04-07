@@ -58,30 +58,30 @@ type GitInfoHistory struct {
 func BuildIndex(projDir, subDir string, full bool, open bool) error {
 	gitgoDir := filepath.Join(projDir, ".gitgo")
 	if e := os.MkdirAll(gitgoDir, 0755); e != nil {
-		return fmt.Errorf("创建索引目录失败: %w", e)
+		return fmt.Errorf("Failed to create index directory: %w", e)
 	}
 	tempFilePath := filepath.Join(gitgoDir, "indexing.temp")
 	// 如果 temp 文件已存在，说明已有索引进程在运行
 	if _, err := os.Stat(tempFilePath); err == nil {
-		logs.Warnf("索引已运行，跳过索引...")
+		logs.Warnf("Indexing has been run, indexing skipped...")
 	} else if !os.IsNotExist(err) {
-		logs.Warnf("索引临时文件已存在，跳过索引...")
+		logs.Warnf("Index temporary file already exists, indexing skipped...")
 	}
 
 	// 创建临时文件，标记开始索引
 	f, err := os.Create(tempFilePath)
 	if err != nil {
-		logs.Warnf("创建索引临时文件失败 %q: %v", tempFilePath, err)
+		logs.Warnf("Failed to create index temporary file %q: %v", tempFilePath, err)
 	}
 	f.Close()
 	fm, err := InitFaissManager(projDir, open)
 	if err != nil {
-		return fmt.Errorf("初始化 FaissManager 失败: %w", err)
+		return fmt.Errorf("Failed to initialize FaissManager: %w", err)
 	}
 	// 如果需要全量，先 Reset（删除老索引）
 	if full {
 		if e := fm.Reset(); e != nil {
-			return fmt.Errorf("重置 Faiss 索引失败: %w", e)
+			return fmt.Errorf("Failed to reset Faiss index: %w", e)
 		}
 	}
 	// 后续不再启动/停止服务，直接注入
@@ -92,7 +92,7 @@ func BuildIndex(projDir, subDir string, full bool, open bool) error {
 func IncrementalUpdate(projDir, branch, commit string, open bool) error {
 	fm, err := InitFaissManager(projDir, open)
 	if err != nil {
-		return fmt.Errorf("初始化 FaissManager 失败: %w", err)
+		return fmt.Errorf("Failed to initialize FaissManager: %w", err)
 	}
 	return indexCodeWithManager(fm, projDir, branch, commit, false, "")
 }
@@ -101,35 +101,35 @@ func IncrementalUpdate(projDir, branch, commit string, open bool) error {
 func DeleteIndex(projDir string) error {
 	gitgo := filepath.Join(projDir, ".gitgo")
 	if _, err := os.Stat(gitgo); os.IsNotExist(err) {
-		logs.Warnf("索引目录不存在: %s", gitgo)
+		logs.Warnf("Index directory does not exist: %s", gitgo)
 		return nil // 无索引，直接返回
 	}
 	indexDBPath := filepath.Join(gitgo, "code_index.db")
 	if _, err := os.Stat(indexDBPath); err == nil {
-		logs.Infof("删除索引数据库 %q", indexDBPath)
+		logs.Infof("Delete index database %q", indexDBPath)
 		db, err := index.EnsureIndexDB(projDir)
 		if err == nil {
 			defer db.Close()
 			_, err = db.Exec("DELETE FROM functions")
 			if err == nil {
-				logs.Infof("删除函数索引记录成功")
+				logs.Infof("Delete function index record successfully")
 			}
 			_, err = db.Exec("DELETE FROM calls")
 			if err == nil {
-				logs.Infof("删除调用索引记录成功")
+				logs.Infof("Delete call index record successfully")
 			}
 			_, err = db.Exec("DELETE FROM externals")
 			if err == nil {
-				logs.Infof("删除外部索引记录成功")
+				logs.Infof("Deletion of external index records successful")
 			}
 		} else {
-			logs.Warnf("连接索引数据库失败: %v", err)
+			logs.Warnf("Failed to connect to index database: %v", err)
 			return err
 		}
 	}
 	err := ResetIndex(projDir, "")
 	if err != nil {
-		logs.Warnf("重置索引失败: %v", err)
+		logs.Warnf("Failed to reset index: %v", err)
 		return err
 	}
 	return nil
@@ -156,7 +156,7 @@ func RefreshFaiss(projDir string) error {
 	})
 	resp, err := httpClient.Post(index.DefaultFaissServerURL+"/delete_index", "application/json", bytes.NewBuffer(reqBody))
 	if err != nil {
-		logs.Warnf("删除索引失败，但忽略错误: %v", err)
+		logs.Warnf("Dropping index failed, but ignored error: %v", err)
 	}
 
 	reqBody, _ = json.Marshal(map[string]interface{}{
@@ -164,7 +164,7 @@ func RefreshFaiss(projDir string) error {
 	})
 	resp, err = httpClient.Post(index.DefaultFaissServerURL+"/delete_index", "application/json", bytes.NewBuffer(reqBody))
 	if err != nil {
-		logs.Warnf("删除模块向量失败，但忽略错误: %v", err)
+		logs.Warnf("Deleting module vector failed, but ignored error: %v", err)
 	}
 	defer httpClient.CloseIdleConnections()
 	defer resp.Body.Close()
@@ -199,7 +199,7 @@ func ResetIndex(projDir, subPath string) error {
 	})
 	resp, err := httpClient.Post(index.DefaultFaissServerURL+"/delete_index", "application/json", bytes.NewBuffer(reqBody))
 	if err != nil {
-		logs.Warnf("删除索引失败，但忽略错误: %v", err)
+		logs.Warnf("Dropping index failed, but ignored error: %v", err)
 	}
 	defer httpClient.CloseIdleConnections()
 	defer resp.Body.Close()
@@ -223,14 +223,14 @@ func DeleteSomeIndex(projDir string, subPath string) error {
 	if subPath != "" {
 		// 检查数据库文件是否存在
 		if _, err := os.Stat(indexDBPath); os.IsNotExist(err) {
-			logs.Warnf("索引数据库不存在: %s", indexDBPath)
+			logs.Warnf("Index database does not exist: %s", indexDBPath)
 			return nil // 数据库不存在，直接返回
 		}
 
 		// 打开数据库连接
 		db, err := index.EnsureIndexDB(projDir)
 		if err != nil {
-			return fmt.Errorf("打开索引数据库失败: %w", err)
+			return fmt.Errorf("Failed to open index database: %w", err)
 		}
 		defer db.Close()
 		// 标准化子路径（确保使用正确的路径分隔符，文件不加/，目录加/）
@@ -257,15 +257,15 @@ func DeleteSomeIndex(projDir string, subPath string) error {
 
 		result, err := db.Exec(query, pattern)
 		if err != nil {
-			return fmt.Errorf("删除子路径索引记录失败: %w", err)
+			return fmt.Errorf("Failed to delete subpath index record: %w", err)
 		}
 
 		// 获取受影响的行数
 		rowsAffected, err := result.RowsAffected()
 		if err != nil {
-			logs.Warnf("获取删除行数失败: %v", err)
+			logs.Warnf("Failed to get the number of deleted rows: %v", err)
 		} else {
-			logs.Infof("成功删除子路径 '%s' 的 %d 条索引记录", pattern, rowsAffected)
+			logs.Infof("Successfully deleted %d index records for subpath '%s'", pattern, rowsAffected)
 		}
 
 		// todo 删除externals和calls
@@ -282,14 +282,14 @@ func DeleteSomeModuleDesc(projDir string, subPath string) error {
 	if subPath != "" {
 		// 检查数据库文件是否存在
 		if _, err := os.Stat(indexDBPath); os.IsNotExist(err) {
-			logs.Warnf("索引数据库不存在: %s", indexDBPath)
+			logs.Warnf("Index database does not exist: %s", indexDBPath)
 			return nil // 数据库不存在，直接返回
 		}
 
 		// 打开数据库连接
 		db, err := index.EnsureIndexDB(projDir)
 		if err != nil {
-			return fmt.Errorf("打开索引数据库失败: %w", err)
+			return fmt.Errorf("Failed to open index database: %w", err)
 		}
 		defer db.Close()
 
@@ -305,15 +305,15 @@ func DeleteSomeModuleDesc(projDir string, subPath string) error {
 
 		result, err := db.Exec(query, pattern)
 		if err != nil {
-			return fmt.Errorf("删除子路径索引记录失败: %w", err)
+			return fmt.Errorf("Failed to delete subpath index record: %w", err)
 		}
 
 		// 获取受影响的行数
 		rowsAffected, err := result.RowsAffected()
 		if err != nil {
-			logs.Warnf("获取删除行数失败: %v", err)
+			logs.Warnf("Failed to get the number of deleted rows: %v", err)
 		} else {
-			logs.Infof("成功删除子路径 '%s' 的 %d 条索引记录", subPath, rowsAffected)
+			logs.Infof("Successfully deleted %d index records for subpath '%s'", subPath, rowsAffected)
 		}
 	}
 	return nil
@@ -330,13 +330,13 @@ func ResetModuleDesc(projDir string) error {
 func DeleteModuleDesc(projDir string) error {
 	db, err := index.EnsureIndexDB(projDir)
 	if err != nil {
-		logs.Warnf("打开索引数据库失败: %v", err)
+		logs.Warnf("Failed to open index database: %v", err)
 		return err
 	}
 	defer db.Close()
 	_, err = db.Exec("DELETE FROM code_desc")
 	if err == nil {
-		logs.Infof("删除模块分析记录成功")
+		logs.Infof("Deletion of module analysis record successful")
 	}
 	ResetModuleDesc(projDir)
 	return err
@@ -359,23 +359,23 @@ func SaveGitBuildInfo(projDir string, subPath string, indexedFiles, allFuncs int
 		var err error
 		branchName, err = utils.GetCurrentBranchName(projDir)
 		if err != nil {
-			log.Printf("获取当前分支名称失败: %v，将使用空值", err)
+			log.Printf("Failed to get current branch name: %v, null value will be used", err)
 		}
 
 		commitHash, err = utils.GetCurrentBranchCommitHash(projDir)
 		if err != nil {
-			log.Printf("获取当前commit hash失败: %v，将使用空值", err)
+			log.Printf("Failed to obtain current commit hash: %v, null value will be used", err)
 		}
 
 		if commitHash != "" {
 			commitDate, err = utils.GetCommitDate(projDir, commitHash)
 			if err != nil {
-				log.Printf("获取commit日期失败: %v，将使用空值", err)
+				log.Printf("Failed to get commit date: %v, null value will be used", err)
 			}
 		}
-		log.Printf("检测到git仓库，分支: %s, commit: %s", branchName, commitHash)
+		log.Printf("git repository detected, branch: %s, commit: %s", branchName, commitHash)
 	} else {
-		log.Println("当前项目不是git仓库，git相关字段将为空")
+		log.Println("The current project is not a git warehouse, and git related fields will be empty.")
 	}
 
 	// 创建当前构建信息
@@ -393,7 +393,7 @@ func SaveGitBuildInfo(projDir string, subPath string, indexedFiles, allFuncs int
 	// 确保.gitgo目录存在
 	gitgoDir := filepath.Join(projDir, ".gitgo")
 	if err := os.MkdirAll(gitgoDir, 0755); err != nil {
-		return fmt.Errorf("创建.gitgo目录失败: %w", err)
+		return fmt.Errorf("Failed to create .gitgo directory: %w", err)
 	}
 
 	// info.json文件路径
@@ -403,11 +403,11 @@ func SaveGitBuildInfo(projDir string, subPath string, indexedFiles, allFuncs int
 	var gitHistory GitInfoHistory
 	if data, err := os.ReadFile(infoFilePath); err == nil {
 		if err := json.Unmarshal(data, &gitHistory); err != nil {
-			log.Printf("解析现有git信息失败，将创建新的记录: %v", err)
+			log.Printf("Failed to parse existing git information, new record will be created: %v", err)
 			gitHistory = GitInfoHistory{}
 		}
 	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("读取git信息文件失败: %w", err)
+		return fmt.Errorf("Failed to read git information file: %w", err)
 	}
 
 	// 如果存在最新记录，将其移动到历史记录中
@@ -421,18 +421,18 @@ func SaveGitBuildInfo(projDir string, subPath string, indexedFiles, allFuncs int
 	// 序列化为JSON
 	jsonData, err := json.MarshalIndent(gitHistory, "", "  ")
 	if err != nil {
-		return fmt.Errorf("序列化git信息失败: %w", err)
+		return fmt.Errorf("Failed to serialize git information: %w", err)
 	}
 
 	// 写入文件
 	if err := os.WriteFile(infoFilePath, jsonData, 0644); err != nil {
-		return fmt.Errorf("写入git信息文件失败: %w", err)
+		return fmt.Errorf("Failed to write git information file: %w", err)
 	}
 
 	if branchName != "" && commitHash != "" {
-		log.Printf("成功保存构建信息到 %s (分支: %s, commit: %s, 索引文件: %d个)", infoFilePath, branchName, commitHash[:8], indexedFiles)
+		log.Printf("Successfully saved build information to %s (branch: %s, commit: %s, index files: %d)", infoFilePath, branchName, commitHash[:8], indexedFiles)
 	} else {
-		log.Printf("成功保存构建信息到 %s (非git仓库, 索引文件: %d个)", infoFilePath, indexedFiles)
+		log.Printf("Successfully saved build information to %s (non-git repository, index files: %d)", infoFilePath, indexedFiles)
 	}
 	return nil
 }
@@ -445,43 +445,43 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 	}
 	gitgoDir := filepath.Join(projDir, ".gitgo")
 	if e := os.MkdirAll(gitgoDir, 0755); e != nil {
-		return fmt.Errorf("创建索引目录失败: %w", e)
+		return fmt.Errorf("Failed to create index directory: %w", e)
 	}
 	// 索引文件路径
 	indexDBPath := filepath.Join(gitgoDir, "code_index.db")
 	faissIndexPath := filepath.Join(gitgoDir, "code_index"+ext)
 
-	log.Println("正在索引代码文件...")
+	log.Println("Indexing code files...")
 	os.MkdirAll(gitgoDir, 0755)
 
 	tempFilePath := filepath.Join(gitgoDir, "indexing.temp")
 	// 如果 temp 文件已存在，说明已有索引进程在运行
 	if _, err := os.Stat(tempFilePath); err == nil {
-		logs.Warnf("索引已运行，跳过索引...")
+		logs.Warnf("Indexing has been run, indexing skipped...")
 	} else if !os.IsNotExist(err) {
-		logs.Warnf("索引临时文件已存在，跳过索引...")
+		logs.Warnf("Index temporary file already exists, indexing skipped...")
 	}
 
 	// 创建临时文件，标记开始索引
 	f, err := os.Create(tempFilePath)
 	if err != nil {
-		logs.Warnf("创建索引临时文件失败 %q: %v", tempFilePath, err)
+		logs.Warnf("Failed to create index temporary file %q: %v", tempFilePath, err)
 	}
 	f.Close()
 
 	// 确保退出时删除临时文件
 	defer func() {
 		if err := os.Remove(tempFilePath); err != nil && !os.IsNotExist(err) {
-			log.Printf("删除索引临时文件失败 %q: %v", tempFilePath, err)
+			log.Printf("Failed to delete index temporary file %q: %v", tempFilePath, err)
 		}
-		logs.Infof("索引完成，已删除索引临时文件 %q", tempFilePath)
+		logs.Infof("Indexing completed, index temporary file %q deleted", tempFilePath)
 	}()
 
 	// 强制清理全局索引临时文件
 	fullIndexTemp := filepath.Join(gitgoDir, "full_index.temp")
 	if _, err := os.Stat(fullIndexTemp); err == nil {
 		if err := os.Remove(fullIndexTemp); err != nil && !os.IsNotExist(err) {
-			logs.Warnf("删除全局索引临时文件失败 %q: %v", fullIndexTemp, err)
+			logs.Warnf("Failed to delete global index temporary files %q: %v", fullIndexTemp, err)
 		}
 	}
 
@@ -494,13 +494,13 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 	if _, err := os.Stat(indexDBPath); err == nil {
 		if _, err := os.Stat(faissIndexPath); err == nil {
 			dbExists = true
-			log.Println("检测到现有索引文件，将进行增量更新")
+			log.Println("Existing index file detected, incremental update will be done")
 		}
 	}
 
 	// 如果强制全量索引，则跳过增量更新逻辑
 	if forceFull {
-		log.Println("已指定强制全量索引，将忽略增量更新")
+		log.Println("Forced full indexing has been specified, incremental updates will be ignored")
 		dbExists = false
 	}
 
@@ -508,7 +508,7 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 		// 检查.git目录是否存在
 		gitDir := filepath.Join(projDir, ".git")
 		if _, err := os.Stat(gitDir); err == nil {
-			log.Println("检测到.git目录，正在解析提交记录以获取变更文件...")
+			log.Println(".git directory detected, parsing commit records for change files...")
 
 			// 打开数据库，准备查询和更新
 			db, err := index.EnsureIndexDB(projDir)
@@ -519,12 +519,12 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 
 			// 确保branch_index表存在
 			if err := index.EnsureBranchIndexTable(db); err != nil {
-				log.Printf("确保branch_index表存在失败: %v，将进行全量索引", err)
+				log.Printf("Failed to ensure branch_index table exists: %v, full index will be performed", err)
 			} else {
 				// 获取最新的分支索引信息
 				branchInfo, err := index.GetLatestBranchIndexInfo(db, branchName)
 				if err != nil {
-					log.Printf("获取分支索引信息失败: %v，将进行全量索引", err)
+					log.Printf("Failed to obtain branch index information: %v, full index will be performed", err)
 				} else {
 					// 获取当前commit hash或使用指定的commit hash
 					currentCommitHash := commitHash
@@ -532,7 +532,7 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 						// 使用git工具函数获取当前分支的最新commit hash
 						currentCommitHash, err = utils.GetCurrentBranchCommitHash(projDir)
 						if err != nil {
-							log.Printf("获取当前分支commit hash失败: %v，将进行全量索引", err)
+							log.Printf("Failed to obtain commit hash of current branch: %v, full index will be performed", err)
 							currentCommitHash = ""
 						}
 					}
@@ -540,20 +540,20 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 					if currentCommitHash != "" {
 						if branchInfo == nil {
 							// 没有找到分支索引信息，获取当前commit的变更文件
-							log.Printf("未找到分支索引信息，获取当前分支commit %s的变更文件...", currentCommitHash)
+							log.Printf("The branch index information was not found. Get the change file of the current branch commit %s...", currentCommitHash)
 							changedFiles, err := utils.GetChangedFilesByCommitHash(projDir, currentCommitHash)
 							if err != nil {
-								log.Printf("获取commit %s的变更文件失败: %v，将进行全量索引", currentCommitHash, err)
+								log.Printf("Failed to obtain the changed files of commit %s: %v, full index will be performed", currentCommitHash, err)
 							} else if len(changedFiles) > 0 {
-								log.Printf("检测到%d个变更文件", len(changedFiles))
+								log.Printf("%d changed files detected", len(changedFiles))
 
 								// 删除这些文件的索引记录
 								for _, file := range changedFiles {
 									_, err := db.Exec("DELETE FROM functions WHERE file = ?", file)
 									if err != nil {
-										log.Printf("删除文件 %s 的索引记录失败: %v", file, err)
+										log.Printf("Failed to delete index record for file %s: %v", file, err)
 									} else {
-										log.Printf("已删除文件 %s 的索引记录", file)
+										log.Printf("Index record deleted for file %s", file)
 									}
 								}
 
@@ -561,27 +561,27 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 								filesToProcess = changedFiles
 								incrementalUpdate = true
 							} else {
-								log.Println("未检测到变更文件，将进行全量索引")
+								log.Println("No changed files were detected and will be fully indexed.")
 							}
 						} else {
 							// 找到了分支索引信息，获取两个commit之间的变更文件
-							log.Printf("正在获取commit %s和%s之间的变更文件...", branchInfo.CommitHash, currentCommitHash)
-							log.Printf("找到分支 %s 的索引信息，上次索引的commit: %s", branchInfo.BranchName, branchInfo.CommitHash)
+							log.Printf("Retrieving change files between commit %s and %s...", branchInfo.CommitHash, currentCommitHash)
+							log.Printf("Find the index information of branch %s, the commit of the last index: %s", branchInfo.BranchName, branchInfo.CommitHash)
 
 							if branchInfo.CommitHash != currentCommitHash {
 								changedFiles, err := utils.GetChangedFilesBetweenCommits(projDir, branchInfo.CommitHash, currentCommitHash)
 								if err != nil {
-									log.Printf("获取commit %s和%s之间的变更文件失败: %v，将进行全量索引", branchInfo.CommitHash, currentCommitHash, err)
+									log.Printf("Failed to obtain changed files between commit %s and %s: %v, full index will be performed", branchInfo.CommitHash, currentCommitHash, err)
 								} else if len(changedFiles) > 0 {
-									log.Printf("检测到%d个变更文件", len(changedFiles))
+									log.Printf("%d changed files detected", len(changedFiles))
 
 									// 删除这些文件的索引记录
 									for _, file := range changedFiles {
 										_, err := db.Exec("DELETE FROM functions WHERE file = ?", file)
 										if err != nil {
-											log.Printf("删除文件 %s 的索引记录失败: %v", file, err)
+											log.Printf("Failed to delete index record for file %s: %v", file, err)
 										} else {
-											log.Printf("已删除文件 %s 的索引记录", file)
+											log.Printf("Index record deleted for file %s", file)
 										}
 									}
 
@@ -610,7 +610,7 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 										excludeFile := filepath.Join(gitgoDir, "exclude.json")
 										jsonFile, _ := utils.ReadJSONArrayFile(excludeFile)
 										if utils.IsExcludedPath(fullWalkPath, jsonFile) {
-											log.Printf("跳过指定文件: %s", fullWalkPath)
+											log.Printf("Skip specified file: %s", fullWalkPath)
 											return filepath.SkipDir
 										}
 										if info.IsDir() {
@@ -629,26 +629,26 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 									})
 
 									if err != nil {
-										log.Printf("遍历项目目录失败: %v，将只处理变更文件", err)
+										log.Printf("Failed to traverse project directory: %v, only change files will be processed", err)
 									} else {
 										// 找出未索引的文件
 										var missingFiles []string
 										for _, file := range allFiles {
 											if !allIndexedFiles[file] && utils.Contains(changedFiles, file) {
-												log.Printf("--- 文件 %s 未索引，将处理", file)
+												log.Printf("--- File %s is not indexed, will be processed", file)
 												missingFiles = append(missingFiles, file)
 											}
 										}
 
 										if len(missingFiles) > 0 {
-											log.Printf("检测到%d个未索引的文件，将一并处理", len(missingFiles))
+											log.Printf("%d unindexed files detected and will be processed together", len(missingFiles))
 											filesToProcess = append(filesToProcess, missingFiles...)
 										}
 									}
 
 									incrementalUpdate = true
 								} else {
-									log.Println("未检测到变更文件，将检查是否有未索引的文件")
+									log.Println("No changed files detected, will check for unindexed files")
 
 									// 检查是否有未索引的文件
 									var allFiles []string
@@ -661,7 +661,7 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 										excludeFile := filepath.Join(gitgoDir, "exclude.json")
 										jsonFile, _ := utils.ReadJSONArrayFile(excludeFile)
 										if utils.IsExcludedPath(fullWalkPath, jsonFile) {
-											log.Printf("跳过指定目录: %s", fullWalkPath)
+											log.Printf("Skip specified directory: %s", fullWalkPath)
 											return filepath.SkipDir
 										}
 										if info.IsDir() {
@@ -680,7 +680,7 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 									})
 
 									if err != nil {
-										log.Printf("遍历项目目录失败: %v，将进行全量索引", err)
+										log.Printf("Failed to traverse the project directory: %v, full index will be performed", err)
 									} else {
 										// 获取已索引的文件列表
 										indexedFiles := branchInfo.GetIndexedFiles()
@@ -698,16 +698,16 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 										}
 
 										if len(missingFiles) > 0 {
-											log.Printf("检测到%d个未索引的文件，将进行处理", len(missingFiles))
+											log.Printf("%d unindexed files detected and will be processed", len(missingFiles))
 											filesToProcess = missingFiles
 											incrementalUpdate = true
 										} else {
-											log.Println("所有文件已索引，无需更新")
+											log.Println("All files are indexed and no updates are needed")
 										}
 									}
 								}
 							} else {
-								log.Printf("当前commit %s已经索引过，检查是否有未索引的文件", currentCommitHash)
+								log.Printf("The current commit %s has been indexed, check whether there are unindexed files.", currentCommitHash)
 
 								// 检查是否有未索引的文件
 								var allFiles []string
@@ -720,7 +720,7 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 									excludeFile := filepath.Join(gitgoDir, "exclude.json")
 									jsonFile, _ := utils.ReadJSONArrayFile(excludeFile)
 									if utils.IsExcludedPath(fullWalkPath, jsonFile) {
-										log.Printf("跳过指定目录: %s", fullWalkPath)
+										log.Printf("Skip specified directory: %s", fullWalkPath)
 										return filepath.SkipDir
 									}
 									if info.IsDir() {
@@ -739,7 +739,7 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 								})
 
 								if err != nil {
-									log.Printf("遍历项目目录失败: %v，将进行全量索引", err)
+									log.Printf("Failed to traverse the project directory: %v, full index will be performed", err)
 								} else {
 									// 获取已索引的文件列表
 									indexedFiles := branchInfo.GetIndexedFiles()
@@ -757,11 +757,11 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 									}
 
 									if len(missingFiles) > 0 {
-										log.Printf("检测到%d个未索引的文件，将进行处理", len(missingFiles))
+										log.Printf("%d unindexed files detected and will be processed", len(missingFiles))
 										filesToProcess = missingFiles
 										incrementalUpdate = true
 									} else {
-										log.Println("所有文件已索引，无需更新")
+										log.Println("All files are indexed and no updates are needed")
 									}
 								}
 							}
@@ -770,23 +770,23 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 				}
 			}
 		} else {
-			log.Println(".git目录不存在，无法获取变更信息，将进行全量索引")
+			log.Println("The .git directory does not exist and the change information cannot be obtained. Full indexing will be performed.")
 		}
 	} else {
-		log.Println("索引文件不存在或已指定强制全量索引，将进行全量索引")
+		log.Println("The index file does not exist or forced full indexing has been specified. Full indexing will be performed.")
 	}
 
-	log.Printf("标签： %v, 待索引文件： %s ", incrementalUpdate, filesToProcess)
+	log.Printf("Tag: %v, file to be indexed: %s", incrementalUpdate, filesToProcess)
 
 	// 如果是强制全量索引，则删除分支索引信息
 	if forceFull {
-		log.Printf("强制全量索引，删除分支 %s 的索引信息", branchName)
+		log.Printf("Force full indexing and delete the index information of branch %s", branchName)
 		db, err := index.EnsureIndexDB(projDir)
 		if err == nil {
 			defer db.Close()
 			err = index.DeleteBranchIndexInfo(db, branchName)
 			if err != nil {
-				log.Printf("删除分支 %s 的索引信息失败: %v", branchName, err)
+				log.Printf("Failed to delete index information for branch %s: %v", branchName, err)
 			}
 		}
 	}
@@ -794,14 +794,14 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 	// 3. 打开或创建索引数据库
 	db, err := index.EnsureIndexDB(projDir)
 	if err != nil {
-		return fmt.Errorf("初始化索引DB失败: %w", err)
+		return fmt.Errorf("Failed to initialize index DB: %w", err)
 	}
 	defer db.Close()
 
 	// 1. 遍历项目目录以查找代码文件
 	var files []string
 	if filePath != "" {
-		log.Println("选择性更新模式：使用 -file 参数指定的文件/文件夹")
+		log.Println("Selective update mode: files/folders specified using the -file parameter")
 		fullPath := filepath.Join(projDir, filePath)
 		info, err := os.Stat(fullPath)
 		if err != nil {
@@ -823,7 +823,7 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 				excludeFile := filepath.Join(gitgoDir, "exclude.json")
 				jsonFile, _ := utils.ReadJSONArrayFile(excludeFile)
 				if utils.IsExcludedPath(fullWalkPath, jsonFile) {
-					log.Printf("跳过指定目录: %s", fullWalkPath)
+					log.Printf("Skip specified directory: %s", fullWalkPath)
 					return filepath.SkipDir
 				}
 				if info.IsDir() {
@@ -837,14 +837,14 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 					// 删除该文件的旧索引记录
 					relPath, err := filepath.Rel(projDir, path)
 					if err != nil {
-						fmt.Errorf("获取 %s 相对于 %s 的相对路径失败: %w", fullPath, projDir, err)
+						fmt.Errorf("Failed to get relative path of %s relative to %s: %w", fullPath, projDir, err)
 					}
 					relPath = filepath.ToSlash(relPath)
 					n, err := db.Exec("DELETE FROM functions WHERE file like ?", relPath+"%")
 					if err != nil {
-						log.Printf("删除文件 %s 的索引记录失败: %v", path, err)
+						log.Printf("Failed to delete index record for file %s: %v", path, err)
 					} else {
-						log.Printf("已删除文件 %s(%s) 的索引记录, %s", path, relPath, n)
+						log.Printf("The index record for file %s(%s) has been deleted, %s", path, relPath, n)
 					}
 					files = append(files, path)
 				}
@@ -857,16 +857,16 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 			// 删除该文件的旧索引记录
 			n, err := db.Exec("DELETE FROM functions WHERE file like ?", filePath+"%")
 			if err != nil {
-				log.Printf("删除文件 %s 的索引记录失败: %v", filePath, err)
+				log.Printf("Failed to delete index record for file %s: %v", filePath, err)
 			} else {
-				log.Printf("已删除文件 %s 的索引记录, %s", filePath, n)
+				log.Printf("Index record deleted for file %s, %s", filePath, n)
 			}
 			files = append(files, filePath)
 		}
 	} else if incrementalUpdate && len(filesToProcess) > 0 {
 		// 增量更新模式：只处理变更文件
-		log.Println("增量更新模式：只处理变更文件")
-		log.Printf("变更文件列表: %v", strings.Join(filesToProcess, ";"))
+		log.Println("Incremental update mode: only process changed files")
+		log.Printf("Change file list: %v", strings.Join(filesToProcess, ";"))
 		for _, file := range filesToProcess {
 			// 获取文件的绝对路径
 			absPath := filepath.Join(projDir, file)
@@ -881,7 +881,7 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 		}
 	} else if forceFull {
 		// 全量索引模式：遍历整个项目目录
-		log.Println("全量索引模式：遍历整个项目目录")
+		log.Println("Full index mode: traverse the entire project directory")
 		err = filepath.Walk(projDir, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
@@ -891,13 +891,13 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 			excludeFile := filepath.Join(gitgoDir, "exclude.json")
 			jsonFile, _ := utils.ReadJSONArrayFile(excludeFile)
 			if utils.IsExcludedPath(fullWalkPath, jsonFile) {
-				log.Printf("跳过指定文件: %s", fullWalkPath)
+				log.Printf("Skip specified file: %s", fullWalkPath)
 				return filepath.SkipDir
 			}
 			if info.IsDir() {
 				// 跳过以点开头的隐藏目录
 				if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") {
-					logs.Warnf("跳过目录: %s or %s", info.Name(), fullWalkPath)
+					logs.Warnf("Skip directory: %s or %s", info.Name(), fullWalkPath)
 					return filepath.SkipDir
 				}
 				return nil
@@ -919,7 +919,7 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 	}
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		logs.Errorf("加载配置文件失败: %v", err)
+		logs.Errorf("Failed to load configuration file: %v", err)
 		return err
 	}
 	// 2. 并发解析所有文件
@@ -927,7 +927,7 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	concurrency := cfg.DefaultMaxWorker
-	logs.Infof("正在索引 %d 个文件，并发度为 %d", len(files), concurrency)
+	logs.Infof("Indexing %d files with %d concurrency", len(files), concurrency)
 	fileChan := make(chan string, len(files))
 
 	// 将文件放入channel
@@ -973,12 +973,12 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 		return firstErr
 	}
 
-	log.Println("正在分析代码...")
+	log.Println("Analyzing code...")
 	// 3. 分析函数（考虑依赖关系顺序）
 	llmAnalyzer := analyzer.NewLLMAnalyzerHttp(&sync.Map{}, true, cfg.DefaultMaxWorker, db, projDir)
 
 	// 添加批处理间隔，帮助连接池清理
-	log.Printf("开始分析 %d 个函数，将分批处理以优化网络连接...", len(allFuncs))
+	log.Printf("Starting analysis of %d functions, which will be processed in batches to optimize network connectivity...", len(allFuncs))
 	time.Sleep(2 * time.Second) // 给连接池一些清理时间
 
 	results, err := llmAnalyzer.AnalyzeAll(allFuncs)
@@ -993,28 +993,28 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 	dbPath := filepath.Join(projDir, ".gitgo", "code_index.db")
 	moduleDB, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		log.Printf("打开模块分析数据库失败: %v", err)
+		log.Printf("Failed to open module to analyze database: %v", err)
 	} else {
 		// 确保数据库连接可用
 		if err := moduleDB.Ping(); err != nil {
-			log.Printf("模块分析数据库连接测试失败: %v", err)
+			log.Printf("Module analysis database connection test failed: %v", err)
 		} else {
 			// 使用新的数据库连接进行后台分析
 			go func(results []analyzer.LLMAnalysisResult, moduleDB *sql.DB, projDir string, cfg *config.Config) {
 				defer moduleDB.Close() // 分析完成后关闭这个专用连接
-				log.Println("正在进行模块级分析（文件/目录级别），后台异步运行...")
+				log.Println("Module level analysis (file/directory level) in progress, running asynchronously in the background...")
 				// 默认不跳过LLM描述生成
 				skipLLM := false
 				if err := module_analyzer.AnalyzeAllModules(results, moduleDB, projDir, cfg, skipLLM, ""); err != nil {
-					log.Printf("模块级分析失败: %v", err)
+					log.Printf("Module level analysis failed: %v", err)
 				} else {
-					log.Println("模块级分析完成")
+					log.Println("Module level analysis completed")
 				}
 			}(results, moduleDB, projDir, cfg)
 		}
 	}
 
-	log.Println("正在索引代码...")
+	log.Println("Indexing code...")
 	// 5. 初始化索引存储（SQLite和Faiss）
 
 	// 确保storage_path是绝对路径
@@ -1033,24 +1033,24 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 		// 增量更新模式：先加载现有索引
 		err = idx.FaissIndex.LoadFromFile(fm.faissDir)
 		if err != nil {
-			log.Printf("加载现有Faiss索引失败: %v，将创建新索引", err)
+			log.Printf("Failed to load existing Faiss index: %v, new index will be created", err)
 		} else {
-			log.Println("成功加载现有Faiss索引")
+			log.Println("Successfully loaded existing Faiss index")
 		}
 	}
 
 	err = embedding.EnsureEmbeddingsBatch(idx)
 	if err != nil {
-		log.Printf("为函数添加向量失败: %v", err)
+		log.Printf("Failed to add vector to function: %v", err)
 		return err
 	}
 
 	// 保存索引到文件
 	err = idx.FaissIndex.SaveToFile(absGitgoDir + "/code_index" + ext)
 	if err != nil {
-		log.Printf("保存Faiss索引失败: %v", err)
+		log.Printf("Failed to save Faiss index: %v", err)
 	} else {
-		log.Println("成功保存Faiss索引")
+		log.Println("Successfully saved Faiss index")
 
 		// 保存分支索引信息
 		if commitHash != "" {
@@ -1060,7 +1060,7 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 				var err error
 				currentCommitHash, err = utils.GetCurrentBranchCommitHash(projDir)
 				if err != nil {
-					log.Printf("获取当前分支commit hash失败: %v，无法保存分支索引信息", err)
+					log.Printf("Failed to obtain current branch commit hash: %v, unable to save branch index information", err)
 				}
 			}
 
@@ -1085,22 +1085,22 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 				// 保存到数据库
 				err := index.SaveBranchIndexInfo(db, branchInfo)
 				if err != nil {
-					log.Printf("保存分支索引信息失败: %v", err)
+					log.Printf("Failed to save branch index information: %v", err)
 				} else {
-					log.Printf("成功保存分支 %s (commit: %s) 的索引信息，共索引 %d 个文件",
+					log.Printf("The index information of branch %s (commit: %s) was successfully saved, and a total of %d files were indexed.",
 						branchInfo.BranchName, branchInfo.CommitHash, len(processedFiles))
 				}
 			}
 		}
 	}
 
-	log.Println("正在构建知识图谱...")
+	log.Println("Building knowledge graph...")
 	// 构建知识图谱
 	kg := graph.BuildGraph(results, projDir)
 	// （可选）保存图结构用于调试
 	err = kg.SaveGraphJSON(filepath.Join(projDir, ".gitgo", "graph.json"))
 	if err != nil {
-		logs.Errorf("保存图结构失败: %v", err)
+		logs.Errorf("Failed to save graph structure: %v", err)
 		return err
 	}
 	// 12. （可选） 展示统计
@@ -1108,15 +1108,15 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 
 	// 13. 保存git信息到.gitgo/info.json
 	if err := SaveGitBuildInfo(projDir, filePath, len(files), len(allFuncs), GitBuildInfoTypeFull); err != nil {
-		log.Printf("保存git构建信息失败: %v", err)
+		log.Printf("Failed to save git build information: %v", err)
 	}
 	// 创建全量索引标记
 	fullIndexFile, err := os.Create(fullIndexTemp)
 	if err != nil {
-		logs.Warnf("创建全量索引标记失败 %q: %v", fullIndexTemp, err)
+		logs.Warnf("Failed to create full index mark %q: %v", fullIndexTemp, err)
 	}
 	fullIndexFile.Close()
-	logs.Infof("索引完成，已创建全量索引标记 %q", fullIndexTemp)
+	logs.Infof("Indexing completed, full index mark %q has been created", fullIndexTemp)
 	//fm.Stop()
 	return nil
 }
@@ -1124,37 +1124,37 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 func ListGraph(projDir, subPath string) (err error) {
 	gitgoDir := filepath.Join(projDir, ".gitgo")
 	if e := os.MkdirAll(gitgoDir, 0755); e != nil {
-		return fmt.Errorf("创建索引目录失败: %w", e)
+		return fmt.Errorf("Failed to create index directory: %w", e)
 	}
 	tempFilePath := filepath.Join(gitgoDir, "indexing.temp")
 	// 如果 temp 文件已存在，说明已有索引进程在运行
 	if _, err := os.Stat(tempFilePath); err == nil {
-		logs.Warnf("索引已运行，跳过索引...")
+		logs.Warnf("Indexing has been run, indexing skipped...")
 	} else if !os.IsNotExist(err) {
-		logs.Warnf("索引临时文件已存在，跳过索引...")
+		logs.Warnf("Index temporary file already exists, indexing skipped...")
 	}
 
 	// 创建临时文件，标记开始索引
 	f, err := os.Create(tempFilePath)
 	if err != nil {
-		logs.Warnf("创建索引临时文件失败 %q: %v", tempFilePath, err)
+		logs.Warnf("Failed to create index temporary file %q: %v", tempFilePath, err)
 	}
 	f.Close()
 	// 确保退出时删除临时文件
 	defer func() {
 		if err := os.Remove(tempFilePath); err != nil && !os.IsNotExist(err) {
-			log.Printf("删除索引临时文件失败 %q: %v", tempFilePath, err)
+			log.Printf("Failed to delete index temporary file %q: %v", tempFilePath, err)
 		}
-		logs.Infof("索引完成，已删除索引临时文件 %q", tempFilePath)
+		logs.Infof("Indexing completed, index temporary file %q deleted", tempFilePath)
 	}()
 	var files []string
 	var totalPath string
 	// 如果提供了子路径，则更新 projDir 路径
 	totalPath = filepath.Join(projDir, subPath)
-	logs.Infof("更新 projDir + subPath 路径为: %s", totalPath)
+	logs.Infof("Update projDir + subPath path to: %s", totalPath)
 
 	// 全量索引模式：遍历整个项目目录，或者子路径中的文件
-	log.Printf("遍历路径: %s", totalPath)
+	log.Printf("Traversal path: %s", totalPath)
 	err = filepath.Walk(totalPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -1164,14 +1164,14 @@ func ListGraph(projDir, subPath string) (err error) {
 		excludeFile := filepath.Join(projDir, ".gitgo", "exclude.json")
 		jsonFile, _ := utils.ReadJSONArrayFile(excludeFile)
 		if utils.IsExcludedPath(fullWalkPath, jsonFile) {
-			log.Printf("跳过指定文件: %s", fullWalkPath)
+			log.Printf("Skip specified file: %s", fullWalkPath)
 			return filepath.SkipDir
 		}
 		// 如果是目录，进行排除处理
 		if info.IsDir() {
 			// 跳过以点开头的隐藏目录
 			if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") {
-				logs.Warnf("跳过目录: %s or %s", info.Name(), fullWalkPath)
+				logs.Warnf("Skip directory: %s or %s", info.Name(), fullWalkPath)
 				return filepath.SkipDir
 			}
 			return nil
@@ -1185,25 +1185,25 @@ func ListGraph(projDir, subPath string) (err error) {
 	})
 
 	if err != nil {
-		return fmt.Errorf("遍历目录时发生错误: %w", err)
+		return fmt.Errorf("An error occurred while traversing the directory: %w", err)
 	}
 
 	// 初始化索引DB
 	db, err := index.EnsureIndexDB(projDir)
 	if err != nil {
-		return fmt.Errorf("初始化索引DB失败: %w", err)
+		return fmt.Errorf("Failed to initialize index DB: %w", err)
 	}
 	defer db.Close()
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		logs.Errorf("加载配置文件失败: %v", err)
+		logs.Errorf("Failed to load configuration file: %v", err)
 		return err
 	}
 	var allFuncs []parser.FunctionInfo
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	concurrency := 1
-	logs.Infof("正在索引 %d 个文件，并发度为 %d", len(files), concurrency)
+	logs.Infof("Indexing %d files with %d concurrency", len(files), concurrency)
 	fileChan := make(chan string, len(files))
 
 	// 将文件放入channel
@@ -1249,12 +1249,12 @@ func ListGraph(projDir, subPath string) (err error) {
 		return firstErr
 	}
 
-	log.Println("正在分析代码...")
+	log.Println("Analyzing code...")
 	// 3. 分析函数（考虑依赖关系顺序）
 	llmAnalyzer := analyzer.NewLLMAnalyzerHttp(&sync.Map{}, true, cfg.DefaultMaxWorker, db, projDir)
 
 	// 添加批处理间隔，帮助连接池清理
-	log.Printf("开始分析 %d 个函数，将分批处理以优化网络连接...", len(allFuncs))
+	log.Printf("Starting analysis of %d functions, which will be processed in batches to optimize network connectivity...", len(allFuncs))
 	time.Sleep(2 * time.Second) // 给连接池一些清理时间
 
 	results, err := llmAnalyzer.AnalyzeAll(allFuncs)
@@ -1269,28 +1269,28 @@ func ListGraph(projDir, subPath string) (err error) {
 	dbPath := filepath.Join(projDir, ".gitgo", "code_index.db")
 	moduleDB, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		log.Printf("打开模块分析数据库失败: %v", err)
+		log.Printf("Failed to open module to analyze database: %v", err)
 	} else {
 		// 确保数据库连接可用
 		if err := moduleDB.Ping(); err != nil {
-			log.Printf("模块分析数据库连接测试失败: %v", err)
+			log.Printf("Module analysis database connection test failed: %v", err)
 		} else {
 			// 使用新的数据库连接进行后台分析
 			go func(results []analyzer.LLMAnalysisResult, moduleDB *sql.DB, projDir string, cfg *config.Config, subPath string) {
 				defer moduleDB.Close() // 分析完成后关闭这个专用连接
-				log.Println("正在进行模块级分析（文件/目录级别），后台异步运行...")
+				log.Println("Module level analysis (file/directory level) in progress, running asynchronously in the background...")
 				// 默认不跳过LLM描述生成
 				skipLLM := false
 				if err := module_analyzer.AnalyzeAllModules(results, moduleDB, projDir, cfg, skipLLM, subPath); err != nil {
-					log.Printf("模块级分析失败: %v", err)
+					log.Printf("Module level analysis failed: %v", err)
 				} else {
-					log.Println("模块级分析完成")
+					log.Println("Module level analysis completed")
 				}
 			}(results, moduleDB, projDir, cfg, subPath)
 		}
 	}
 
-	log.Println("正在构建知识图谱...")
+	log.Println("Building knowledge graph...")
 
 	// 4. 构建知识图谱
 	kg := graph.BuildGraph(results, projDir)
@@ -1301,7 +1301,7 @@ func ListGraph(projDir, subPath string) (err error) {
 
 	// 13. 保存git信息到.gitgo/info.json
 	if err := SaveGitBuildInfo(projDir, subPath, len(files), len(allFuncs), GitBuildInfoTypeAny); err != nil {
-		log.Printf("保存git构建信息失败: %v", err)
+		log.Printf("Failed to save git build information: %v", err)
 	}
 	return err
 }
@@ -1311,26 +1311,26 @@ func MakeExcludeFile(projDir string, exclude []string) (err error) {
 	// 自动创建文件夹
 	err = os.MkdirAll(filepath.Dir(excludeFile), 0755)
 	if err != nil {
-		logs.Warnf("创建文件夹失败 %q: %v", filepath.Dir(excludeFile), err)
+		logs.Warnf("Failed to create folder %q: %v", filepath.Dir(excludeFile), err)
 		return err
 	}
 	// 如果不存在exclude.json，则生成文件
 	if _, err := os.Stat(excludeFile); os.IsNotExist(err) {
 		file, err := os.Create(excludeFile)
 		if err != nil {
-			logs.Warnf("创建exclude.json文件失败 %q: %v", excludeFile, err)
+			logs.Warnf("Failed to create exclude.json file %q: %v", excludeFile, err)
 			return err
 		}
 		defer file.Close()
 	}
 	data, err := json.MarshalIndent(exclude, "", "  ")
 	if err != nil {
-		logs.Warnf("序列化exclude.json文件失败 %q: %v", excludeFile, err)
+		logs.Warnf("Failed to serialize exclude.json file %q: %v", excludeFile, err)
 		return err
 	}
 	err = os.WriteFile(excludeFile, data, 0644)
 	if err != nil {
-		logs.Warnf("写入exclude.json文件失败 %q: %v", excludeFile, err)
+		logs.Warnf("Failed to write exclude.json file %q: %v", excludeFile, err)
 		return err
 	}
 	return err

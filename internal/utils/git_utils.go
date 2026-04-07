@@ -18,7 +18,7 @@ import (
 func GetChangedFilesByCommitHash(repoPath string, commitHash string) ([]string, error) {
 	// 确保commitHash不为空
 	if commitHash == "" {
-		return nil, fmt.Errorf("commit hash不能为空")
+		return nil, fmt.Errorf("commit hash cannot be empty")
 	}
 
 	// 构建git命令：获取指定commit的变更文件列表
@@ -28,7 +28,7 @@ func GetChangedFilesByCommitHash(repoPath string, commitHash string) ([]string, 
 	// 执行命令
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("获取commit %s的变更文件失败: %v\n%s", commitHash, err, string(output))
+		return nil, fmt.Errorf("Failed to obtain change files for commit %s: %v\n%s", commitHash, err, string(output))
 	}
 
 	// 解析输出，获取文件列表
@@ -59,7 +59,7 @@ func GetChangedFilesByCommitHash(repoPath string, commitHash string) ([]string, 
 func GetChangedFilesBetweenCommits(repoPath string, oldCommit, newCommit string) ([]string, error) {
 	// 确保commit hash不为空
 	if oldCommit == "" || newCommit == "" {
-		return nil, fmt.Errorf("commit hash不能为空")
+		return nil, fmt.Errorf("commit hash cannot be empty")
 	}
 
 	// 构建git命令：获取两个commit之间的变更文件列表
@@ -69,7 +69,7 @@ func GetChangedFilesBetweenCommits(repoPath string, oldCommit, newCommit string)
 	// 执行命令
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("获取commit %s和%s之间的变更文件失败: %v\n%s", oldCommit, newCommit, err, string(output))
+		return nil, fmt.Errorf("Failed to obtain changed files between commit %s and %s: %v\n%s", oldCommit, newCommit, err, string(output))
 	}
 
 	// 解析输出，获取文件列表
@@ -101,7 +101,7 @@ func GetCurrentBranchCommitHash(repoPath string) (string, error) {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("获取当前分支commit hash失败: %v\n%s", err, string(output))
+		return "", fmt.Errorf("Failed to obtain current branch commit hash: %v\n%s", err, string(output))
 	}
 
 	return strings.TrimSpace(string(output)), nil
@@ -117,7 +117,7 @@ func GetCurrentBranchCommitHash(repoPath string) (string, error) {
 //   - error: 错误信息
 func GetBranchCommitHash(repoPath string, branch string) (string, error) {
 	if branch == "" {
-		return "", fmt.Errorf("分支名称不能为空")
+		return "", fmt.Errorf("Branch name cannot be empty")
 	}
 
 	cmd := exec.Command("git", "rev-parse", branch)
@@ -125,7 +125,7 @@ func GetBranchCommitHash(repoPath string, branch string) (string, error) {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("获取分支%s的commit hash失败: %v\n%s", branch, err, string(output))
+		return "", fmt.Errorf("Failed to obtain commit hash of branch %s: %v\n%s", branch, err, string(output))
 	}
 
 	return strings.TrimSpace(string(output)), nil
@@ -144,7 +144,7 @@ func GetCurrentBranchName(repoPath string) (string, error) {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("获取当前分支名称失败: %v\n%s", err, string(output))
+		return "", fmt.Errorf("Failed to get current branch name: %v\n%s", err, string(output))
 	}
 
 	return strings.TrimSpace(string(output)), nil
@@ -160,7 +160,7 @@ func GetCurrentBranchName(repoPath string) (string, error) {
 //   - error: 错误信息
 func GetCommitDate(repoPath string, commitHash string) (string, error) {
 	if commitHash == "" {
-		return "", fmt.Errorf("commit hash不能为空")
+		return "", fmt.Errorf("commit hash cannot be empty")
 	}
 
 	cmd := exec.Command("git", "show", "-s", "--format=%ci", commitHash)
@@ -168,7 +168,7 @@ func GetCommitDate(repoPath string, commitHash string) (string, error) {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("获取commit %s的提交日期失败: %v\n%s", commitHash, err, string(output))
+		return "", fmt.Errorf("Failed to get commit date of commit %s: %v\n%s", commitHash, err, string(output))
 	}
 
 	return strings.TrimSpace(string(output)), nil

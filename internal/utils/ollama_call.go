@@ -24,7 +24,7 @@ func NormalizeResponseWithSmallModel(rawResponse string) (string, error) {
 		logs.Errorf("Warn: no config file found or parse error, fallback to env or default. Err: %v", err)
 		return "", err
 	}
-	prompt := fmt.Sprintf(`请将以下格式不规范的文本优化成一个合法的JSON对象，必须包含"功能描述"中文字段Key：\n%s`, rawResponse)
+	prompt := fmt.Sprintf(`Please optimize the following non-standard format text into a legal JSON object, which must contain the "Function Description" Chinese field Key:\n%s`, rawResponse)
 	url := cfg.ApiBaseUrl + cfg.CompletionApi
 	payload := map[string]interface{}{
 		"model":  cfg.NormalizeModel,
@@ -50,7 +50,7 @@ func NormalizeResponseWithSmallModel(rawResponse string) (string, error) {
 	if err != nil {
 		// 如果是EOF错误，直接返回普通错误而不是LLMResponseError
 		if strings.Contains(err.Error(), "EOF") {
-			logs.Warnf("NormalizeResponseWithSmallModel遇到EOF错误: %v", err)
+			logs.Warnf("NormalizeResponseWithSmallModel encountered EOF error: %v", err)
 			return "", err
 		}
 		return "", common.NewLLMResponseError(err.Error())
@@ -129,7 +129,7 @@ func Completion(prompt string) (string, error) {
 	l := len(prompt)
 	//截取
 	if l > cfg.PromptLimit {
-		logs.Infof("提示词内容过长，截取前%d个字符", cfg.PromptLimit)
+		logs.Infof("The content of the prompt word is too long, the first %d characters are intercepted", cfg.PromptLimit)
 		prompt = prompt[:cfg.PromptLimit]
 	}
 	modelConfig := cloud.GetModelConfigByPromptLength(l)
@@ -202,17 +202,17 @@ func Completion(prompt string) (string, error) {
 		resp, err := client.Do(req)
 		if err != nil {
 			// 添加详细的网络错误日志
-			logs.Errorf("HTTP请求失败 (重试 %d/3): %v", retries+1, err)
-			logs.Errorf("请求详情 - URL: %s, 提示词长度: %d", cfg.ApiBaseUrl+cfg.CompletionApi, len(prompt))
+			logs.Errorf("HTTP request failed (retry %d/3): %v", retries+1, err)
+			logs.Errorf("Request details - URL: %s, prompt length: %d", cfg.ApiBaseUrl+cfg.CompletionApi, len(prompt))
 			if strings.Contains(err.Error(), "EOF") {
-				logs.Warnf("检测到EOF错误，可能是服务器提前关闭连接")
+				logs.Warnf("An EOF error was detected. It may be that the server closed the connection prematurely.")
 				// EOF错误直接返回普通错误，不包装为LLMResponseError
 				lastErr = err
 			} else if strings.Contains(err.Error(), "connection reset") {
-				logs.Warnf("检测到连接重置错误，可能是网络不稳定")
+				logs.Warnf("Connection reset error detected, may be due to network instability")
 				lastErr = common.NewLLMResponseError(err.Error())
 			} else if strings.Contains(err.Error(), "timeout") {
-				logs.Warnf("检测到超时错误，可能是服务器响应慢")
+				logs.Warnf("Timeout error detected, possibly slow server response")
 				lastErr = common.NewLLMResponseError(err.Error())
 			} else {
 				lastErr = common.NewLLMResponseError(err.Error())
@@ -240,7 +240,7 @@ func Completion(prompt string) (string, error) {
 		if strings.Contains(responseStr, "</think>") {
 			parts := strings.SplitAfter(responseStr, "</think>")
 			if len(parts) > 1 {
-				logs.Infof("移除<think>标签")
+				logs.Infof("Remove <think> tag")
 				responseStr = strings.TrimSpace(parts[1])
 			}
 		}

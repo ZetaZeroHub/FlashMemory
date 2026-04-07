@@ -24,24 +24,41 @@ import (
 )
 
 func main() {
-	// 命令行参数：项目目录和查询语句（如果提供）
-	projDir := flag.String("dir", ".", "Path to the project directory to index")
-	query := flag.String("query", "", "Natural language query to search the codebase")
-	faissType := flag.String("faiss", "cpu", "Type of faiss to install: 'cpu' or 'gpu'. 使用GPU版本需要CUDA支持")
-	// 搜索模式，默认使用语义搜索
-	searchMode := flag.String("search_mode", "semantic", "搜索模式: semantic, keyword, hybrid")
-	// 强制全量索引开关
-	forceFullIndex := flag.Bool("force_full", false, "强制进行全量索引，忽略增量更新")
-	// 指定commit hash进行索引
-	commitHash := flag.String("commit", "", "指定特定的commit hash进行索引，为空则使用当前HEAD")
-	// 指定分支名称
-	branchName := flag.String("branch", "master", "指定分支名称，默认为master")
-	// 仅查询模式，在已有索引的情况下直接执行查询
-	queryOnly := flag.Bool("query_only", false, "仅执行查询操作，跳过索引构建（仅限当前已有.gitgo索引的情况下）")
-	// 指定FAISSService目录的绝对路径
-	faissServicePath := flag.String("faiss_path", "", "指定FAISSService目录的绝对路径，优先级最高")
-	filePath := flag.String("file", "", "指定要定量更新的文件或文件夹，如果记录已存在则更新，否则新增")
-	useFaiss := flag.Bool("use_faiss", false, "指定要定量更新的文件或文件夹，如果记录已存在则更新，否则新增")
+	// 提前嗅探 lang 参数，以便在定义 flag 时能判断语言
+	for i, arg := range os.Args {
+		if arg == "-lang" || arg == "--lang" {
+			if i+1 < len(os.Args) {
+				common.SetLang(os.Args[i+1])
+			}
+		} else if strings.HasPrefix(arg, "-lang=") {
+			common.SetLang(strings.TrimPrefix(arg, "-lang="))
+		} else if strings.HasPrefix(arg, "--lang=") {
+			common.SetLang(strings.TrimPrefix(arg, "--lang="))
+		}
+	}
+
+	i18nFlag := func(zhStr, enStr string) string {
+		if common.IsZH() {
+			return zhStr
+		}
+		return enStr
+	}
+
+	langFlag := flag.String("lang", "", i18nFlag("指定语言 (zh/en)", "Target language (zh/en)"))
+	_ = langFlag // keep declared
+
+	// 命令行参数
+	projDir := flag.String("dir", ".", i18nFlag("要建立索引或分析的项目目录路径", "Path to the project directory to index"))
+	query := flag.String("query", "", i18nFlag("用于搜索代码库的自然语言查询", "Natural language query to search the codebase"))
+	faissType := flag.String("faiss", "cpu", i18nFlag("Faiss 版本: 'cpu' 或 'gpu'", "Type of faiss: 'cpu' or 'gpu'"))
+	searchMode := flag.String("search_mode", "semantic", i18nFlag("搜索模式: semantic, keyword, hybrid", "Search mode: semantic, keyword, hybrid"))
+	forceFullIndex := flag.Bool("force_full", false, i18nFlag("强制进行全量索引", "Force full indexing, ignore incremental updates"))
+	commitHash := flag.String("commit", "", i18nFlag("指定特定的commit hash进行索引", "Specify commit hash for indexing"))
+	branchName := flag.String("branch", "master", i18nFlag("指定分支名称", "Specify branch name"))
+	queryOnly := flag.Bool("query_only", false, i18nFlag("仅执行查询操作，跳过构建", "Execute query only, skip indexing"))
+	faissServicePath := flag.String("faiss_path", "", i18nFlag("指定 FAISSService 目录绝对路径", "Specify FAISSService absolute path"))
+	filePath := flag.String("file", "", i18nFlag("定量更新的文件或文件夹", "Specify file or dir for partial update"))
+	useFaiss := flag.Bool("use_faiss", false, i18nFlag("使用 Faiss 原生索引存储", "Use Faiss native index storage"))
 	flag.Parse()
 
 	// 获取FAISSService目录的路径

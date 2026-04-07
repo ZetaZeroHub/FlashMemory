@@ -47,13 +47,13 @@ func BuildGraph(results []analyzer.LLMAnalysisResult, projDir string) KnowledgeG
 			}
 			rel, err := filepath.Rel(projDir, filePath)
 			if err != nil {
-				logs.Warnf("[WARN] 无法计算相对路径: %v, 使用原始路径", err)
+				logs.Warnf("[WARN] Unable to calculate relative path: %v, use original path", err)
 			} else {
 				path = filepath.ToSlash(rel)
 			}
 		}
 		kg.Functions[i].Func.File = path
-		logs.Infof("[DEBUG][BuildGraph] 正在转换文件路径: %s", kg.Functions[i].Func.File)
+		logs.Infof("[DEBUG][BuildGraph] Converting file path: %s", kg.Functions[i].Func.File)
 
 		name := kg.Functions[i].Func.Name
 		if kg.Functions[i].Func.Package != "" {

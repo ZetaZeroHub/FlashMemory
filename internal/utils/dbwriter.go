@@ -76,7 +76,7 @@ func (w *DbWriter) processWrites() {
 			// 执行写入操作，带重试
 			err := w.execWithRetry(req.SQL, req.Args...)
 			if err != nil {
-				logs.Errorf("数据库写入失败 [%s]: %v", req.Type, err)
+				logs.Errorf("Database write failed [%s]: %v", req.Type, err)
 			}
 			// 将结果发送回请求方
 			if req.ResultChan != nil {
@@ -102,7 +102,7 @@ func (w *DbWriter) execWithRetry(query string, args ...interface{}) error {
 		if strings.Contains(err.Error(), "database is locked") || strings.Contains(err.Error(), "SQLITE_BUSY") {
 			// 指数退避重试，每次重试等待时间增加
 			waitTime := w.retryInterval * time.Duration(i+1)
-			logs.Warnf("数据库锁定，等待 %v 后重试 (尝试 %d/%d)", waitTime, i+1, w.maxRetries)
+			logs.Warnf("Database locked, wait for %v and try again (try %d/%d)", waitTime, i+1, w.maxRetries)
 			time.Sleep(waitTime)
 			continue
 		}
@@ -111,7 +111,7 @@ func (w *DbWriter) execWithRetry(query string, args ...interface{}) error {
 		return err
 	}
 
-	return fmt.Errorf("数据库写入重试%d次后仍失败: %w", w.maxRetries, err)
+	return fmt.Errorf("Database write failed after retrying %d times: %w", w.maxRetries, err)
 }
 
 // Write 提交一个写入请求到队列
@@ -155,7 +155,7 @@ func (w *DbWriter) Close() {
 func PrepareDB(db *sql.DB) error {
 	// 设置WAL模式，提高并发性能
 	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
-		return fmt.Errorf("设置WAL模式失败: %w", err)
+		return fmt.Errorf("Failed to set WAL mode: %w", err)
 	}
 
 	// 设置连接池参数，限制最大连接数

@@ -21,7 +21,7 @@ func StartFaissService(faissServiceDir string) (*os.Process, error) {
 
 	// 检查文件是否存在
 	if _, err := os.Stat(faissServerPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("Faiss服务脚本不存在: %s", faissServerPath)
+		return nil, fmt.Errorf("Faiss service script does not exist: %s", faissServerPath)
 	}
 
 	// 获取虚拟环境Python路径
@@ -32,12 +32,12 @@ func StartFaissService(faissServiceDir string) (*os.Process, error) {
 
 	// 检查虚拟环境Python是否存在
 	if _, err = os.Stat(envPython); os.IsNotExist(err) {
-		return nil, fmt.Errorf(".env虚拟环境中的Python解释器不存在: %s", envPython)
+		return nil, fmt.Errorf("The Python interpreter in the .env virtual environment does not exist: %s", envPython)
 	}
 
 	// 检查并清理默认端口(5533)上的占用进程
 	if err := CheckAndKillPort(5533); err != nil {
-		return nil, fmt.Errorf("端口清理失败: %v", err)
+		return nil, fmt.Errorf("Port cleanup failed: %v", err)
 	}
 
 	// 启动Faiss服务
@@ -51,7 +51,7 @@ func StartFaissService(faissServiceDir string) (*os.Process, error) {
 
 	// 启动进程（后台运行）
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("启动Faiss服务失败: %v", err)
+		return nil, fmt.Errorf("Failed to start Faiss service: %v", err)
 	}
 
 	// 立即释放进程资源，使进程在后台运行
@@ -59,7 +59,7 @@ func StartFaissService(faissServiceDir string) (*os.Process, error) {
 		_ = cmd.Wait()
 	}()
 
-	log.Printf("Faiss服务已启动，PID: %d", cmd.Process.Pid)
+	log.Printf("Faiss service has been started, PID: %d", cmd.Process.Pid)
 	return cmd.Process, nil
 }
 
@@ -77,10 +77,10 @@ func CheckAndKillPort(port int) error {
 		if pid == "" {
 			continue
 		}
-		log.Printf("端口 %d 被进程 %s 占用，正在终止...", port, pid)
+		log.Printf("Port %d is occupied by process %s, terminating...", port, pid)
 		killCmd := exec.Command("kill", "-9", pid)
 		if err := killCmd.Run(); err != nil {
-			log.Printf("终止进程 %s 失败: %v", pid, err)
+			log.Printf("Terminating process %s failed: %v", pid, err)
 			// 尝试终止整个进程组
 			pgidCmd := exec.Command("ps", "-o", "pgid=", "-p", pid)
 			pgidOut, pgidErr := pgidCmd.CombinedOutput()
@@ -89,15 +89,15 @@ func CheckAndKillPort(port int) error {
 				if pgid != "" {
 					killPgCmd := exec.Command("kill", "-9", "--", "-"+pgid)
 					if pgidErr := killPgCmd.Run(); pgidErr != nil {
-						return fmt.Errorf("无法终止进程组 %s: %v", pgid, pgidErr)
+						return fmt.Errorf("Unable to terminate process group %s: %v", pgid, pgidErr)
 					}
-					log.Printf("已成功终止进程组 %s", pgid)
+					log.Printf("Successfully terminated process group %s", pgid)
 					continue
 				}
 			}
-			return fmt.Errorf("无法终止进程 %s: %v", pid, err)
+			return fmt.Errorf("Unable to terminate process %s: %v", pid, err)
 		}
-		log.Printf("已成功终止进程 %s", pid)
+		log.Printf("Process %s terminated successfully", pid)
 	}
 	return nil
 }
@@ -111,16 +111,16 @@ func StopFaissService(process *os.Process) error {
 	// 获取进程组ID
 	pgid, err := syscall.Getpgid(process.Pid)
 	if err != nil {
-		return fmt.Errorf("获取进程组ID失败: %v", err)
+		return fmt.Errorf("Failed to get process group ID: %v", err)
 	}
 
 	// 终止整个进程组
 	err = syscall.Kill(-pgid, syscall.SIGTERM)
 	if err != nil {
-		return fmt.Errorf("终止Faiss服务失败: %v", err)
+		return fmt.Errorf("Failed to terminate Faiss service: %v", err)
 	}
 
-	log.Println("Faiss服务已停止")
+	log.Println("Faiss service has stopped")
 	return nil
 }
 

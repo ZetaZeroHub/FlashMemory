@@ -72,7 +72,7 @@ func RegisterTask(projectDir string) string {
 			count++
 		}
 	}
-	logs.Infof("已清理项目 %s 的 %d 个任务，注册新任务: %s", projectDir, count, taskID)
+	logs.Infof("Cleaned %d tasks of project %s, registered new tasks: %s", projectDir, count, taskID)
 	tasks[taskID] = task
 	tasksMutex.Unlock()
 
@@ -221,7 +221,7 @@ func UpdateTaskProgress(taskID string, total, completed int) bool {
 	task.Total = total
 	task.Completed = completed
 	task.Remaining = total - completed
-	logs.Infof("任务 %s 进度更新，总模块数 %d，已完成 %d，剩余 %d", taskID, total, completed, task.Remaining)
+	logs.Infof("Task %s progress update, total number of modules %d, %d completed, %d remaining", taskID, total, completed, task.Remaining)
 
 	return true
 }
@@ -307,18 +307,18 @@ func (ma *ModuleAnalyzer) AnalyzeModules(results []analyzer.LLMAnalysisResult) e
 		UpdateTaskStatus(ma.taskID, TaskStatusRunning, nil)
 	}
 
-	logs.Infof("开始分析模块，共有 %d 个函数结果", len(results))
+	logs.Infof("Start analyzing module, there are %d function results in total", len(results))
 	if ma.subAnalysis {
-		logs.Infof("局部分析，只分析 %s 目录", ma.subPath)
+		logs.Infof("Partial analysis, only analyze the %s directory", ma.subPath)
 	}
 
 	// 1. 按文件路径组织函数
 	fileModules := ma.organizeByFile(results)
-	logs.Infof("组织了 %d 个文件模块", len(fileModules))
+	logs.Infof("%d file modules organized", len(fileModules))
 
 	// 2. 构建目录树结构
 	rootModule := ma.buildDirectoryTree(fileModules)
-	logs.Infof("构建了目录树结构")
+	logs.Infof("Created directory tree structure")
 
 	// 预计总模块数（用于进度更新）
 	totalModules := ma.countTotalModules(rootModule)
@@ -326,7 +326,7 @@ func (ma *ModuleAnalyzer) AnalyzeModules(results []analyzer.LLMAnalysisResult) e
 		// 查询code_desc表中的记录数
 		var count int
 		if err := ma.db.QueryRow("SELECT COUNT(*) FROM code_desc").Scan(&count); err != nil {
-			logs.Errorf("查询code_desc表中的记录数失败: %v", err)
+			logs.Errorf("Failed to query the number of records in the code_desc table: %v", err)
 		}
 		UpdateTaskProgress(ma.taskID, totalModules, count)
 	}
@@ -338,13 +338,13 @@ func (ma *ModuleAnalyzer) AnalyzeModules(results []analyzer.LLMAnalysisResult) e
 		if ma.taskID != "" && !ma.skipLLM {
 			UpdateTaskStatus(ma.taskID, TaskStatusFailed, err)
 		}
-		return fmt.Errorf("生成模块描述失败: %w", err)
+		return fmt.Errorf("Failed to generate module description: %w", err)
 	}
 
 	// 3.5 预处理：标记有 LLM 描述的模块
 	err = ma.markModulesWithDescription(rootModule)
 	if err != nil {
-		logs.Warnf("标记 LLM 描述模块失败: %v", err)
+		logs.Warnf("Flag LLM description module failed: %v", err)
 		// 这里即使失败也继续执行，不影响主流程
 	}
 
@@ -355,11 +355,11 @@ func (ma *ModuleAnalyzer) AnalyzeModules(results []analyzer.LLMAnalysisResult) e
 		if ma.taskID != "" && !ma.skipLLM {
 			UpdateTaskStatus(ma.taskID, TaskStatusFailed, err)
 		}
-		return fmt.Errorf("保存模块描述到文件失败: %w", err)
+		return fmt.Errorf("Failed to save module description to file: %w", err)
 	}
 
 	if !ma.skipLLM {
-		logs.Infof("正在生成模块描述向量...")
+		logs.Infof("Generating module description vector...")
 		gitgoDir := filepath.Join(ma.projDir, ".gitgo")
 
 		// 索引文件路径
@@ -367,23 +367,23 @@ func (ma *ModuleAnalyzer) AnalyzeModules(results []analyzer.LLMAnalysisResult) e
 		faissModulePath := filepath.Join(gitgoDir, "module.faiss")
 		// 检查.gitgo目录和索引文件是否存在
 		if _, err := os.Stat(gitgoDir); os.IsNotExist(err) {
-			return fmt.Errorf("索引文件不存在")
+			return fmt.Errorf("Index file does not exist")
 		}
 		if _, err := os.Stat(indexDBPath); os.IsNotExist(err) {
-			return fmt.Errorf("索引文件不存在")
+			return fmt.Errorf("Index file does not exist")
 		}
 
 		// 打开数据库
 		db, err := index.EnsureIndexDB(ma.projDir)
 		if err != nil {
-			return fmt.Errorf("索引文件不存在")
+			return fmt.Errorf("Index file does not exist")
 		}
 		defer db.Close()
 
 		// 确保storage_path是绝对路径
 		absGitgoDir, err := filepath.Abs(gitgoDir)
 		if err != nil {
-			return fmt.Errorf("索引文件不存在")
+			return fmt.Errorf("Index file does not exist")
 		}
 
 		// 创建FaissWrapper，传入存储路径选项
@@ -395,23 +395,23 @@ func (ma *ModuleAnalyzer) AnalyzeModules(results []analyzer.LLMAnalysisResult) e
 		idx := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapper(128, faissOptions)}
 
 		if _, err := os.Stat(faissModulePath); os.IsNotExist(err) {
-			logs.Infof("正在初始化Faiss索引...")
+			logs.Infof("Initializing Faiss index...")
 			err = embedding.EnsureCodeDescEmbeddingsBatch(idx)
 			if common.IsLLMError(err) {
 				return err
 			}
 			if err != nil {
-				return fmt.Errorf("索引文件重置失败")
+				return fmt.Errorf("Index file reset failed")
 			}
 			err = idx.FaissIndex.SaveToFile(absGitgoDir + "/module.faiss")
 			if err != nil {
-				return fmt.Errorf("索引文件保存失败")
+				return fmt.Errorf("Index file saving failed")
 			}
 		}
 	}
 
-	logs.Infof("模块分析完成，共 %d 个文件模块，%d 个目录模块，%d 个函数模块", len(fileModules), len(rootModule.SubModules), len(rootModule.Functions))
-	logs.Infof("附加信息：批量处理大小为 %d， 最大并发数为 %d，调试模式为 %t，输出目录为 %s，路径映射缓存区大小为 %d", ma.batchSize, ma.maxConcurrency, ma.debug, ma.outputDir, len(ma.descCache))
+	logs.Infof("Module analysis completed, a total of %d file modules, %d directory modules, and %d function modules", len(fileModules), len(rootModule.SubModules), len(rootModule.Functions))
+	logs.Infof("Additional information: Batch processing size is %d, maximum concurrency is %d, debug mode is %t, output directory is %s, path mapping buffer size is %d", ma.batchSize, ma.maxConcurrency, ma.debug, ma.outputDir, len(ma.descCache))
 
 	// 更新任务状态为完成
 	if ma.taskID != "" && !ma.skipLLM {
@@ -456,25 +456,25 @@ func (ma *ModuleAnalyzer) saveToFile(module *ModuleInfo) error {
 	// 生成不同的可视化格式
 	err := ma.saveHierarchicalJson(module)
 	if err != nil {
-		return fmt.Errorf("保存层次图谱JSON失败: %w", err)
+		return fmt.Errorf("Failed to save hierarchical map JSON: %w", err)
 	}
 
 	err = ma.saveNetworkJson(module)
 	if err != nil {
-		return fmt.Errorf("保存网络图谱JSON失败: %w", err)
+		return fmt.Errorf("Failed to save network graph JSON: %w", err)
 	}
 
 	err = ma.saveSunburstJson(module)
 	if err != nil {
-		return fmt.Errorf("保存旭日图JSON失败: %w", err)
+		return fmt.Errorf("Failed to save sunburst JSON: %w", err)
 	}
 
 	err = ma.saveFlatJson(module)
 	if err != nil {
-		return fmt.Errorf("保存扁平JSON失败: %w", err)
+		return fmt.Errorf("Failed to save flat JSON: %w", err)
 	}
 
-	logs.Infof("已生成所有图谱JSON文件")
+	logs.Infof("All map JSON files have been generated")
 	return nil
 }
 
@@ -550,17 +550,17 @@ func (ma *ModuleAnalyzer) saveHierarchicalJson(module *ModuleInfo) error {
 	// 生成JSON数据
 	data, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
-		return fmt.Errorf("层次结构树JSON序列化失败: %w", err)
+		return fmt.Errorf("Hierarchy tree JSON serialization failed: %w", err)
 	}
 
 	// 保存到文件
 	filePath := filepath.Join(ma.outputDir, "hierarchical_tree.json")
 	err = os.WriteFile(filePath, data, 0644)
 	if err != nil {
-		return fmt.Errorf("写入层次结构树JSON文件失败: %w", err)
+		return fmt.Errorf("Failed to write hierarchy tree JSON file: %w", err)
 	}
 
-	logs.Infof("已保存层次结构树JSON文件: %s", filePath)
+	logs.Infof("Hierarchy tree JSON file saved: %s", filePath)
 	return nil
 }
 
@@ -606,17 +606,17 @@ func (ma *ModuleAnalyzer) saveNetworkJson(module *ModuleInfo) error {
 	// 生成JSON数据
 	data, err := json.MarshalIndent(graph, "", "  ")
 	if err != nil {
-		return fmt.Errorf("网络图JSON序列化失败: %w", err)
+		return fmt.Errorf("Network graph JSON serialization failed: %w", err)
 	}
 
 	// 保存到文件
 	filePath := filepath.Join(ma.outputDir, "network_graph.json")
 	err = os.WriteFile(filePath, data, 0644)
 	if err != nil {
-		return fmt.Errorf("写入网络图JSON文件失败: %w", err)
+		return fmt.Errorf("Failed to write network diagram JSON file: %w", err)
 	}
 
-	logs.Infof("已保存网络图JSON文件: %s", filePath)
+	logs.Infof("Saved network diagram JSON file: %s", filePath)
 	return nil
 }
 
@@ -678,17 +678,17 @@ func (ma *ModuleAnalyzer) saveSunburstJson(module *ModuleInfo) error {
 	// 生成JSON数据
 	data, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
-		return fmt.Errorf("旭日图JSON序列化失败: %w", err)
+		return fmt.Errorf("Sunburst JSON serialization failed: %w", err)
 	}
 
 	// 保存到文件
 	filePath := filepath.Join(ma.outputDir, "sunburst_chart.json")
 	err = os.WriteFile(filePath, data, 0644)
 	if err != nil {
-		return fmt.Errorf("写入旭日图JSON文件失败: %w", err)
+		return fmt.Errorf("Failed to write sunburst JSON file: %w", err)
 	}
 
-	logs.Infof("已保存旭日图JSON文件: %s", filePath)
+	logs.Infof("Saved sunburst JSON file: %s", filePath)
 	return nil
 }
 
@@ -731,17 +731,17 @@ func (ma *ModuleAnalyzer) saveFlatJson(module *ModuleInfo) error {
 	// 生成JSON数据
 	data, err := json.MarshalIndent(nodes, "", "  ")
 	if err != nil {
-		return fmt.Errorf("扁平节点列表JSON序列化失败: %w", err)
+		return fmt.Errorf("Flat node list JSON serialization failed: %w", err)
 	}
 
 	// 保存到文件
 	filePath := filepath.Join(ma.outputDir, "flat_nodes.json")
 	err = os.WriteFile(filePath, data, 0644)
 	if err != nil {
-		return fmt.Errorf("写入扁平节点列表JSON文件失败: %w", err)
+		return fmt.Errorf("Failed to write flat node list JSON file: %w", err)
 	}
 
-	logs.Infof("已保存扁平节点列表JSON文件: %s", filePath)
+	logs.Infof("Saved flat node list JSON file: %s", filePath)
 	return nil
 }
 
@@ -793,7 +793,7 @@ func (ma *ModuleAnalyzer) organizeByFile(results []analyzer.LLMAnalysisResult) m
 		}
 		relPath, err := filepath.Rel(ma.projDir, filePath)
 		if err != nil {
-			logs.Errorf("获取相对路径失败 %s: %v", filePath, err)
+			logs.Errorf("Failed to obtain relative path %s: %v", filePath, err)
 			continue
 		}
 		relPath = filepath.ToSlash(relPath)
@@ -862,7 +862,7 @@ func (ma *ModuleAnalyzer) buildDirectoryTree(fileModules map[string]*ModuleInfo)
 		// 获取相对于项目根目录的路径
 		relPath, err := filepath.Rel(ma.projDir, path)
 		if err != nil {
-			logs.Errorf("获取相对路径失败: %v", err)
+			logs.Errorf("Failed to get relative path: %v", err)
 			return nil
 		}
 
@@ -881,7 +881,7 @@ func (ma *ModuleAnalyzer) buildDirectoryTree(fileModules map[string]*ModuleInfo)
 		excludeFile := filepath.Join(ma.projDir, ".gitgo", "exclude.json")
 		jsonFile, _ := utils.ReadJSONArrayFile(excludeFile)
 		if utils.IsExcludedPath(fullWalkPath, jsonFile) {
-			logs.Warnf("跳过指定目录: %s", fullWalkPath)
+			logs.Warnf("Skip specified directory: %s", fullWalkPath)
 			return filepath.SkipDir
 		}
 
@@ -965,7 +965,7 @@ func (ma *ModuleAnalyzer) buildDirectoryTree(fileModules map[string]*ModuleInfo)
 	})
 
 	if err != nil {
-		logs.Errorf("遍历项目目录失败: %v", err)
+		logs.Errorf("Failed to traverse project directory: %v", err)
 		// 即使遍历失败，也继续使用已获取的目录结构
 	}
 
@@ -1012,12 +1012,12 @@ func (ma *ModuleAnalyzer) buildDirectoryTree(fileModules map[string]*ModuleInfo)
 			rootModule.SubModules = append(rootModule.SubModules, fileModule)
 			rootModule.FileCount++
 			rootModule.FunctionCount += fileModule.FunctionCount
-			logs.Warnf("文件 %s 的父目录 %s 不存在于目录树中，已添加到根目录", fileModule.Path, fileModule.ParentPath)
+			logs.Warnf("The parent directory %s of file %s does not exist in the directory tree and has been added to the root directory", fileModule.Path, fileModule.ParentPath)
 		}
 	}
 
 	// 可选：记录一些调试信息
-	logs.Infof("目录树构建完成，共包含 %d 个目录和 %d 个文件", len(dirModules), len(allFileModules))
+	logs.Infof("The directory tree is constructed, containing a total of %d directories and %d files.", len(dirModules), len(allFileModules))
 
 	return rootModule
 }
@@ -1027,7 +1027,7 @@ func (ma *ModuleAnalyzer) generateDescriptionsWithConcurrency(root *ModuleInfo) 
 	var globalErr error
 
 	// 自底向上遍历模块树，使用深度优先遍历
-	logs.Infof("开始自底向上并发生成模块描述，最大并发数: %d", ma.maxConcurrency)
+	logs.Infof("Start bottom-up concurrent generation of module descriptions, maximum number of concurrencies: %d", ma.maxConcurrency)
 
 	// 构建每个节点的归并前顺序（后序遍历）
 	var nodeList []*ModuleInfo
@@ -1049,7 +1049,7 @@ func (ma *ModuleAnalyzer) generateDescriptionsWithConcurrency(root *ModuleInfo) 
 	collectNodes(root, 0)
 
 	// 2. 并发处理节点，使用信号量控制并发数
-	logs.Infof("共收集了 %d 个节点进行处理", len(nodeList))
+	logs.Infof("A total of %d nodes were collected for processing", len(nodeList))
 
 	// 创建一个错误通道，用于收集并发处理中的错误
 	errChan := make(chan error, len(nodeList))
@@ -1080,7 +1080,7 @@ func (ma *ModuleAnalyzer) generateDescriptionsWithConcurrency(root *ModuleInfo) 
 
 			// 处理单个模块，传递根模块以便批量插入时使用
 			if err := ma.processModule(module, rootModule); err != nil {
-				logs.Errorf("处理模块 %s 失败: %v", module.Path, err)
+				logs.Errorf("Failed to process module %s: %v", module.Path, err)
 				errChan <- err
 			}
 		}(m, root)
@@ -1104,9 +1104,9 @@ func (ma *ModuleAnalyzer) generateDescriptionsWithConcurrency(root *ModuleInfo) 
 	remaining := len(ma.batchModules)
 	ma.batchMutex.Unlock()
 	if remaining > 0 {
-		logs.Infof("处理剩余 %d 个模块的最终批量插入", remaining)
+		logs.Infof("Process final bulk insert of remaining %d modules", remaining)
 		if err := ma.batchInsertModules(root); err != nil {
-			logs.Errorf("最终批量插入失败: %v", err)
+			logs.Errorf("Final batch insert failed: %v", err)
 			if globalErr == nil {
 				globalErr = err
 			}
@@ -1121,12 +1121,12 @@ func (ma *ModuleAnalyzer) processModule(m *ModuleInfo, rootModule *ModuleInfo) e
 	// 检查是否需要更新
 	needUpdate, err := ma.checkForChanges(m)
 	if err != nil {
-		logs.Errorf("检查模块 %s 变更失败: %v", m.Path, err)
+		logs.Errorf("Check for changes in module %s failed: %v", m.Path, err)
 		return err
 	}
 
 	if !needUpdate {
-		logs.Infof("模块 %s 无变化，检查描述", m.Path)
+		logs.Infof("Module %s no changes, check description", m.Path)
 
 		// 即使模块无变化，也要确保其描述存在于内存缓存中
 		var existingDesc string
@@ -1141,14 +1141,14 @@ func (ma *ModuleAnalyzer) processModule(m *ModuleInfo, rootModule *ModuleInfo) e
 			ma.cacheMutex.RUnlock()
 
 			if exists && cachedDesc != "" {
-				logs.Infof("从缓存中获取模块 %s 的描述", m.Path)
+				logs.Infof("Get description of module %s from cache", m.Path)
 				existingDesc = cachedDesc
 			} else if ma.db != nil {
 				// 3. 从数据库查询描述
 				var desc string
 				err := ma.db.QueryRow("SELECT description FROM code_desc WHERE path = ? LIMIT 1", m.Path).Scan(&desc)
 				if err == nil && desc != "" {
-					logs.Infof("从数据库查询到模块 %s 的描述", m.Path)
+					logs.Infof("Query from database to description of module %s", m.Path)
 					existingDesc = desc
 				}
 			}
@@ -1164,9 +1164,9 @@ func (ma *ModuleAnalyzer) processModule(m *ModuleInfo, rootModule *ModuleInfo) e
 			ma.descCache[m.Path] = existingDesc
 			ma.cacheMutex.Unlock()
 
-			logs.Infof("为无变化模块 %s 设置了描述", m.Path)
+			logs.Infof("Description set for unchanged module %s", m.Path)
 		} else {
-			logs.Warnf("无法为模块 %s 找到描述", m.Path)
+			logs.Warnf("Unable to find description for module %s", m.Path)
 		}
 
 		return nil
@@ -1174,8 +1174,8 @@ func (ma *ModuleAnalyzer) processModule(m *ModuleInfo, rootModule *ModuleInfo) e
 	if !ma.skipLLM {
 		// 判断是否存在模块索引临时文件，若不存在，则判断为退出信号，抛出异常
 		if _, err := os.Stat(filepath.Join(ma.projDir, ".gitgo", "module_analyzer.temp")); os.IsNotExist(err) {
-			logs.Infof("模块索引临时文件不存在，判断为退出信号，抛出异常")
-			return fmt.Errorf("模块索引分析中断")
+			logs.Infof("The module index temporary file does not exist. It is judged as an exit signal and an exception is thrown.")
+			return fmt.Errorf("Module index analysis interrupted")
 		}
 	}
 
@@ -1183,31 +1183,31 @@ func (ma *ModuleAnalyzer) processModule(m *ModuleInfo, rootModule *ModuleInfo) e
 	var desc string
 	if m.Type == "file" {
 		if ma.subAnalysis && !strings.Contains(m.Path, ma.subPath) {
-			logs.Warnf("非局部路径，跳过生成描述: %s", m.Path)
+			logs.Warnf("Non-local path, skip generating description: %s", m.Path)
 			return nil
 		}
 		desc, err = ma.generateFileDescription(m)
 		if common.IsLLMError(err) {
-			logs.Warnf("生成文件 %s 描述失败，属于LLM错误，抛出异常: %v", m.Path, err)
+			logs.Warnf("The description of generated file %s failed, which is an LLM error and an exception was thrown: %v", m.Path, err)
 			return err
 		}
 		if err != nil {
-			logs.Warnf("生成文件 %s 描述失败: %v", m.Path, err)
+			logs.Warnf("Failed to generate description for file %s: %v", m.Path, err)
 			return nil // 继续处理其他模块
 		}
 	} else if m.Type == "directory" && len(m.SubModules) > 0 {
 		if ma.subAnalysis && !strings.Contains(m.Path, ma.subPath) {
-			logs.Warnf("非局部路径，跳过生成描述: %s", m.Path)
+			logs.Warnf("Non-local path, skip generating description: %s", m.Path)
 			return nil
 		}
 		// 目录节点处理 - 此时已经确保所有子模块都已处理完毕
 		desc, err = ma.generateDirectoryDescription(m)
 		if common.IsLLMError(err) {
-			logs.Warnf("生成目录 %s 描述失败，属于LLM错误，抛出异常: %v", m.Path, err)
+			logs.Warnf("Failed to generate directory %s description. It is an LLM error and an exception is thrown: %v", m.Path, err)
 			return err
 		}
 		if err != nil {
-			logs.Warnf("生成目录 %s 描述失败: %v", m.Path, err)
+			logs.Warnf("Failed to generate description for directory %s: %v", m.Path, err)
 			return nil // 继续处理其他模块
 		}
 	}
@@ -1230,7 +1230,7 @@ func (ma *ModuleAnalyzer) processModule(m *ModuleInfo, rootModule *ModuleInfo) e
 		// 达到阈值时批量插入
 		if currentBatch >= ma.batchSize {
 			if err := ma.batchInsertModules(rootModule); err != nil {
-				logs.Errorf("批量插入失败: %v", err)
+				logs.Errorf("Batch insert failed: %v", err)
 				return err
 			}
 		}
@@ -1244,7 +1244,7 @@ func (ma *ModuleAnalyzer) generateDescriptions(root *ModuleInfo) error {
 	var globalErr error
 
 	// 自底向上遍历模块树，使用深度优先遍历
-	logs.Infof("开始自底向上生成模块描述")
+	logs.Infof("Start bottom-up generation of module descriptions")
 
 	// 构建每个节点的归并前顺序（后序遍历）
 	var nodeList []*ModuleInfo
@@ -1266,7 +1266,7 @@ func (ma *ModuleAnalyzer) generateDescriptions(root *ModuleInfo) error {
 	collectNodes(root, 0)
 
 	// 2. 按照收集顺序（自底向上）处理每个节点
-	logs.Infof("共收集了 %d 个节点进行处理", len(nodeList))
+	logs.Infof("A total of %d nodes were collected for processing", len(nodeList))
 	for _, m := range nodeList {
 		// 如果有全局错误，终止处理
 		if globalErr != nil {
@@ -1276,13 +1276,13 @@ func (ma *ModuleAnalyzer) generateDescriptions(root *ModuleInfo) error {
 		// 检查是否需要更新
 		needUpdate, err := ma.checkForChanges(m)
 		if err != nil {
-			logs.Errorf("检查模块 %s 变更失败: %v", m.Path, err)
+			logs.Errorf("Check for changes in module %s failed: %v", m.Path, err)
 			globalErr = err
 			continue
 		}
 
 		if !needUpdate {
-			logs.Infof("模块 %s 无变化，检查描述", m.Path)
+			logs.Infof("Module %s no changes, check description", m.Path)
 
 			// 即使模块无变化，也要确保其描述存在于内存缓存中
 			var existingDesc string
@@ -1297,14 +1297,14 @@ func (ma *ModuleAnalyzer) generateDescriptions(root *ModuleInfo) error {
 				ma.cacheMutex.RUnlock()
 
 				if exists && cachedDesc != "" {
-					logs.Infof("从缓存中获取模块 %s 的描述", m.Path)
+					logs.Infof("Get description of module %s from cache", m.Path)
 					existingDesc = cachedDesc
 				} else if ma.db != nil {
 					// 3. 从数据库查询描述
 					var desc string
 					err := ma.db.QueryRow("SELECT description FROM code_desc WHERE path = ? LIMIT 1", m.Path).Scan(&desc)
 					if err == nil && desc != "" {
-						logs.Infof("从数据库查询到模块 %s 的描述", m.Path)
+						logs.Infof("Query from database to description of module %s", m.Path)
 						existingDesc = desc
 					}
 				}
@@ -1320,9 +1320,9 @@ func (ma *ModuleAnalyzer) generateDescriptions(root *ModuleInfo) error {
 				ma.descCache[m.Path] = existingDesc
 				ma.cacheMutex.Unlock()
 
-				logs.Infof("为无变化模块 %s 设置了描述", m.Path)
+				logs.Infof("Description set for unchanged module %s", m.Path)
 			} else {
-				logs.Warnf("无法为模块 %s 找到描述", m.Path)
+				logs.Warnf("Unable to find description for module %s", m.Path)
 			}
 
 			continue
@@ -1330,8 +1330,8 @@ func (ma *ModuleAnalyzer) generateDescriptions(root *ModuleInfo) error {
 		if !ma.skipLLM {
 			// 判断是否存在模块索引临时文件，若不存在，则判断为退出信号，抛出异常
 			if _, err := os.Stat(filepath.Join(ma.projDir, ".gitgo", "module_analyzer.temp")); os.IsNotExist(err) {
-				logs.Infof("模块索引临时文件不存在，判断为退出信号，抛出异常")
-				return fmt.Errorf("模块索引分析中断")
+				logs.Infof("The module index temporary file does not exist. It is judged as an exit signal and an exception is thrown.")
+				return fmt.Errorf("Module index analysis interrupted")
 			}
 		}
 
@@ -1340,18 +1340,18 @@ func (ma *ModuleAnalyzer) generateDescriptions(root *ModuleInfo) error {
 		if m.Type == "file" {
 			desc, err = ma.generateFileDescription(m)
 			if err != nil {
-				logs.Warnf("生成文件 %s 描述失败: %v", m.Path, err)
+				logs.Warnf("Failed to generate description for file %s: %v", m.Path, err)
 				continue
 			}
 		} else if m.Type == "directory" && len(m.SubModules) > 0 {
 			// 目录节点处理 - 此时已经确保所有子模块都已处理完毕
 			desc, err = ma.generateDirectoryDescription(m)
 			if common.IsLLMError(err) {
-				logs.Warnf("生成目录 %s 描述失败，属于LLM错误，抛出异常: %v", m.Path, err)
+				logs.Warnf("Failed to generate directory %s description. It is an LLM error and an exception is thrown: %v", m.Path, err)
 				return err
 			}
 			if err != nil {
-				logs.Warnf("生成目录 %s 描述失败: %v", m.Path, err)
+				logs.Warnf("Failed to generate description for directory %s: %v", m.Path, err)
 				continue
 			}
 		}
@@ -1374,7 +1374,7 @@ func (ma *ModuleAnalyzer) generateDescriptions(root *ModuleInfo) error {
 			// 达到阈值时批量插入
 			if currentBatch >= ma.batchSize {
 				if err := ma.batchInsertModules(root); err != nil {
-					logs.Errorf("批量插入失败: %v", err)
+					logs.Errorf("Batch insert failed: %v", err)
 					globalErr = err
 					break
 				}
@@ -1387,9 +1387,9 @@ func (ma *ModuleAnalyzer) generateDescriptions(root *ModuleInfo) error {
 	remaining := len(ma.batchModules)
 	ma.batchMutex.Unlock()
 	if remaining > 0 {
-		logs.Infof("处理剩余 %d 个模块的最终批量插入", remaining)
+		logs.Infof("Process final bulk insert of remaining %d modules", remaining)
 		if err := ma.batchInsertModules(root); err != nil {
-			logs.Errorf("最终批量插入失败: %v", err)
+			logs.Errorf("Final batch insert failed: %v", err)
 			if globalErr == nil {
 				globalErr = err
 			}
@@ -1403,13 +1403,13 @@ func (ma *ModuleAnalyzer) generateDescriptions(root *ModuleInfo) error {
 func (ma *ModuleAnalyzer) generateDirectoryDescription(module *ModuleInfo) (string, error) {
 	// 如果设置了跳过LLM描述生成，直接返回空字符串
 	if ma.skipLLM {
-		logs.Infof("跳过LLM描述生成，目录 %s 返回空字符串", module.Path)
+		logs.Infof("Skip LLM description generation, directory %s returns empty string", module.Path)
 		return "", nil
 	}
 	// 构建提示词
 	var sb strings.Builder
 	if module.ParentPath == "" && module.Path == "" {
-		logs.Infof("生成根目录描述")
+		logs.Infof("Generate root directory description")
 		sb.WriteString(fmt.Sprintf("%s %s\n\n", ma.config.RepoAnalyzerPrompts.Header, module.Path))
 		sb.WriteString(fmt.Sprintf("%s\n\n", ma.config.RepoAnalyzerPrompts.SubModuleHeader))
 	} else {
@@ -1431,7 +1431,7 @@ func (ma *ModuleAnalyzer) generateDirectoryDescription(module *ModuleInfo) (stri
 		}
 	}
 
-	logs.Infof("目录 %s 的子模块数量: %d, 文件数量: %d, 总数: %d", module.Path, len(directories), len(files), len(module.SubModules))
+	logs.Infof("Number of submodules in directory %s: %d, number of files: %d, total number: %d", module.Path, len(directories), len(files), len(module.SubModules))
 
 	// 对目录按实际深度排序，深度越深的目录越靠前
 	sort.Slice(directories, func(i, j int) bool {
@@ -1466,7 +1466,7 @@ func (ma *ModuleAnalyzer) generateDirectoryDescription(module *ModuleInfo) (stri
 		ma.cacheMutex.RUnlock()
 
 		if exists && cachedDesc != "" {
-			logs.Infof("从内存缓存获取到子模块 %s 的描述", subModule.Path)
+			logs.Infof("Obtained the description of submodule %s from the memory cache", subModule.Path)
 			description = cachedDesc
 			// 更新子模块的描述，保持一致性
 			subModule.Description = cachedDesc
@@ -1479,7 +1479,7 @@ func (ma *ModuleAnalyzer) generateDirectoryDescription(module *ModuleInfo) (stri
 				var desc string
 				err := ma.db.QueryRow("SELECT description FROM code_desc WHERE path = ? LIMIT 1", subModule.Path).Scan(&desc)
 				if err == nil && desc != "" {
-					logs.Infof("从数据库查询到子模块 %s 的描述", subModule.Path)
+					logs.Infof("Query from database to description of submodule %s", subModule.Path)
 					description = desc
 					// 更新子模块的描述
 					subModule.Description = desc
@@ -1492,17 +1492,17 @@ func (ma *ModuleAnalyzer) generateDirectoryDescription(module *ModuleInfo) (stri
 			}
 		}
 		if len(sortedModules) > 15 {
-			logs.Warnf("目录 %s 的子模块数量超过15个，进行智能文本语义切割优化", module.Path)
+			logs.Warnf("The number of sub-modules in directory %s exceeds 15, and intelligent text semantic segmentation optimization is performed.", module.Path)
 			//对description进行智能文本语义切割优化，只取第一句话(根据换行符进行切割，对于切分后的文本；如果字符大于300，根据标点符号"。"进行切割；如果字符仍然大于300，取前300个字符)
 			if i > 15 && len(description) > 300 && strings.Contains(description, "。") {
 				description = strings.Split(description, "。")[0]
-				logs.Warnf("子模块 %s 的描述包含标点符号，已截断 %d", subModule.Path, len(description))
+				logs.Warnf("Description of submodule %s contains punctuation, truncated %d", subModule.Path, len(description))
 			} else if i > 10 && len(description) > 300 && strings.Contains(description, "\n") {
 				description = strings.Split(description, "\n")[0]
-				logs.Warnf("子模块 %s 的描述包含换行符，已截断 %d", subModule.Path, len(description))
+				logs.Warnf("Description of submodule %s contains newline character, truncated %d", subModule.Path, len(description))
 			} else if i > 3 && len(description) > 300 {
 				description = description[:300]
-				logs.Warnf("子模块 %s 的描述超过300个字符，已截断 %d", subModule.Path, len(description))
+				logs.Warnf("The description of submodule %s exceeds 300 characters and has been truncated %d", subModule.Path, len(description))
 			}
 		}
 
@@ -1517,14 +1517,14 @@ func (ma *ModuleAnalyzer) generateDirectoryDescription(module *ModuleInfo) (stri
 
 	prompt := sb.String()
 
-	logs.Infof("目录 %s 的提示词: %s", module.Path, prompt)
+	logs.Infof("Prompt word for directory %s: %s", module.Path, prompt)
 	// 调用大模型生成描述
 	description, err := cloud.FastFunction(ma.config, prompt)
 	if err != nil {
-		logs.Errorf("为目录 %s 生成描述失败: %v", module.Path, err)
+		logs.Errorf("Failed to generate description for directory %s: %v", module.Path, err)
 		return "", err
 	}
-	logs.Tokenf("\n目录 %s 的描述: %s\n", module.Path, description)
+	logs.Tokenf("\nDescription of directory %s: %s\n", module.Path, description)
 
 	return description, nil
 }
@@ -1535,7 +1535,7 @@ func isReadableTextFile(filePath string) bool {
 	// 打开文件
 	file, err := os.Open(filePath)
 	if err != nil {
-		logs.Warnf("无法打开文件进行编码检测: %s, %v", filePath, err)
+		logs.Warnf("Unable to open file for encoding detection: %s, %v", filePath, err)
 		return false
 	}
 	defer file.Close()
@@ -1544,7 +1544,7 @@ func isReadableTextFile(filePath string) bool {
 	buf := make([]byte, 100)
 	n, err := file.Read(buf)
 	if err != nil && err != io.EOF {
-		logs.Warnf("读取文件失败: %s, %v", filePath, err)
+		logs.Warnf("Failed to read file: %s, %v", filePath, err)
 		return false
 	}
 
@@ -1564,7 +1564,7 @@ func isReadableTextFile(filePath string) bool {
 
 		// 如果二进制字符超过10%，则认为是二进制文件
 		if float64(binaryCount)/float64(len(buf)) > 0.1 {
-			logs.Warnf("文件可能是二进制格式，跳过: %s", filePath)
+			logs.Warnf("File may be in binary format, skip: %s", filePath)
 			return false
 		}
 	}
@@ -1576,7 +1576,7 @@ func isReadableTextFile(filePath string) bool {
 func (ma *ModuleAnalyzer) generateFileDescription(module *ModuleInfo) (string, error) {
 	// 如果设置了跳过LLM描述生成，直接返回空字符串
 	if ma.skipLLM {
-		logs.Infof("跳过LLM描述生成，文件 %s 返回空字符串", module.Path)
+		logs.Infof("Skipping LLM description generation, file %s returns empty string", module.Path)
 		return "", nil
 	}
 
@@ -1592,21 +1592,21 @@ func (ma *ModuleAnalyzer) generateFileDescription(module *ModuleInfo) (string, e
 		// 仅考虑特定的文件扩展名
 		ext := filepath.Ext(fullPath)
 		if utils.Contains(common.BlackList, ext) {
-			logs.Warnf("跳过不支持的文件类型: %s %s", fullPath, ext)
+			logs.Warnf("Skip unsupported file types: %s %s", fullPath, ext)
 			return "", nil
 		}
 
 		// 检测文件编码，判断是否为可读的文本文件
 		if !isReadableTextFile(fullPath) {
-			logs.Warnf("跳过不支持的文件编码或二进制文件: %s", fullPath)
+			logs.Warnf("Skipping unsupported file encoding or binary: %s", fullPath)
 			return "", nil
 		}
 
 		var MaxCharLimit = 15000
-		logs.Infof("文件 %s 的函数列表为空，直接读取本地代码文件拼接提示词，完整路径: %s，最大字符限制: %d", module.Path, fullPath, MaxCharLimit)
+		logs.Infof("The function list of file %s is empty, directly read the local code file splicing prompt word, full path: %s, maximum character limit: %d", module.Path, fullPath, MaxCharLimit)
 		code, err := utils.ExtractCodeSnippetWithLimit(fullPath, MaxCharLimit)
 		if err != nil {
-			logs.Errorf("为文件 %s 提取代码失败: %v", module.Path, err)
+			logs.Errorf("Failed to extract code for file %s: %v", module.Path, err)
 			return "", err
 		}
 		sb.WriteString(code)
@@ -1633,10 +1633,10 @@ func (ma *ModuleAnalyzer) generateFileDescription(module *ModuleInfo) (string, e
 			if desc == "" {
 				err := ma.db.QueryRow("SELECT description FROM functions WHERE file = ? LIMIT 1", module.Functions[i].Func.File).Scan(&desc)
 				if err == nil && desc != "" {
-					logs.Infof("从数据库查询到函数 %s 的描述", module.Functions[i].Func.Name)
+					logs.Infof("Query from database to description of function %s", module.Functions[i].Func.Name)
 					module.Functions[i].Description = desc
 				} else {
-					logs.Warnf("从数据库查询不到函数 %s 的描述", module.Functions[i].Func.Name)
+					logs.Warnf("The description of function %s cannot be queried from the database.", module.Functions[i].Func.Name)
 				}
 			}
 			sb.WriteString(fmt.Sprintf("- %s: %s\n", module.Functions[i].Func.Name, desc))
@@ -1647,14 +1647,14 @@ func (ma *ModuleAnalyzer) generateFileDescription(module *ModuleInfo) (string, e
 
 	prompt := sb.String()
 
-	logs.Infof("文件 %s 的提示词: %s", module.Path, prompt)
+	logs.Infof("Prompt word for file %s: %s", module.Path, prompt)
 	// 调用大模型生成描述
 	description, err := cloud.FastFunction(ma.config, prompt)
 	if err != nil {
-		logs.Errorf("为文件 %s 生成描述失败: %v", module.Path, err)
+		logs.Errorf("Failed to generate description for file %s: %v", module.Path, err)
 		return "", err
 	}
-	logs.Tokenf("\n文件 %s 的描述: %s\n", module.Path, description)
+	logs.Tokenf("\nDescription of file %s: %s\n", module.Path, description)
 
 	return description, nil
 }
@@ -1662,7 +1662,7 @@ func (ma *ModuleAnalyzer) generateFileDescription(module *ModuleInfo) (string, e
 // checkForChanges 检查模块是否需要更新（文件或函数数量是否变化）
 func (ma *ModuleAnalyzer) checkForChanges(module *ModuleInfo) (bool, error) {
 	if ma.db == nil {
-		logs.Warnf("数据库连接为空，跳过检查")
+		logs.Warnf("Database connection is empty, skip check")
 		return false, nil
 	}
 	// 查询数据库中的记录
@@ -1675,23 +1675,23 @@ func (ma *ModuleAnalyzer) checkForChanges(module *ModuleInfo) (bool, error) {
 
 	// 如果记录不存在，需要更新
 	if err == sql.ErrNoRows {
-		logs.Infof("模块 %s 在数据库中不存在，需要新增", module.Path)
+		logs.Infof("Module %s does not exist in the database and needs to be added", module.Path)
 		return true, nil
 	}
 
 	// 查询出错
 	if err != nil && err != sql.ErrNoRows {
-		return false, fmt.Errorf("查询模块 %s 失败: %w", module.Path, err)
+		return false, fmt.Errorf("Query module %s failed: %w", module.Path, err)
 	}
 
 	// 检查文件数或函数数是否变化
 	if module.FunctionCount != functionCount || module.FileCount != fileCount {
-		logs.Infof("模块 %s 有变化，原函数数:%d 当前:%d，原文件数:%d 当前:%d",
+		logs.Infof("Module %s has changed, original number of functions: %d current: %d, original number of files: %d current: %d",
 			module.Path, functionCount, module.FunctionCount, fileCount, module.FileCount)
 		return true, nil
 	}
 
-	logs.Infof("模块 %s 无变化，跳过处理", module.Path)
+	logs.Infof("Module %s has no changes, processing is skipped", module.Path)
 	return false, nil
 }
 
@@ -1717,19 +1717,19 @@ func (ma *ModuleAnalyzer) batchInsertModules(root *ModuleInfo) error {
 	ma.batchModules = make([]*ModuleInfo, 0) // 立即清空批处理缓存
 	ma.batchMutex.Unlock()                   // 提前解锁，减少锁的持有时间
 
-	logs.Infof("开始批量保存")
+	logs.Infof("Start batch saving")
 
 	// 开始事务
 	tx, err := ma.db.Begin()
 	if err != nil {
-		return fmt.Errorf("开始事务失败: %w", err)
+		return fmt.Errorf("Failed to start transaction: %w", err)
 	}
 
 	// 改进defer以确保始终发生提交或回滚
 	committed := false
 	defer func() {
 		if !committed {
-			logs.Warnf("事务回滚")
+			logs.Warnf("transaction rollback")
 			tx.Rollback()
 		}
 	}()
@@ -1741,7 +1741,7 @@ func (ma *ModuleAnalyzer) batchInsertModules(root *ModuleInfo) error {
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
-		return fmt.Errorf("准备SQL语句失败: %w", err)
+		return fmt.Errorf("Failed to prepare SQL statement: %w", err)
 	}
 	defer stmt.Close()
 
@@ -1751,7 +1751,7 @@ func (ma *ModuleAnalyzer) batchInsertModules(root *ModuleInfo) error {
 	for _, m := range modulesToInsert {
 		// 跳过没有描述的模块
 		if m.Description == "" {
-			logs.Warnf("跳过没有描述的模块: %s", m.Path)
+			logs.Warnf("Skip modules without description: %s", m.Path)
 			continue
 		}
 
@@ -1768,19 +1768,19 @@ func (ma *ModuleAnalyzer) batchInsertModules(root *ModuleInfo) error {
 			m.CreatedAt,
 		)
 		if err != nil {
-			return fmt.Errorf("插入模块 %s 失败: %w", m.Path, err)
+			return fmt.Errorf("Failed to insert module %s: %w", m.Path, err)
 		}
 		insertedCount++
 	}
 
 	// 提交事务
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("提交事务失败: %w", err)
+		return fmt.Errorf("Failed to commit transaction: %w", err)
 	}
 	// 标记事务已提交
 	committed = true
 
-	logs.Infof("批量插入成功完成，共插入 %d 个模块", insertedCount)
+	logs.Infof("Batch insertion completed successfully, %d modules were inserted in total", insertedCount)
 
 	if ma.taskID != "" && !ma.skipLLM {
 		totalModules := ma.countTotalModules(root)
@@ -1795,19 +1795,19 @@ func (ma *ModuleAnalyzer) batchInsertModules(root *ModuleInfo) error {
 
 // saveToDatabase 将模块描述保存到数据库
 func (ma *ModuleAnalyzer) saveToDatabase(module *ModuleInfo) error {
-	logs.Infof("开始批量保存")
+	logs.Infof("Start batch saving")
 
 	// 开始事务
 	tx, err := ma.db.Begin()
 	if err != nil {
-		return fmt.Errorf("开始事务失败: %w", err)
+		return fmt.Errorf("Failed to start transaction: %w", err)
 	}
 
 	// 改进defer以确保始终发生提交或回滚
 	committed := false
 	defer func() {
 		if !committed {
-			logs.Warnf("事务回滚")
+			logs.Warnf("transaction rollback")
 			tx.Rollback()
 		}
 	}()
@@ -1819,7 +1819,7 @@ func (ma *ModuleAnalyzer) saveToDatabase(module *ModuleInfo) error {
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
-		return fmt.Errorf("准备SQL语句失败: %w", err)
+		return fmt.Errorf("Failed to prepare SQL statement: %w", err)
 	}
 	defer stmt.Close()
 
@@ -1846,7 +1846,7 @@ func (ma *ModuleAnalyzer) saveToDatabase(module *ModuleInfo) error {
 			m.CreatedAt,
 		)
 		if err != nil {
-			return fmt.Errorf("插入模块 %s 失败: %w", m.Path, err)
+			return fmt.Errorf("Failed to insert module %s: %w", m.Path, err)
 		}
 
 		// 递归处理子模块
@@ -1866,7 +1866,7 @@ func (ma *ModuleAnalyzer) saveToDatabase(module *ModuleInfo) error {
 
 	// 提交事务
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("提交事务失败: %w", err)
+		return fmt.Errorf("Failed to commit transaction: %w", err)
 	}
 	// 标记事务已提交
 	committed = true
@@ -1878,7 +1878,7 @@ func (ma *ModuleAnalyzer) saveToDatabase(module *ModuleInfo) error {
 func (ma *ModuleAnalyzer) markModulesWithDescription(root *ModuleInfo) error {
 	// 如果数据库连接为空，不执行操作
 	if ma.db == nil {
-		logs.Warnf("数据库连接为空，无法标记有描述的模块")
+		logs.Warnf("The database connection is empty and the module with description cannot be marked.")
 		return nil
 	}
 
@@ -1893,7 +1893,7 @@ func (ma *ModuleAnalyzer) markModulesWithDescription(root *ModuleInfo) error {
 	}
 	collectModules(root)
 
-	logs.Infof("开始标记有 LLM 描述的模块，共 %d 个模块", len(allModules))
+	logs.Infof("Start modules marked with LLM description, %d modules in total", len(allModules))
 
 	// 创建批处理切片
 	batchSize := 100
@@ -1924,7 +1924,7 @@ func (ma *ModuleAnalyzer) markModulesWithDescription(root *ModuleInfo) error {
 
 			rows, err := ma.db.Query(query, args...)
 			if err != nil {
-				logs.Warnf("查询 code_desc 表失败: %v", err)
+				logs.Warnf("Querying code_desc table failed: %v", err)
 				continue // 继续下一批
 			}
 
@@ -1933,7 +1933,7 @@ func (ma *ModuleAnalyzer) markModulesWithDescription(root *ModuleInfo) error {
 			for rows.Next() {
 				var path string
 				if err := rows.Scan(&path); err != nil {
-					logs.Warnf("扫描 code_desc 行失败: %v", err)
+					logs.Warnf("Scan code_desc line failed: %v", err)
 					continue
 				}
 				descPaths[path] = true
@@ -1975,7 +1975,7 @@ func (ma *ModuleAnalyzer) markModulesWithDescription(root *ModuleInfo) error {
 
 				funcRows, err := ma.db.Query(funcQuery, fileArgs...)
 				if err != nil {
-					logs.Warnf("查询 functions 表失败: %v", err)
+					logs.Warnf("Failed to query functions table: %v", err)
 					continue // 继续下一批
 				}
 
@@ -1984,7 +1984,7 @@ func (ma *ModuleAnalyzer) markModulesWithDescription(root *ModuleInfo) error {
 				for funcRows.Next() {
 					var path string
 					if err := funcRows.Scan(&path); err != nil {
-						logs.Warnf("扫描 functions 行失败: %v", err)
+						logs.Warnf("Scanning functions line failed: %v", err)
 						continue
 					}
 					funcDescPaths[path] = true
@@ -2001,6 +2001,6 @@ func (ma *ModuleAnalyzer) markModulesWithDescription(root *ModuleInfo) error {
 		}
 	}
 
-	logs.Infof("模块标记完成")
+	logs.Infof("Module marking complete")
 	return nil
 }

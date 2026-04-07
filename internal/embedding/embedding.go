@@ -94,7 +94,7 @@ func EnsureEmbeddingsBatch(idx *index.Indexer) error {
 
 	// 3. 准备 Worker Pool
 	var maxWorkers = cfg.EmbeddingMaxWorker
-	logs.Infof("正在生成向量，总量为 %d，批次大小为 %d，最大并发数为 %d", len(records), batchSize, maxWorkers)
+	logs.Infof("Generating vectors, total amount is %d, batch size is %d, maximum concurrency is %d", len(records), batchSize, maxWorkers)
 	jobs := make(chan batch)
 	var wg sync.WaitGroup
 
@@ -110,7 +110,7 @@ func EnsureEmbeddingsBatch(idx *index.Indexer) error {
 				// for i, txt := range b.texts {
 				// 	runes := []rune(txt)
 				// 	if len(runes) > 500 {
-				// 		logs.Warnf("函数文本超长(约%d tokens)，已截断: %d", estimateTokens(txt), b.ids[i])
+				// 		logs.Warnf("The function text is too long (about %d tokens) and has been truncated: %d", estimateTokens(txt), b.ids[i])
 				// 		txt = string(runes[:500])
 				// 	}
 				// 	idTexts = append(idTexts, idText{id: b.ids[i], text: txt})
@@ -120,7 +120,7 @@ func EnsureEmbeddingsBatch(idx *index.Indexer) error {
 				for i, txt := range b.texts {
 					tokens := estimateTokens(txt)
 					if tokens > 500 { // 设置为500，留出余量
-						logs.Warnf("函数文本超长(约%d tokens)，进行分块处理: %d", tokens, b.ids[i])
+						logs.Warnf("The function text is too long (about %d tokens), so it needs to be divided into chunks: %d", tokens, b.ids[i])
 						chunks := splitTextByToken(txt, chunkMin, chunkMax)
 						for _, ch := range chunks {
 							idTexts = append(idTexts, idText{id: b.ids[i], text: ch})
@@ -148,7 +148,7 @@ func EnsureEmbeddingsBatch(idx *index.Indexer) error {
 					}
 					embs, err := search.SimpleEmbeddingBatch(texts[k:l], dim)
 					if err != nil || len(embs) != l-k {
-						logs.Warnf("为函数 %v 批量生成向量失败，降级到单条插入: %v", idIdx[k:l], err)
+						logs.Warnf("Batch vector generation failed for function %v, downgraded to single insertion: %v", idIdx[k:l], err)
 						for i := k; i < l; i++ {
 							vec := search.SimpleEmbedding(texts[i], dim)
 							id2vecs[idIdx[i]] = append(id2vecs[idIdx[i]], vec)
@@ -172,7 +172,7 @@ func EnsureEmbeddingsBatch(idx *index.Indexer) error {
 						avg[i] /= float32(len(vecs))
 					}
 					if e := idx.FaissIndex.AddVector(id, avg); e != nil {
-						logs.Errorf("为函数 %d 添加向量失败: %v", id, e)
+						logs.Errorf("Failed to add vector for function %d: %v", id, e)
 					}
 				}
 				wg.Done()
@@ -247,7 +247,7 @@ func EnsureCodeDescEmbeddingsBatch(idx *index.Indexer) error {
 
 	// 3. 准备 Worker Pool
 	var maxWorkers = cfg.EmbeddingMaxWorker
-	logs.Infof("正在生成 code_desc 向量，总量为 %d，批次大小为 %d，最大并发数为 %d", len(records), batchSize, maxWorkers)
+	logs.Infof("Generating code_desc vectors, total amount %d, batch size %d, maximum concurrency %d", len(records), batchSize, maxWorkers)
 	jobs := make(chan batch)
 	var wg sync.WaitGroup
 
@@ -263,7 +263,7 @@ func EnsureCodeDescEmbeddingsBatch(idx *index.Indexer) error {
 				// for i, txt := range b.texts {
 				// 	runes := []rune(txt)
 				// 	if len(runes) > 500 {
-				// 		logs.Warnf("code_desc文本超长(约%d tokens)，已截断: %d", estimateTokens(txt), b.ids[i])
+				// 		logs.Warnf("The code_desc text is too long (about %d tokens) and has been truncated: %d", estimateTokens(txt), b.ids[i])
 				// 		txt = string(runes[:500])
 				// 	}
 				// 	idTexts = append(idTexts, idText{id: b.ids[i], text: txt})
@@ -273,7 +273,7 @@ func EnsureCodeDescEmbeddingsBatch(idx *index.Indexer) error {
 				for i, txt := range b.texts {
 					tokens := estimateTokens(txt)
 					if tokens > 500 { // 设置为500，留出余量
-						logs.Warnf("函数文本超长(约%d tokens)，进行分块处理: %d", tokens, b.ids[i])
+						logs.Warnf("The function text is too long (about %d tokens), so it needs to be divided into chunks: %d", tokens, b.ids[i])
 						chunks := splitTextByToken(txt, chunkMin, chunkMax)
 						for _, ch := range chunks {
 							idTexts = append(idTexts, idText{id: b.ids[i], text: ch})
@@ -295,7 +295,7 @@ func EnsureCodeDescEmbeddingsBatch(idx *index.Indexer) error {
 					id2vecs[it.id] = append(id2vecs[it.id], vec)
 					// 每处理10条记录输出一次日志
 					if len(id2vecs)%10 == 0 {
-						logs.Infof("已处理 %d 条 code_desc 记录", len(id2vecs))
+						logs.Infof("%d code_desc records processed", len(id2vecs))
 					}
 				}
 
@@ -311,7 +311,7 @@ func EnsureCodeDescEmbeddingsBatch(idx *index.Indexer) error {
 						avg[i] /= float32(len(vecs))
 					}
 					if e := idx.FaissIndex.AddVector(id, avg); e != nil {
-						logs.Errorf("为 code_desc %d 添加向量失败: %v", id, e)
+						logs.Errorf("Failed to add vector for code_desc %d: %v", id, e)
 					}
 				}
 				wg.Done()

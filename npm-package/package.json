@@ -1,6 +1,6 @@
 {
-  "name": "flashmemory",
-  "version": "0.0.1",
+  "name": "@zhouzhanghao001111/flashmemory",
+  "version": "0.1.1",
   "description": "FlashMemory - Cross-language code analysis and semantic search system. Supports Go, Python, JavaScript, Java, C++ code indexing with LLM-powered analysis.",
   "keywords": [
     "code-analysis",
@@ -16,13 +16,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/ZetaZeroHub/FlashMemory.git"
+    "url": "git+https://github.com/ZetaZeroHub/FlashMemory.git"
   },
   "license": "MIT",
   "author": "ZetaZeroHub",
   "bin": {
-    "fm": "./bin/run.js",
-    "fm_http": "./bin/run_http.js"
+    "fm": "bin/run.js",
+    "fm_http": "bin/run_http.js"
   },
   "scripts": {
     "postinstall": "node install.js"

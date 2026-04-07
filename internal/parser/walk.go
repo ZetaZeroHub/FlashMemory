@@ -24,14 +24,14 @@ func WalkAndParse(root string, cb func(info FunctionInfo)) error {
 		excludeFile := filepath.Join(root, ".gitgo", "exclude.json")
 		jsonFile, _ := utils.ReadJSONArrayFile(excludeFile)
 		if utils.IsExcludedPath(fullWalkPath, jsonFile) {
-			log.Printf("跳过指定文件: %s", fullWalkPath)
+			log.Printf("Skip specified file: %s", fullWalkPath)
 			return filepath.SkipDir
 		}
 		if info.IsDir() {
 
 			// 跳过以点开头的隐藏目录
 			if info.Name() != "." && info.Name() != ".." && strings.HasPrefix(info.Name(), ".") {
-				logs.Warnf("跳过目录: %s", info.Name())
+				logs.Warnf("Skip directory: %s", info.Name())
 				return filepath.SkipDir
 			}
 			return nil

@@ -48,7 +48,7 @@ func responseWithError(w http.ResponseWriter, code int, message string) {
 func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err := GetConfig(h.configPath)
 	if err != nil {
-		responseWithError(w, http.StatusInternalServerError, fmt.Sprintf("加载配置文件失败: %v", err))
+		responseWithError(w, http.StatusInternalServerError, fmt.Sprintf("Load config file failed : %v", err))
 		return
 	}
 	responseWithJSON(w, http.StatusOK, cfg)
@@ -62,7 +62,7 @@ func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := UpdateConfig(h.configPath, jsonData); err != nil {
-		responseWithError(w, http.StatusInternalServerError, fmt.Sprintf("更新配置失败: %v", err))
+		responseWithError(w, http.StatusInternalServerError, fmt.Sprintf(" failed : %v", err))
 		return
 	}
 	responseWithJSON(w, http.StatusOK, Response{

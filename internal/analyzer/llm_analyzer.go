@@ -73,13 +73,13 @@ func NewLLMAnalyzerHttp(initialKnown *sync.Map, debug bool, maxConcurrency int, 
 		// 设置SQLite的busy_timeout (由 DbWriter 处理，此处可保留做双保险)
 		_, err := db.Exec("PRAGMA busy_timeout = 5000;") // 5秒
 		if err != nil {
-			log.Printf("[WARN] 设置SQLite busy_timeout失败: %v", err)
+			log.Printf("[WARN] Failed to set SQLite busy_timeout: %v", err)
 		}
 
 		// 设置SQLite的journal模式为WAL，提高并发性能 (由 DbWriter 处理，此处可保留做双保险)
 		_, err = db.Exec("PRAGMA journal_mode = WAL;")
 		if err != nil {
-			log.Printf("[WARN] 设置SQLite journal_mode失败: %v", err)
+			log.Printf("[WARN] Failed to set SQLite journal_mode: %v", err)
 		}
 	}
 
@@ -89,13 +89,13 @@ func NewLLMAnalyzerHttp(initialKnown *sync.Map, debug bool, maxConcurrency int, 
 // AnalyzeFunction 分析单个函数：归类、提取代码片段、构建提示词并调用大模型生成描述
 func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo, startLlm bool) (llmres LLMAnalysisResult, err error) {
 	if a.debug {
-		log.Printf("[DEBUG] 开始分析函数: %s (文件: %s, 行数: %d)", fn.Name, fn.File, fn.Lines)
-		log.Printf("[DEBUG] 函数元信息: %v", fn)
+		log.Printf("[DEBUG] Start parsing function: %s (file: %s, lines: %d)", fn.Name, fn.File, fn.Lines)
+		log.Printf("[DEBUG] Function metainformation: %v", fn)
 	}
 	res := LLMAnalysisResult{Func: fn}
 	if fn.FunctionType == "llm_parser" {
 		// 函数描述已存在，直接返回
-		logs.Warnf("[DEBUG] llm_parser 函数描述已存在，直接返回")
+		logs.Warnf("[DEBUG] llm_parser function description already exists, return directly")
 		res.Description = fn.Description
 		res.CodeSnippet = fn.CodeSnippet
 		return res, nil
@@ -103,10 +103,10 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo, startLlm bool) (ll
 	// 提取代码片段
 	snippet, err := utils.ExtractCodeSnippet(fn.File, fn.StartLine, fn.EndLine)
 	if err != nil {
-		log.Printf("[ERROR] 提取文件 %s 的代码片段失败: %v", fn.File, err)
+		log.Printf("[ERROR] Failed to extract code snippet for file %s: %v", fn.File, err)
 		snippet = ""
 	} else if a.debug {
-		log.Printf("[DEBUG] 成功提取代码片段，长度: %d 字符", len(snippet))
+		log.Printf("[DEBUG] Code snippet extracted successfully, length: %d characters", len(snippet))
 	}
 	res.CodeSnippet = snippet
 
@@ -150,14 +150,14 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo, startLlm bool) (ll
 			uniqueDeps = append(uniqueDeps, dep)
 		}
 	}
-	logs.Infof("内部函数去重：origin:%d=>unique:%d\n%s\n", len(internalDeps), len(uniqueDeps), strings.Join(uniqueDeps, ", "))
+	logs.Infof("Internal function deduplication: origin:%d=>unique:%d\n%s\n", len(internalDeps), len(uniqueDeps), strings.Join(uniqueDeps, ", "))
 	res.InternalDeps = uniqueDeps
 	if startLlm {
 		// 构造提示词：将代码片段和依赖描述整合到一起
 		prompt := fmt.Sprintf("%s \n%s\n", cfg.AnaPrompts.Role, snippet)
 		// 如果snippet大于5000字符，则只保留前5000字符
 		if len(prompt) > cfg.CodeLimit {
-			logs.Infof("代码内容过长，截取前%d个字符", cfg.PromptLimit)
+			logs.Infof("The code content is too long, the first %d characters are intercepted", cfg.PromptLimit)
 			prompt = prompt[:cfg.CodeLimit] + "..."
 		}
 		// 该函数的路径、类名和引入包
@@ -203,7 +203,7 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo, startLlm bool) (ll
 					var data map[string]interface{}
 					err := json.Unmarshal([]byte(desc), &data)
 					if err != nil {
-						logs.Infof("解析 JSON 出错: %s, %v", desc, err)
+						logs.Infof("Error parsing JSON: %s, %v", desc, err)
 						lines := strings.Split(desc, "\n")
 						if len(lines) >= 2 {
 							des := lines[1]
@@ -254,8 +254,8 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo, startLlm bool) (ll
 		//绘制 mermaid 流程图
 
 		if a.debug {
-			log.Printf("[DEBUG] 调用大模型生成描述，内部依赖数: %d, 外部依赖数: %d", len(internalDeps), len(externalDeps))
-			log.Printf("[DEBUG] 详情，内部依赖: %s, 外部依赖: %s", internalDeps, externalDeps)
+			log.Printf("[DEBUG] Call large model to generate description, number of internal dependencies: %d, number of external dependencies: %d", len(internalDeps), len(externalDeps))
+			log.Printf("[DEBUG] Details, internal dependencies: %s, external dependencies: %s", internalDeps, externalDeps)
 		}
 
 		// 添加EOF错误重试机制
@@ -292,11 +292,11 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo, startLlm bool) (ll
 					if backoff > 8*time.Second {
 						backoff = 8 * time.Second
 					}
-					logs.Warnf("LLM请求失败，将重试 %d/%d (sleep=%s): %v", retry+2, maxRetries, backoff, err)
+					logs.Warnf("LLM request failed, will retry %d/%d (sleep=%s): %v", retry+2, maxRetries, backoff, err)
 					time.Sleep(backoff)
 					continue
 				}
-				logs.Errorf("调用大模型失败: %v", err)
+				logs.Errorf("Failed to call large model: %v", err)
 				return LLMAnalysisResult{}, err
 			}
 			break
@@ -311,13 +311,13 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo, startLlm bool) (ll
 		}
 		result = utils.FilterJSONContent(result)
 		if err != nil {
-			logs.Errorf("调用大模型失败: %v", err)
+			logs.Errorf("Failed to call large model: %v", err)
 			return LLMAnalysisResult{}, err
 		}
 		if a.debug {
-			logs.Infof("[DEBUG] 大模型完成了生成描述完成，提示词长度: %d 字符，输出长度: %d 字符", len(prompt), len(result))
-			logs.Infof("[DEBUG][ModelResponse] 提示词: \n%s\n", prompt)
-			logs.Tokenf("[DEBUG][ModelResponse] 描述内容: \n%s\n", result)
+			logs.Infof("[DEBUG] The large model has completed generating description, prompt word length: %d characters, output length: %d characters", len(prompt), len(result))
+			logs.Infof("[DEBUG][ModelResponse] Prompt word: \n%s\n", prompt)
+			logs.Tokenf("[DEBUG][ModelResponse] Description: \n%s\n", result)
 		}
 
 		// result检查：1. 是否为json 2. 是否包含description字段 3. 是否包含process字段
@@ -326,17 +326,17 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo, startLlm bool) (ll
 		logs.Infof("---CHECK JSON---")
 		if err == nil {
 			if data["description"] != nil && data["process"] != nil {
-				logs.Infof("[DEBUG] JSON 格式校验通过")
+				logs.Infof("[DEBUG] JSON format verification passed")
 			} else {
-				logs.Warnf("[ERROR] JSON 格式错误，缺少description或process字段: %s", result)
+				logs.Warnf("[ERROR] JSON format error, description or process field is missing: %s", result)
 			}
 		} else {
-			logs.Warnf("[ERROR] 解析 JSON 出错: %s, %v", result, err)
+			logs.Warnf("[ERROR] Error parsing JSON: %s, %v", result, err)
 		}
 		logs.Infof("---CHECK JSON END---")
 		if result == "" {
-			logs.Warnf("[ERROR] 生成描述为空，跳过: %s", fn.Name)
-			return LLMAnalysisResult{}, fmt.Errorf("生成描述为空")
+			logs.Warnf("[ERROR] Build description is empty, skipping: %s", fn.Name)
+			return LLMAnalysisResult{}, fmt.Errorf("The build description is empty")
 		} else {
 			res.Description = result
 		}
@@ -344,7 +344,7 @@ func (a *LLMAnalyzer) AnalyzeFunction(fn parser.FunctionInfo, startLlm bool) (ll
 
 	// 计算简单的重要性评分
 	res.ImportanceScore = fn.Score
-	logs.Infof("%s 重要性评分: %.5f", res.Func.Name, res.ImportanceScore)
+	logs.Infof("%s importance score: %.5f", res.Func.Name, res.ImportanceScore)
 	return res, nil
 }
 
@@ -353,7 +353,7 @@ func (a *LLMAnalyzer) AnalyzeAll(funcs []parser.FunctionInfo) ([]LLMAnalysisResu
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if a.debug {
-		log.Printf("[DEBUG] 开始批量分析 %d 个函数", len(funcs))
+		log.Printf("[DEBUG] Start batch analysis of %d functions", len(funcs))
 	}
 
 	// 预处理：检查并删除已更新的函数记录
@@ -370,7 +370,7 @@ func (a *LLMAnalyzer) AnalyzeAll(funcs []parser.FunctionInfo) ([]LLMAnalysisResu
 				var err error
 				processedFn.File, err = filepath.Rel(a.projDir, filePath)
 				if err != nil {
-					logs.Errorf("[ERROR] 获取相对路径失败 %s: %v", filePath, err)
+					logs.Errorf("[ERROR] Failed to get relative path %s: %v", filePath, err)
 					continue
 				}
 				processedFn.File = filepath.ToSlash(processedFn.File)
@@ -384,7 +384,7 @@ func (a *LLMAnalyzer) AnalyzeAll(funcs []parser.FunctionInfo) ([]LLMAnalysisResu
 			`
 			rows, err := a.Db.Query(query, processedFn.File, processedFn.Name, processedFn.Package)
 			if err != nil {
-				logs.Errorf("[ERROR] 预处理查询失败 %s:%s: %v", processedFn.File, processedFn.Name, err)
+				logs.Errorf("[ERROR] Preprocessing query failed %s:%s: %v", processedFn.File, processedFn.Name, err)
 				continue
 			}
 
@@ -394,7 +394,7 @@ func (a *LLMAnalyzer) AnalyzeAll(funcs []parser.FunctionInfo) ([]LLMAnalysisResu
 				foundAny = true
 				var dbStartLine, dbEndLine int
 				if err := rows.Scan(&dbStartLine, &dbEndLine); err != nil {
-					logs.Errorf("[ERROR] 预处理扫描结果失败: %v", err)
+					logs.Errorf("[ERROR] Preprocessing scan results failed: %v", err)
 					continue
 				}
 				dbLineInfo = append(dbLineInfo, fmt.Sprintf("%d-%d", dbStartLine, dbEndLine))
@@ -411,10 +411,10 @@ func (a *LLMAnalyzer) AnalyzeAll(funcs []parser.FunctionInfo) ([]LLMAnalysisResu
 				a.dbWriteMu.Lock()
 				deleteQuery := `DELETE FROM functions WHERE file=? AND name=? AND package=?`
 				if _, err := a.Db.Exec(deleteQuery, processedFn.File, processedFn.Name, processedFn.Package); err != nil {
-					logs.Errorf("[ERROR][DB] 预处理删除旧记录失败 %s:%s: %v", processedFn.File, processedFn.Name, err)
+					logs.Errorf("[ERROR][DB] Preprocessing failed to delete old records %s:%s: %v", processedFn.File, processedFn.Name, err)
 				} else {
-					logs.Infof("已知的所有旧行号信息中未找到新行号匹配记录: %v, 新行号 %d-%d", dbLineInfo, processedFn.StartLine, processedFn.EndLine)
-					logs.Infof("[INFO][DB] 预处理成功删除 %s:%s:%s 的旧记录", processedFn.File, processedFn.Name, processedFn.Package)
+					logs.Infof("No matching record for new line number found among all known old line number information: %v, new line number %d-%d", dbLineInfo, processedFn.StartLine, processedFn.EndLine)
+					logs.Infof("[INFO][DB] Preprocessing successfully deleted the old records of %s:%s:%s", processedFn.File, processedFn.Name, processedFn.Package)
 				}
 				a.dbWriteMu.Unlock()
 			}
@@ -429,16 +429,16 @@ func (a *LLMAnalyzer) AnalyzeAll(funcs []parser.FunctionInfo) ([]LLMAnalysisResu
 		Gamma: 0.5, // 深度权重（重视调用层次）
 		Delta: 0.1, // 复杂度权重
 	}
-	logs.Infof("配置权重：重视调用层次（从依赖最底层到最顶层）")
+	logs.Infof("Configuration weight: Pay attention to the calling hierarchy (from the bottom layer of dependencies to the top layer)")
 	logs.Infof("Alpha: %.2f, Beta: %.2f, Gamma: %.2f, Delta: %.2f", rankingConfig.Alpha, rankingConfig.Beta, rankingConfig.Gamma, rankingConfig.Delta)
 	ranker := ranking.NewFunctionRanker(rankingConfig)
 
 	// 对函数进行重要性排序（升序：从低分到高分，即从依赖最底层到最顶层）
 	sortedFuncs := ranker.RankFunctions(funcs)
 	if a.debug {
-		log.Printf("[DEBUG] 函数重要性排序完成，按从底层到顶层顺序分析")
+		log.Printf("[DEBUG] The function importance sorting is completed and analyzed from the bottom to the top.")
 		for i, fn := range sortedFuncs {
-			log.Printf("[DEBUG] 排序 %d: %s (Score: %.3f, FanIn: %d, FanOut: %d, Depth: %d)",
+			log.Printf("[DEBUG] Sort %d: %s (Score: %.3f, FanIn: %d, FanOut: %d, Depth: %d)",
 				i+1, fn.Name, fn.Score, fn.FanIn, fn.FanOut, fn.Depth)
 		}
 	}
@@ -519,14 +519,14 @@ func (a *LLMAnalyzer) AnalyzeAll(funcs []parser.FunctionInfo) ([]LLMAnalysisResu
 					res, err := a.AnalyzeFunction(fn, true)
 					if err != nil {
 						if common.IsLLMError(err) {
-							logs.Errorf("分析函数 %s 失败（LLM Error）: %v", fn.Name, err)
+							logs.Errorf("Analysis function %s failed (LLM Error): %v", fn.Name, err)
 							dbErrOnce.Do(func() {
 								dbErr = err
 								cancel()
 							})
 							return
 						}
-						logs.Warnf("分析函数 %s 失败: %v", fn.Name, err)
+						logs.Warnf("Analysis function %s failed: %v", fn.Name, err)
 						return
 					}
 					if ctx.Err() != nil {
@@ -563,7 +563,7 @@ func (a *LLMAnalyzer) AnalyzeAll(funcs []parser.FunctionInfo) ([]LLMAnalysisResu
 			return nil, dbErr
 		}
 		if len(newRemaining) == len(remaining) {
-			log.Printf("[WARN] 检测到循环依赖或缺失依赖，开始强制分析剩余 %d 个函数", len(remaining))
+			log.Printf("[WARN] Circular or missing dependencies detected, forced analysis of remaining %d functions started", len(remaining))
 			for _, f := range remaining {
 				if a.Db != nil {
 					if stored, found := a.safeLoadStoredResult(f); found {
@@ -590,14 +590,14 @@ func (a *LLMAnalyzer) AnalyzeAll(funcs []parser.FunctionInfo) ([]LLMAnalysisResu
 					res, err := a.AnalyzeFunction(fn, true)
 					if err != nil {
 						if common.IsLLMError(err) {
-							logs.Errorf("分析函数 %s 失败（LLM Error）: %v", fn.Name, err)
+							logs.Errorf("Analysis function %s failed (LLM Error): %v", fn.Name, err)
 							dbErrOnce.Do(func() {
 								dbErr = err
 								cancel()
 							})
 							return
 						}
-						logs.Warnf("分析函数 %s 失败: %v", fn.Name, err)
+						logs.Warnf("Analysis function %s failed: %v", fn.Name, err)
 						return
 					}
 					if ctx.Err() != nil {
@@ -652,11 +652,11 @@ func (a *LLMAnalyzer) LoadAll(funcs []parser.FunctionInfo) []LLMAnalysisResult {
 	if a.Db != nil {
 		_, err := a.Db.Exec("PRAGMA busy_timeout = 5000;") // 设置5秒超时
 		if err != nil {
-			log.Printf("[WARN] 设置SQLite busy_timeout失败: %v", err)
+			log.Printf("[WARN] Failed to set SQLite busy_timeout: %v", err)
 		}
 	}
 	if a.debug {
-		log.Printf("[DEBUG] 开始批量分析 %d 个函数", len(funcs))
+		log.Printf("[DEBUG] Start batch analysis of %d functions", len(funcs))
 	}
 
 	resultChan := make(chan LLMAnalysisResult, len(funcs))
@@ -729,7 +729,7 @@ func (a *LLMAnalyzer) LoadAll(funcs []parser.FunctionInfo) []LLMAnalysisResult {
 
 		wg.Wait()
 		if len(newRemaining) == len(remaining) {
-			log.Printf("[WARN] 检测到循环依赖或缺失依赖，开始强制分析剩余 %d 个函数", len(remaining))
+			log.Printf("[WARN] Circular or missing dependencies detected, forced analysis of remaining %d functions started", len(remaining))
 			for _, f := range remaining {
 
 				wg.Add(1)
@@ -783,8 +783,8 @@ func saveSingleResultToDBWithWriter(dbWriter *utils.DbWriter, res LLMAnalysisRes
 	gitgoDir := filepath.Join(projDir, ".gitgo")
 	tempFilePath := filepath.Join(gitgoDir, "indexing.temp")
 	if _, err := os.Stat(tempFilePath); os.IsNotExist(err) {
-		logs.Errorf("索引临时文件已被删除，终止扫描")
-		return fmt.Errorf("索引临时文件已被删除，终止扫描")
+		logs.Errorf("Index temporary files have been deleted, scanning terminated")
+		return fmt.Errorf("Index temporary files have been deleted, scanning terminated")
 	}
 
 	// 处理相对路径
@@ -796,10 +796,10 @@ func saveSingleResultToDBWithWriter(dbWriter *utils.DbWriter, res LLMAnalysisRes
 		}
 		rel, err := filepath.Rel(projDir, filePath)
 		if err != nil {
-			logs.Errorf("%s, %s, 无法将文件路径转换为相对路径: %v", projDir, res.Func.File, err)
+			logs.Errorf("%s, %s, cannot convert file path to relative path: %v", projDir, res.Func.File, err)
 		} else {
 			res.Func.File = filepath.ToSlash(rel)
-			logs.Infof("[DEBUG][DB] 存储文件路径为: %s", res.Func.File)
+			logs.Infof("[DEBUG][DB] The storage file path is: %s", res.Func.File)
 		}
 	}
 
@@ -819,7 +819,7 @@ func saveSingleResultToDBWithWriter(dbWriter *utils.DbWriter, res LLMAnalysisRes
 		res.Func.FunctionType,
 	)
 	if err != nil {
-		return fmt.Errorf("functions 写入失败: %w", err)
+		return fmt.Errorf("Functions write failed: %w", err)
 	}
 
 	// 写入 calls
@@ -840,24 +840,24 @@ func saveSingleResultToDBWithWriter(dbWriter *utils.DbWriter, res LLMAnalysisRes
 // saveSingleResultToDBOnce 是原有的单次写入逻辑
 func saveSingleResultToDBOnce(db *sql.DB, res LLMAnalysisResult, projDir string) error {
 	if res.Func.FunctionType == "llm_parser" {
-		logs.Warnf("[WARN] 忽略 LLM_PARSER 函数的库录入 %s", res.Func.Name)
+		logs.Warnf("[WARN] Ignoring library entry %s for LLM_PARSER function", res.Func.Name)
 		return nil
 	}
 	if strings.TrimSpace(res.Description) == "" {
-		logs.Warnf("[WARN] 函数 %s 描述为空，跳过入库", res.Func.Name)
+		logs.Warnf("[WARN] Function %s description is empty, skip storage", res.Func.Name)
 		return nil
 	}
 	// 判断是否存在临时文件，如果不存在则抛出特殊异常码
 	gitgoDir := filepath.Join(projDir, ".gitgo")
 	tempFilePath := filepath.Join(gitgoDir, "indexing.temp")
 	if _, err := os.Stat(tempFilePath); os.IsNotExist(err) {
-		logs.Errorf("索引临时文件已被删除，终止扫描")
-		return fmt.Errorf("索引临时文件已被删除，终止扫描")
+		logs.Errorf("Index temporary files have been deleted, scanning terminated")
+		return fmt.Errorf("Index temporary files have been deleted, scanning terminated")
 	}
 	// 1. 开始事务
 	tx, err := db.Begin()
 	if err != nil {
-		return fmt.Errorf("开始事务失败: %w", err)
+		return fmt.Errorf("Failed to start transaction: %w", err)
 	}
 
 	// 准备事务内的statements
@@ -868,7 +868,7 @@ func saveSingleResultToDBOnce(db *sql.DB, res LLMAnalysisResult, projDir string)
     `)
 	if err != nil {
 		tx.Rollback()
-		return fmt.Errorf("prepare functions 失败: %w", err)
+		return fmt.Errorf("prepare functions failed: %w", err)
 	}
 	defer funcStmt.Close()
 
@@ -878,7 +878,7 @@ func saveSingleResultToDBOnce(db *sql.DB, res LLMAnalysisResult, projDir string)
     `)
 	if err != nil {
 		tx.Rollback()
-		return fmt.Errorf("prepare calls 失败: %w", err)
+		return fmt.Errorf("prepare calls failed: %w", err)
 	}
 	defer callStmt.Close()
 
@@ -888,7 +888,7 @@ func saveSingleResultToDBOnce(db *sql.DB, res LLMAnalysisResult, projDir string)
     `)
 	if err != nil {
 		tx.Rollback()
-		return fmt.Errorf("prepare externals 失败: %w", err)
+		return fmt.Errorf("prepare externals failed: %w", err)
 	}
 	defer extStmt.Close()
 
@@ -902,11 +902,11 @@ func saveSingleResultToDBOnce(db *sql.DB, res LLMAnalysisResult, projDir string)
 		// 再去算相对路径
 		rel, err := filepath.Rel(projDir, filePath)
 		if err != nil {
-			logs.Errorf("%s, %s, 无法将文件路径转换为相对路径: %v", projDir, res.Func.File, err)
+			logs.Errorf("%s, %s, cannot convert file path to relative path: %v", projDir, res.Func.File, err)
 		} else {
 			// 统一成 slash 格式
 			res.Func.File = filepath.ToSlash(rel)
-			logs.Infof("[DEBUG][DB] 存储文件路径为: %s", res.Func.File)
+			logs.Infof("[DEBUG][DB] The storage file path is: %s", res.Func.File)
 		}
 	}
 
@@ -920,28 +920,28 @@ func saveSingleResultToDBOnce(db *sql.DB, res LLMAnalysisResult, projDir string)
 		res.Func.EndLine,
 		res.Func.FunctionType,
 	); err != nil {
-		return fmt.Errorf("functions 写入失败: %w", err)
+		return fmt.Errorf("Functions write failed: %w", err)
 	}
-	logs.Infof("[DEBUG][DB] 插入函数 %s:%s %s %d-%d", res.Func.File, res.Func.Name, res.Func.Package, res.Func.StartLine, res.Func.EndLine)
+	logs.Infof("[DEBUG][DB] Insert function %s:%s %s %d-%d", res.Func.File, res.Func.Name, res.Func.Package, res.Func.StartLine, res.Func.EndLine)
 
 	// 4. 插入 calls
 	for _, callee := range res.InternalDeps {
 		if _, err := callStmt.Exec(res.Func.Name, callee); err != nil {
-			log.Printf("calls 写入失败 (跳过继续): %v", err)
+			log.Printf("calls failed to write (skip to continue): %v", err)
 		}
 	}
 
 	// 5. 插入 externals
 	for _, ext := range res.ExternalDeps {
 		if _, err := extStmt.Exec(res.Func.Name, ext); err != nil {
-			log.Printf("externals 写入失败 (跳过继续): %v", err)
+			log.Printf("Externals write failed (skip to continue): %v", err)
 		}
 	}
 
 	// 6. 提交事务
 	if err := tx.Commit(); err != nil {
 		tx.Rollback()
-		return fmt.Errorf("提交事务失败: %w", err)
+		return fmt.Errorf("Failed to commit transaction: %w", err)
 	}
 
 	return nil
@@ -981,11 +981,11 @@ func (a *LLMAnalyzer) loadStoredResult(fn parser.FunctionInfo) (LLMAnalysisResul
 		var err error
 		fn.File, err = filepath.Rel(a.projDir, filePath)
 		if err != nil {
-			logs.Errorf("[ERROR] 获取相对路径失败 %s: %v", filePath, err)
+			logs.Errorf("[ERROR] Failed to get relative path %s: %v", filePath, err)
 			return LLMAnalysisResult{}, false
 		}
 		fn.File = filepath.ToSlash(fn.File)
-		logs.Infof("[DEBUG][DB] 标准化文件路径为: %s", fn.File)
+		logs.Infof("[DEBUG][DB] The normalized file path is: %s", fn.File)
 	}
 
 	// 3. 按 File, Name, Package 查询，查找所有可能的记录，遍历比对 StartLine 和 EndLine
@@ -996,7 +996,7 @@ func (a *LLMAnalyzer) loadStoredResult(fn parser.FunctionInfo) (LLMAnalysisResul
     `
 	rows, err := a.Db.Query(query, fn.File, fn.Name, fn.Package)
 	if err != nil {
-		logs.Errorf("[ERROR] 查询已存结果失败 %s:%s: %v", fn.File, fn.Name, err)
+		logs.Errorf("[ERROR] Failed to query saved results %s:%s: %v", fn.File, fn.Name, err)
 		return LLMAnalysisResult{}, false
 	}
 	defer rows.Close()
@@ -1005,16 +1005,16 @@ func (a *LLMAnalyzer) loadStoredResult(fn parser.FunctionInfo) (LLMAnalysisResul
 	var dbStartLine, dbEndLine int
 	var dbPackage, desc string
 	// 查询行号
-	logs.Infof("[DEBUG][DB] 查询行号 %s:%s %s %d-%d", fn.File, fn.Name, fn.Package, fn.StartLine, fn.EndLine)
+	logs.Infof("[DEBUG][DB] Query line number %s:%s %s %d-%d", fn.File, fn.Name, fn.Package, fn.StartLine, fn.EndLine)
 	for rows.Next() {
 		foundAny = true
 		if err := rows.Scan(&dbStartLine, &dbEndLine, &dbPackage, &desc); err != nil {
-			logs.Errorf("[ERROR] 遍历查询结果时出错: %v", err)
+			logs.Errorf("[ERROR] Error while iterating through query results: %v", err)
 			continue
 		}
-		logs.Infof("[DEBUG][DB] 查询到 %s:%s %s %d-%d", fn.File, fn.Name, fn.Package, dbStartLine, dbEndLine)
+		logs.Infof("[DEBUG][DB] Queryed %s:%s %s %d-%d", fn.File, fn.Name, fn.Package, dbStartLine, dbEndLine)
 		if dbStartLine == fn.StartLine && dbEndLine == fn.EndLine {
-			logs.Infof("[DEBUG][DB] 发现 %s:%s 的可用结果", fn.File, fn.Name)
+			logs.Infof("[DEBUG][DB] Found available results for %s:%s", fn.File, fn.Name)
 			return LLMAnalysisResult{
 				Func:        fn,
 				Description: desc,
@@ -1022,7 +1022,7 @@ func (a *LLMAnalyzer) loadStoredResult(fn parser.FunctionInfo) (LLMAnalysisResul
 		}
 		// package为空时跳过
 		if dbPackage == "" || fn.Package == "" {
-			logs.Infof("[INFO][DB] package字段为空(%s:%s)，视为新函数，继续分析 %s:%s", dbPackage, fn.Package, fn.File, fn.Name)
+			logs.Infof("[INFO][DB] The package field is empty (%s:%s), it is regarded as a new function, continue to analyze %s:%s", dbPackage, fn.Package, fn.File, fn.Name)
 			return LLMAnalysisResult{}, false
 		}
 	}
@@ -1030,12 +1030,12 @@ func (a *LLMAnalyzer) loadStoredResult(fn parser.FunctionInfo) (LLMAnalysisResul
 		logs.Errorf("[ERROR] rows.Err(): %v", err)
 	}
 	if !foundAny {
-		logs.Infof("[DEBUG][DB] 未找到 %s:%s 的已存结果，将进行分析", fn.File, fn.Name)
+		logs.Infof("[DEBUG][DB] No saved results found for %s:%s, will be analyzed", fn.File, fn.Name)
 	}
 
 	// 代码位置已更新或未找到记录，返回 false 以便重新分析
 	if foundAny {
-		logs.Infof("[INFO][DB] 代码已更新 %s:%s. 未找到匹配的起止行号，旧行号 %d-%d，新行号 %d-%d", fn.File, fn.Name, dbStartLine, dbEndLine, fn.StartLine, fn.EndLine)
+		logs.Infof("[INFO][DB] Code updated %s:%s. No matching start and end line numbers found, old line number %d-%d, new line number %d-%d", fn.File, fn.Name, dbStartLine, dbEndLine, fn.StartLine, fn.EndLine)
 	}
 	return LLMAnalysisResult{}, false
 }

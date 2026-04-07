@@ -117,17 +117,17 @@ INSERT OR IGNORE INTO functions(
 			res.Func.FunctionType,
 		)
 		if err != nil {
-			log.Printf("插入 functions 失败（已跳过？）: %v", err)
+			log.Printf("Insertion of functions failed (skipped?): %v", err)
 		}
 		// calls 和 externals 如果也可能重复，可以同样建唯一索引并用 OR IGNORE
 		for _, callee := range res.InternalDeps {
 			if _, err := callStmt.Exec(res.Func.Name, callee); err != nil {
-				log.Printf("插入 calls 失败: %v", err)
+				log.Printf("Failed to insert calls: %v", err)
 			}
 		}
 		for _, ext := range res.ExternalDeps {
 			if _, err := extStmt.Exec(res.Func.Name, ext); err != nil {
-				log.Printf("插入 externals 失败: %v", err)
+				log.Printf("Failed to insert externals: %v", err)
 			}
 		}
 	}
@@ -150,16 +150,16 @@ INSERT OR IGNORE INTO functions(
 	extStmt, _ := tx.Prepare("INSERT INTO externals(function, external) VALUES(?, ?)")
 	for _, res := range results {
 		if res.Func.FunctionType == "llm_parser" {
-			logs.Warnf("[WARN] 忽略 LLM_PARSER 函数的库录入 %s", res.Func.Name)
+			logs.Warnf("[WARN] Ignoring library entry %s for LLM_PARSER function", res.Func.Name)
 			continue
 		}
 		if projDir != "" {
 			res.Func.File, err = filepath.Rel(projDir, res.Func.File)
 			if err != nil {
-				fmt.Errorf("%s, %s, 无法将文件路径转换为相对路径: %w", projDir, res.Func.File, err)
+				fmt.Errorf("%s, %s, cannot convert file path to relative path: %w", projDir, res.Func.File, err)
 			}
 			res.Func.File = filepath.ToSlash(res.Func.File)
-			logs.Infof("[DEBUG][DB] 存储文件路径为: %s", res.Func.File)
+			logs.Infof("[DEBUG][DB] The storage file path is: %s", res.Func.File)
 		}
 		_, err = funcStmt.Exec(
 			res.Func.Name,
@@ -171,17 +171,17 @@ INSERT OR IGNORE INTO functions(
 			res.Func.FunctionType,
 		)
 		if err != nil {
-			log.Printf("插入 functions 失败（已跳过？）: %v", err)
+			log.Printf("Insertion of functions failed (skipped?): %v", err)
 		}
 		// calls 和 externals 如果也可能重复，可以同样建唯一索引并用 OR IGNORE
 		for _, callee := range res.InternalDeps {
 			if _, err := callStmt.Exec(res.Func.Name, callee); err != nil {
-				log.Printf("插入 calls 失败: %v", err)
+				log.Printf("Failed to insert calls: %v", err)
 			}
 		}
 		for _, ext := range res.ExternalDeps {
 			if _, err := extStmt.Exec(res.Func.Name, ext); err != nil {
-				log.Printf("插入 externals 失败: %v", err)
+				log.Printf("Failed to insert externals: %v", err)
 			}
 		}
 	}
@@ -332,7 +332,7 @@ CREATE TABLE IF NOT EXISTS code_desc (
 	if err != nil {
 		return err
 	}
-	logs.Infof("初始化 code_desc 表成功")
+	logs.Infof("Initialization of code_desc table successful")
 	// 为 code_desc 表添加索引，提高按路径查询的性能
 	_, err = db.Exec(`
 CREATE INDEX IF NOT EXISTS idx_code_desc_path ON code_desc(path);
@@ -342,6 +342,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_code_desc_unique ON code_desc(path, type);
 	if err != nil {
 		return err
 	}
-	logs.Infof("初始化 code_desc 索引成功")
+	logs.Infof("Initialization of code_desc index successful")
 	return nil
 }

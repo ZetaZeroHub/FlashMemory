@@ -65,7 +65,7 @@ func (fm *FaissMonitor) Start() {
 	fm.mu.Unlock()
 
 	go fm.monitorLoop()
-	logs.Infof("Faiss 服务监控已启动，检查间隔: %v", fm.checkInterval)
+	logs.Infof("Faiss service monitoring has been started, check interval: %v", fm.checkInterval)
 }
 
 // Stop 停止 Faiss 服务监控
@@ -79,7 +79,7 @@ func (fm *FaissMonitor) Stop() {
 
 	close(fm.stopChan)
 	fm.running = false
-	logs.Infof("Faiss 服务监控已停止")
+	logs.Infof("Faiss service monitoring has stopped")
 }
 
 // UpdateProcess 更新当前监控的进程
@@ -116,9 +116,9 @@ func (fm *FaissMonitor) checkHealth() bool {
 		}
 
 		if err != nil {
-			logs.Warnf("Faiss 服务健康检查失败 (尝试 %d/%d): %v", i+1, fm.maxRetries, err)
+			logs.Warnf("Faiss service health check failed (attempt %d/%d): %v", i+1, fm.maxRetries, err)
 		} else {
-			logs.Warnf("Faiss 服务返回非正常状态码 (尝试 %d/%d): %d", i+1, fm.maxRetries, resp.StatusCode)
+			logs.Warnf("Faiss service returned abnormal status code (try %d/%d): %d", i+1, fm.maxRetries, resp.StatusCode)
 			resp.Body.Close()
 		}
 
@@ -135,40 +135,40 @@ func (fm *FaissMonitor) restartService() {
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
 
-	logs.Warnf("Faiss 服务不可用，尝试重启...")
+	logs.Warnf("Faiss service is unavailable, try restarting...")
 
 	// 如果有旧进程，先尝试停止
 	if fm.process != nil {
 		if err := utils.StopFaissService(fm.process); err != nil {
-			logs.Warnf("停止旧的 Faiss 进程失败: %v", err)
+			logs.Warnf("Failed to stop old Faiss process: %v", err)
 		}
 	}
 
 	// 启动新的 Faiss 服务
 	newProcess, err := fm.startFaissService()
 	if err != nil {
-		logs.Errorf("重启 Faiss 服务失败: %v", err)
+		logs.Errorf("Failed to restart Faiss service: %v", err)
 		return
 	}
 
 	fm.process = newProcess
-	logs.Infof("Faiss 服务已成功重启")
+	logs.Infof("Faiss service has been successfully restarted")
 }
 
 // startFaissService 启动 Faiss 服务并等待其就绪
 func (fm *FaissMonitor) startFaissService() (*os.Process, error) {
 	// 检查 Python 环境
 	if err := utils.CheckPythonEnvironment("cpu", fm.serviceDir); err != nil {
-		return nil, fmt.Errorf("Python环境检查失败: %w", err)
+		return nil, fmt.Errorf("Python environment check failed: %w", err)
 	}
 
 	// 启动 Faiss 服务
 	process, err := utils.StartFaissService(fm.serviceDir)
 	if err != nil {
-		return nil, fmt.Errorf("启动 Faiss 服务失败: %w", err)
+		return nil, fmt.Errorf("Failed to start Faiss service: %w", err)
 	}
 
-	logs.Infof("正在启动 Faiss 服务...")
+	logs.Infof("Starting Faiss service...")
 
 	// 等待服务就绪
 	maxRetries := 60
@@ -177,7 +177,7 @@ func (fm *FaissMonitor) startFaissService() (*os.Process, error) {
 		resp, err := http.Get(fm.healthEndpoint)
 		if err == nil && resp.StatusCode == http.StatusOK {
 			resp.Body.Close()
-			logs.Infof("Faiss 服务已成功启动")
+			logs.Infof("Faiss service has been started successfully")
 			return process, nil
 		}
 
@@ -185,10 +185,10 @@ func (fm *FaissMonitor) startFaissService() (*os.Process, error) {
 			if process != nil {
 				utils.StopFaissService(process)
 			}
-			return nil, fmt.Errorf("Faiss 服务启动超时，超过 %d 秒仍未响应", maxRetries)
+			return nil, fmt.Errorf("Faiss service startup timed out and has not responded for more than %d seconds.", maxRetries)
 		}
 
-		logs.Infof("等待 Faiss 服务启动... (尝试 %d/%d)", i+1, maxRetries)
+		logs.Infof("Waiting for the Faiss service to start... (try %d/%d)", i+1, maxRetries)
 		time.Sleep(retryInterval)
 	}
 

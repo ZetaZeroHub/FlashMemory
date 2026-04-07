@@ -195,7 +195,7 @@ func Generate(ctx context.Context, llm model.ChatModel, in []*schema.Message) (*
 
 		// 检测是否为服务端提前超时
 		if (strings.Contains(errMsg, "context deadline exceeded") || strings.Contains(errMsg, "Client.Timeout exceeded")) && remaining > 10*time.Second {
-			logs.Warnf("检测到服务端/客户端提前超时，本地上下文仍有剩余时间 (%s)。这通常意味着网关或上游服务有更短的超时限制，或者HTTP Client配置了较短的Timeout。", remaining)
+			logs.Warnf("Premature server/client timeout detected, local context still has time remaining (%s). This usually means that the gateway or upstream service has a shorter timeout limit, or the HTTP Client is configured with a shorter Timeout.", remaining)
 		}
 
 		// 检查错误消息中是否包含 429 状态码或 Too Many Requests 字符串
@@ -204,7 +204,7 @@ func Generate(ctx context.Context, llm model.ChatModel, in []*schema.Message) (*
 		}
 		// 如果是EOF错误，直接返回普通错误而不是LLMResponseError
 		if strings.Contains(errMsg, "EOF") {
-			logs.Warnf("Generate遇到EOF错误: %v", err)
+			logs.Warnf("Generate encountered an EOF error: %v", err)
 			return nil, err
 		}
 		return nil, common.NewLLMResponseError(errMsg)
@@ -226,7 +226,7 @@ func Stream(ctx context.Context, llm model.ChatModel, in []*schema.Message) (*sc
 		}
 		// 如果是EOF错误，直接返回普通错误而不是LLMResponseError
 		if strings.Contains(errMsg, "EOF") {
-			logs.Warnf("Stream遇到EOF错误: %v", err)
+			logs.Warnf("Stream encountered EOF error: %v", err)
 			return nil, err
 		}
 		return nil, common.NewLLMResponseError(errMsg)
@@ -335,7 +335,7 @@ func EmbeddingInvoke(config *config.CloudModel, ask []string, dim int) ([][]floa
 		logs.Errorf("get embeddings failed: %v", err)
 		return nil, fmt.Errorf("get embeddings failed: %w", err)
 	}
-	fmt.Printf("Model: %s, 数据条数: %d\n", resp.Model, len(resp.Data))
+	fmt.Printf("Model: %s, Number of data items: %d\n", resp.Model, len(resp.Data))
 
 	// 准备返回的切片，容量预分配为 resp.Data 长度
 	allEmbeddings := make([][]float32, 0, len(resp.Data))
@@ -359,7 +359,7 @@ func EmbeddingInvoke(config *config.CloudModel, ask []string, dim int) ([][]floa
 			vec = append(vec, pad...)
 		}
 
-		fmt.Printf("  index=%d, processed embedding 长度=%d\n", d.Index, len(vec))
+		fmt.Printf("index=%d, processed embedding length=%d\n", d.Index, len(vec))
 		allEmbeddings = append(allEmbeddings, vec)
 	}
 
@@ -401,7 +401,7 @@ func GetEmbeddings(ctx context.Context, req api.EmbedRequest, config *config.Clo
 	if err != nil {
 		// 如果是EOF错误，直接返回普通错误而不是LLMResponseError
 		if strings.Contains(err.Error(), "EOF") {
-			logs.Warnf("GetEmbeddings遇到EOF错误: %v", err)
+			logs.Warnf("GetEmbeddings encountered EOF error: %v", err)
 			return nil, err
 		}
 		return nil, common.NewLLMResponseError(err.Error())
@@ -421,7 +421,7 @@ func GetEmbeddings(ctx context.Context, req api.EmbedRequest, config *config.Clo
 	if err := json.NewDecoder(httpResp.Body).Decode(&embedResp); err != nil {
 		// 如果是EOF错误，直接返回普通错误而不是LLMResponseError
 		if strings.Contains(err.Error(), "EOF") {
-			logs.Warnf("GetEmbeddings解析响应遇到EOF错误: %v", err)
+			logs.Warnf("GetEmbeddings encountered an EOF error while parsing the response: %v", err)
 			return nil, err
 		}
 		return nil, common.NewLLMResponseError(err.Error())

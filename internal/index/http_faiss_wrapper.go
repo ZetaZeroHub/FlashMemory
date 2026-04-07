@@ -108,7 +108,7 @@ func NewHTTPFaissWrapper(dimension int, useInnerProduct bool, serverURL string, 
 
 	// 如果返回 400，认为索引已存在，默认成功
 	if resp.StatusCode == http.StatusBadRequest {
-		logs.Warnf("索引已存在，请勿重复创建")
+		logs.Warnf("The index already exists, please do not create it again")
 		return fw, nil
 	}
 	// 如果不是 200，则读取响应体并报错

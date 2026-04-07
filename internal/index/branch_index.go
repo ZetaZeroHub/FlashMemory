@@ -37,14 +37,14 @@ func EnsureBranchIndexTable(db *sql.DB) error {
 func SaveBranchIndexInfo(db *sql.DB, info BranchIndexInfo) error {
 	// 确保表存在
 	if err := EnsureBranchIndexTable(db); err != nil {
-		return fmt.Errorf("确保branch_index表存在失败: %v", err)
+		return fmt.Errorf("Failed to ensure branch_index table exists: %v", err)
 	}
 
 	// 插入记录
 	query := `INSERT INTO branch_index(branch_name, commit_hash, indexed_files, indexed_at) VALUES(?, ?, ?, ?)`
 	_, err := db.Exec(query, info.BranchName, info.CommitHash, info.IndexedFiles, info.IndexedAt)
 	if err != nil {
-		return fmt.Errorf("保存分支索引信息失败: %v", err)
+		return fmt.Errorf("Failed to save branch index information: %v", err)
 	}
 
 	return nil
@@ -54,7 +54,7 @@ func SaveBranchIndexInfo(db *sql.DB, info BranchIndexInfo) error {
 func GetLatestBranchIndexInfo(db *sql.DB, branchName string) (*BranchIndexInfo, error) {
 	// 确保表存在
 	if err := EnsureBranchIndexTable(db); err != nil {
-		return nil, fmt.Errorf("确保branch_index表存在失败: %v", err)
+		return nil, fmt.Errorf("Failed to ensure branch_index table exists: %v", err)
 	}
 
 	// 查询最新记录
@@ -67,7 +67,7 @@ func GetLatestBranchIndexInfo(db *sql.DB, branchName string) (*BranchIndexInfo, 
 		if err == sql.ErrNoRows {
 			return nil, nil // 没有找到记录，返回nil
 		}
-		return nil, fmt.Errorf("查询分支索引信息失败: %v", err)
+		return nil, fmt.Errorf("Failed to query branch index information: %v", err)
 	}
 
 	return &info, nil
@@ -119,16 +119,16 @@ func (info *BranchIndexInfo) GetMissingFiles(allFiles []string) []string {
 func DeleteBranchIndexInfo(db *sql.DB, branchName string) error {
 	// 确保表存在
 	if err := EnsureBranchIndexTable(db); err != nil {
-		return fmt.Errorf("确保branch_index表存在失败: %v", err)
+		return fmt.Errorf("Failed to ensure branch_index table exists: %v", err)
 	}
 
 	// 删除记录
 	query := `DELETE FROM branch_index WHERE branch_name = ?`
 	_, err := db.Exec(query, branchName)
 	if err != nil {
-		return fmt.Errorf("删除分支索引信息失败: %v", err)
+		return fmt.Errorf("Failed to delete branch index information: %v", err)
 	}
 
-	log.Printf("已删除分支 %s 的所有索引信息", branchName)
+	log.Printf("All index information for branch %s has been deleted", branchName)
 	return nil
 }

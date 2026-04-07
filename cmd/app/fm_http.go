@@ -378,6 +378,24 @@ func searchHandler() echo.HandlerFunc {
 		// 执行查询
 		log.Println("执行查询...")
 
+		// 解析子命令并提取 -lang 参数
+		rawArgs := os.Args[1:]
+		var args []string
+		for i := 0; i < len(rawArgs); i++ {
+			if rawArgs[i] == "-lang" || rawArgs[i] == "--lang" {
+				if i+1 < len(rawArgs) {
+					common.SetLang(rawArgs[i+1])
+					i++
+				}
+			} else if strings.HasPrefix(rawArgs[i], "-lang=") {
+				common.SetLang(strings.TrimPrefix(rawArgs[i], "-lang="))
+			} else if strings.HasPrefix(rawArgs[i], "--lang=") {
+				common.SetLang(strings.TrimPrefix(rawArgs[i], "--lang="))
+			} else {
+				args = append(args, rawArgs[i])
+			}
+		}
+
 		// 构造搜索选项
 		opts := search.SearchOptions{
 			Limit:       req.Limit,

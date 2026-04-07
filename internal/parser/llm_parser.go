@@ -47,22 +47,22 @@ func NewLLMParser(lang string, NoLLM bool, db *sql.DB, projDir string) *LLMParse
 func (lp *LLMParser) ParseFile(path string) ([]FunctionInfo, error) {
 	//sys := runtime.GOOS
 	//if sys == "windows" {
-	//	logs.Warnf("LLMParser.ParseFile 不支持的操作系统，已忽略: %s", sys)
+	//	logs.Warnf("LLMParser.ParseFile Unsupported operating system, ignored: %s", sys)
 	//	return nil, nil
 	//}
-	logs.Infof("LLMParser 正在批量解析并增强: %s", path)
+	logs.Infof("LLMParser is batch parsing and enhancing: %s", path)
 
 	// 1. 加载配置
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		return nil, fmt.Errorf("加载配置文件失败: %w", err)
+		return nil, fmt.Errorf("Failed to load configuration file: %w", err)
 	}
 
 	// 2. 收集所有待解析的文件路径
 	var files []string
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, fmt.Errorf("路径错误: %w", err)
+		return nil, fmt.Errorf("Path error: %w", err)
 	}
 	if info.IsDir() {
 		err = filepath.Walk(path, func(p string, fi os.FileInfo, err error) error {
@@ -75,7 +75,7 @@ func (lp *LLMParser) ParseFile(path string) ([]FunctionInfo, error) {
 			return nil
 		})
 		if err != nil {
-			return nil, fmt.Errorf("遍历目录失败: %w", err)
+			return nil, fmt.Errorf("Directory traversal failed: %w", err)
 		}
 	} else if isSupportedFile(path) {
 		files = append(files, path)
@@ -87,7 +87,7 @@ func (lp *LLMParser) ParseFile(path string) ([]FunctionInfo, error) {
 		// 3.1 读取文件内容并按行拆分
 		data, err := ioutil.ReadFile(file)
 		if err != nil {
-			logs.Warnf("读取文件失败，跳过增强: %s: %v", file, err)
+			logs.Warnf("Failed to read file, skipping enhancement: %s: %v", file, err)
 			continue
 		}
 		lines := strings.Split(string(data), "\n")
@@ -98,12 +98,12 @@ func (lp *LLMParser) ParseFile(path string) ([]FunctionInfo, error) {
 		// 3.2 对每个代码片段调用 LLM，解析并累积到 funcs
 		for i, chunk := range codeChunks {
 			if i >= cfg.ParserCodeChunkLimit {
-				logs.Warnf("单文件代码块数超出限制，跳过模型调用: %s [%d-%d]", file, chunk.StartLine, chunk.EndLine)
+				logs.Warnf("The number of code blocks in a single file exceeds the limit, skipping model call: %s [%d-%d]", file, chunk.StartLine, chunk.EndLine)
 				break
 			}
 			// 区块小于5行，不调用LLM
 			if chunk.LineCount < 5 {
-				logs.Warnf("单文件代码块数小于5行，跳过模型调用: %s [%d-%d]", file, chunk.StartLine, chunk.EndLine)
+				logs.Warnf("The number of code blocks in a single file is less than 5 lines, and the model call is skipped: %s [%d-%d]", file, chunk.StartLine, chunk.EndLine)
 				break
 			}
 			if lp.NoLLM {
@@ -121,7 +121,7 @@ func (lp *LLMParser) ParseFile(path string) ([]FunctionInfo, error) {
 			if lp.Db != nil && lp.ProjDir != "" {
 				// 传入当前代码块的行号范围，查询是否已存在与该范围有重叠的记录
 				if results, found := lp.loadStoredResult(path, lp.ProjDir, chunk.StartLine, chunk.EndLine); found {
-					logs.Infof("已从数据库中找到结果，跳过模型调用: %s [%d-%d]，找到 %d 条记录",
+					logs.Infof("Results found from database, model call skipped: %s [%d-%d], %d records found",
 						path, chunk.StartLine, chunk.EndLine, len(results))
 					// 将找到的结果添加到 funcs 中，避免重复解析
 					funcs = append(funcs, results...)
@@ -162,7 +162,7 @@ func (lp *LLMParser) ParseFile(path string) ([]FunctionInfo, error) {
 				for i := range updated {
 					err := SaveSingleResultToDB(lp.Db, updated[i], lp.ProjDir)
 					if err != nil {
-						logs.Warnf("保存到数据库失败: %v", err)
+						logs.Warnf("Failed to save to database: %v", err)
 						return nil, err
 					}
 				}
@@ -236,8 +236,8 @@ func (lp *LLMParser) parseLLMResponse(response string, base []FunctionInfo, path
 	if err := json.Indent(&prettyRaw, []byte(raw), "", "  "); err == nil {
 		logs.Infof("LLM enhance result raw (pretty):\n%s", prettyRaw.String())
 	} else {
-		logs.Warnf("LLM enhance result raw (pretty)失败: %s", raw)
-		return nil, fmt.Errorf("LLM enhance result raw (pretty)失败: %s", raw)
+		logs.Warnf("LLM enhance result raw (pretty) failed: %s", raw)
+		return nil, fmt.Errorf("LLM enhance result raw (pretty) failed: %s", raw)
 	}
 
 	// 2. 定义一个临时结构体用来反序列化
@@ -300,7 +300,7 @@ func (lp *LLMParser) parseLLMResponse(response string, base []FunctionInfo, path
 
 	// 如果模型返回空数组或空对象，也要保存一条记录以标记该代码块已处理
 	if len(items) == 0 {
-		logs.Infof("LLM返回空结果，保存占位记录以避免重复解析: %s [%d-%d]", path, startLine, endLine)
+		logs.Infof("LLM returns empty results and saves placeholder records to avoid repeated parsing: %s [%d-%d]", path, startLine, endLine)
 		base = append(base, FunctionInfo{
 			Name:         "", // 函数名为空
 			Description:  "", // 描述为空
@@ -370,15 +370,15 @@ func mergeFunctionInfos(orig, updated []FunctionInfo) []FunctionInfo {
 // - 使用 DbWriter 进行串行化写入和自动重试。
 func SaveSingleResultToDB(db *sql.DB, res FunctionInfo, projDir string) error {
 	if db == nil {
-		return fmt.Errorf("无数据库连接")
+		return fmt.Errorf("No database connection")
 	}
 
 	// 判断是否存在临时文件，如果不存在则抛出特殊异常码
 	gitgoDir := filepath.Join(projDir, ".gitgo")
 	tempFilePath := filepath.Join(gitgoDir, "indexing.temp")
 	if _, err := os.Stat(tempFilePath); os.IsNotExist(err) {
-		logs.Errorf("索引临时文件已被删除，终止扫描")
-		return fmt.Errorf("索引临时文件已被删除，终止扫描")
+		logs.Errorf("Index temporary files have been deleted, scanning terminated")
+		return fmt.Errorf("Index temporary files have been deleted, scanning terminated")
 	}
 
 	// 创建临时 DbWriter 或使用已有的
@@ -386,12 +386,12 @@ func SaveSingleResultToDB(db *sql.DB, res FunctionInfo, projDir string) error {
 	if lp, ok := res.Parser.(*LLMParser); ok && lp != nil && lp.DbWriter != nil {
 		// 如果是 LLMParser 的结果，使用其 DbWriter
 		dbWriter = lp.DbWriter
-		logs.Infof("使用 LLMParser 的 DbWriter 进行写入")
+		logs.Infof("Writing using LLMParser's DbWriter")
 	} else {
 		// 否则创建一个新的 DbWriter
 		dbWriter = utils.NewDbWriter(db)
 		defer dbWriter.Close()
-		logs.Infof("创建新的 DbWriter 进行写入")
+		logs.Infof("Create a new DbWriter for writing")
 	}
 
 	return saveSingleResultToDBWithWriter(dbWriter, res, projDir)
@@ -407,10 +407,10 @@ func saveSingleResultToDBWithWriter(dbWriter *utils.DbWriter, res FunctionInfo, 
 		}
 		rel, err := filepath.Rel(projDir, filePath)
 		if err != nil {
-			logs.Errorf("%s, %s, 无法将文件路径转换为相对路径: %v", projDir, res.File, err)
+			logs.Errorf("%s, %s, cannot convert file path to relative path: %v", projDir, res.File, err)
 		} else {
 			res.File = filepath.ToSlash(rel)
-			logs.Infof("[DEBUG][DB] 存储文件路径为: %s", res.File)
+			logs.Infof("[DEBUG][DB] The storage file path is: %s", res.File)
 		}
 	}
 
@@ -432,7 +432,7 @@ func saveSingleResultToDBWithWriter(dbWriter *utils.DbWriter, res FunctionInfo, 
 		res.FunctionType,
 	)
 	if err != nil {
-		return fmt.Errorf("functions 写入失败: %w", err)
+		return fmt.Errorf("Functions write failed: %w", err)
 	}
 
 	return nil
@@ -444,7 +444,7 @@ func saveSingleResultToDBWithWriter(dbWriter *utils.DbWriter, res FunctionInfo, 
 func (lp *LLMParser) loadStoredResult(path string, projDir string, startLine int, endLine int) ([]FunctionInfo, bool) {
 	// 1. 如果没有数据库连接，直接返回
 	if lp.Db == nil {
-		logs.Warnf("[ERROR] 无数据库连接")
+		logs.Warnf("[ERROR] No database connection")
 		return []FunctionInfo{}, false
 	}
 
@@ -457,10 +457,10 @@ func (lp *LLMParser) loadStoredResult(path string, projDir string, startLine int
 		}
 		rel, err := filepath.Rel(projDir, filePath)
 		if err != nil {
-			logs.Warnf("[WARN] 无法计算相对路径: %v, 使用原始路径", err)
+			logs.Warnf("[WARN] Unable to calculate relative path: %v, use original path", err)
 		} else {
 			path = filepath.ToSlash(rel)
-			logs.Infof("[DEBUG][DB] 存储文件路径为: %s", path)
+			logs.Infof("[DEBUG][DB] The storage file path is: %s", path)
 		}
 	}
 
@@ -480,7 +480,7 @@ func (lp *LLMParser) loadStoredResult(path string, projDir string, startLine int
 			  AND end_line >= ?
 		`
 		args = []interface{}{path, endLine, startLine}
-		logs.Infof("[DEBUG] 查询行号范围内的结果: %s [%d-%d]", path, startLine, endLine)
+		logs.Infof("[DEBUG] Query results within the line number range: %s [%d-%d]", path, startLine, endLine)
 	} else {
 		// 如果没有指定行号范围，则查询整个文件的所有记录
 		query = `
@@ -494,7 +494,7 @@ func (lp *LLMParser) loadStoredResult(path string, projDir string, startLine int
 
 	rows, err := lp.Db.Query(query, args...)
 	if err != nil {
-		logs.Errorf("[ERROR] 查询已存结果失败: %v", err)
+		logs.Errorf("[ERROR] Failed to query saved results: %v", err)
 		return []FunctionInfo{}, false
 	}
 	defer rows.Close()
@@ -510,13 +510,13 @@ func (lp *LLMParser) loadStoredResult(path string, projDir string, startLine int
 			FunctionType string `json:"function_type"`
 		}
 		if err := rows.Scan(&dto.Name, &dto.File, &dto.Description, &dto.StartLine, &dto.EndLine, &dto.FunctionType); err != nil {
-			logs.Warnf("[WARN] 读取一条记录失败: %v", err)
+			logs.Warnf("[WARN] Failed to read a record: %v", err)
 			continue
 		}
 
-		logs.Infof("[DEBUG] 读取已存结果: %s, name: %s, desc: %s (lines %d-%d)", dto.File, dto.Name, dto.Description, dto.StartLine, dto.EndLine)
+		logs.Infof("[DEBUG] Read saved results: %s, name: %s, desc: %s (lines %d-%d)", dto.File, dto.Name, dto.Description, dto.StartLine, dto.EndLine)
 		if dto.Description == "" && dto.Name == "" {
-			logs.Infof("[INFO] 找到占位记录，该代码块已处理过")
+			logs.Infof("[INFO] Placeholder record found, this code block has been processed")
 		}
 
 		fi := FunctionInfo{
@@ -530,7 +530,7 @@ func (lp *LLMParser) loadStoredResult(path string, projDir string, startLine int
 		results = append(results, fi)
 	}
 	if err := rows.Err(); err != nil {
-		logs.Errorf("[ERROR] 遍历查询结果时出错: %v", err)
+		logs.Errorf("[ERROR] Error while iterating through query results: %v", err)
 	}
 
 	if len(results) == 0 {

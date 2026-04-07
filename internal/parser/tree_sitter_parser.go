@@ -40,7 +40,7 @@ func (tp *TreeSitterParser) debugLog(format string, a ...interface{}) {
 
 // ParseFile 使用 Tree-sitter 解析指定文件，提取函数信息
 func (tp *TreeSitterParser) ParseFile(path string) ([]FunctionInfo, error) {
-	logs.Infof("正在使用TreeSitterParser %s 解析器解析文件: %s", tp.Lang, path)
+	logs.Infof("Parsing file using TreeSitterParser %s parser: %s", tp.Lang, path)
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -77,7 +77,7 @@ func (tp *TreeSitterParser) ParseFile(path string) ([]FunctionInfo, error) {
 		// TypeScript 语法和 JavaScript 类似
 		language = js.GetLanguage()
 	default:
-		return nil, fmt.Errorf("Tree-sitter 不支持该语言：%s", tp.Lang)
+		return nil, fmt.Errorf("Tree-sitter does not support this language: %s", tp.Lang)
 	}
 
 	parserTS := sitter.NewParser()
@@ -106,7 +106,7 @@ func (tp *TreeSitterParser) ParseFile(path string) ([]FunctionInfo, error) {
 	// 定义查询以提取函数定义（统一使用捕获名 func_decl）
 	queryStr := getTreeSitterFunctionQuery(tp.Lang)
 	if queryStr == "" {
-		return nil, fmt.Errorf("未定义该语言的 Tree-sitter 函数查询: %s", tp.Lang)
+		return nil, fmt.Errorf("Tree-sitter function query is not defined for this language: %s", tp.Lang)
 	}
 	query, err := sitter.NewQuery([]byte(queryStr), language)
 	if err != nil {
@@ -215,11 +215,11 @@ func (tp *TreeSitterParser) ParseFile(path string) ([]FunctionInfo, error) {
 	//  如果未找到函数定义，则尝试使用 LlmParser（LlmParser目前不支持Windows系统）
 	//if os != "windows" {
 	if len(funcs) == 0 {
-		logs.Warnf("未能通过 TreeSitterParser 解析函数信息，回退至LlmParserr，path=%s", path)
+		logs.Warnf("Failed to parse function information through TreeSitterParser, fallback to LlmParserr, path=%s", path)
 		llmParser := NewLLMParser(tp.Lang, tp.NoLLM, tp.Db, tp.ProjDir)
 		fn, err := llmParser.ParseFile(path)
 		if err != nil {
-			logs.Errorf("LLMParser 解析函数信息失败: %v", err)
+			logs.Errorf("LLMParser failed to parse function information: %v", err)
 			return nil, err
 		}
 		funcs = append(funcs, fn...)

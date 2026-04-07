@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/viper"
 
@@ -195,4 +196,281 @@ func LoadConfig() (*Config, error) {
 	})
 
 	return GlobalOllamaConfig, loadConfigErr
+}
+
+// InitWithPath 直接通过传入路径设置全局配置路径，不调用 flag.Parse()
+// 用于 fm_http 等自行管理参数的入口
+func InitWithPath(path string) string {
+	GlobalConfigPath = path
+	logs.Infof("当前配置文件路径: %s", GlobalConfigPath)
+	return GlobalConfigPath
+}
+
+// DefaultConfigDir 返回用户主目录下的默认配置目录 ~/.flashmemory/
+func DefaultConfigDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".flashmemory")
+}
+
+// ResolveConfigPath 按优先级查找配置文件路径
+// 优先级: 参数指定 > 环境变量 > 当前目录 > 可执行文件目录 > ~/.flashmemory/
+func ResolveConfigPath(explicit string) string {
+	// 1. 显式指定的路径
+	if explicit != "" {
+		if _, err := os.Stat(explicit); err == nil {
+			return explicit
+		}
+		// 如果指定了但不存在，也返回（后续加载会报警告）
+		return explicit
+	}
+
+	// 2. 环境变量
+	if envPath := os.Getenv("BOTGO_CONFIG_PATH"); envPath != "" {
+		if _, err := os.Stat(envPath); err == nil {
+			return envPath
+		}
+	}
+
+	// 3. 当前工作目录
+	if cwd, err := os.Getwd(); err == nil {
+		candidate := filepath.Join(cwd, "fm.yaml")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+
+	// 4. 可执行文件同目录
+	if execPath, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(execPath), "fm.yaml")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+
+	// 5. 用户主目录 ~/.flashmemory/fm.yaml
+	if defDir := DefaultConfigDir(); defDir != "" {
+		candidate := filepath.Join(defDir, "fm.yaml")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+
+	// 6. 未找到任何配置文件
+	return ""
+}
+
+// GenerateDefaultConfig 在指定路径生成带注释的默认 fm.yaml 配置模板
+func GenerateDefaultConfig(configPath string) error {
+	dir := filepath.Dir(configPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("创建目录 %s 失败: %w", dir, err)
+	}
+
+	// 如果文件已存在则跳过
+	if _, err := os.Stat(configPath); err == nil {
+		return fmt.Errorf("配置文件已存在: %s", configPath)
+	}
+
+	template := `# FlashMemory 配置文件
+# 生成时间: ` + time.Now().Format("2006-01-02 15:04:05") + `
+# 详细说明: https://github.com/ZetaZeroHub/FlashMemory
+
+# ─── 代码解析限制 ──────────────────────────────────
+parser_code_chunk_limit: 50
+parser_code_line_limit: 200
+code_limit: 23000
+prompt_limit: 30000
+
+# ─── Python pip 镜像 ──────────────────────────────
+pip_path: "https://mirrors.aliyun.com/pypi/simple"
+
+# ─── 本地 LLM (Ollama) 配置 ──────────────────────
+api_base_url: "http://127.0.0.1:11434"
+completion_api: "/api/generate"
+embedding_api: "/api/embed"
+default_model: "qwen2.5-coder:1.5b"
+default_format: "json"
+default_temp: 0.1
+default_max_worker: 1
+
+# ─── 数据库写入配置 ───────────────────────────────
+db_writer_queue_size: 300
+db_writer_max_retries: 7
+db_writer_retry_interval_ms: 30
+
+# ─── LLM 超时配置 (秒) ───────────────────────────
+llm_local_timeout_sec: 300
+llm_cloud_timeout_sec: 300
+
+# ─── 向量模型配置 ─────────────────────────────────
+normalize_model: "qwen2.5-coder:0.5b"
+embedding_model: "quentinz/bge-large-zh-v1.5:latest"
+embedding_max_batch: 30
+embedding_max_worker: 3
+
+# ─── 云端向量模型 (可选，取消注释并填入你的 API Key) ─
+# embedding_cloud_model:
+#   api: "your-api-key-here"
+#   model: "BAAI/bge-large-zh-v1.5"
+#   url: "https://api.siliconflow.cn/v1/"
+#   enabled: false
+#   type: "openai"
+#   max_prompts: 30000
+
+# ─── 云端分析模型 (可选，取消注释并填入你的 API Key) ─
+# default_cloud_model:
+#   api: "your-api-key-here"
+#   model: "Qwen/Qwen2.5-Coder-7B-Instruct"
+#   url: "https://api.siliconflow.cn/v1/"
+#   enabled: false
+#   type: "openai"
+#   max_prompts: 30000
+
+# ─── 模型配置梯度 (按代码长度自动选择) ────────────
+model_configs:
+  - name: "qwen2.5-coder:1.5b"
+    size: "S"
+    format: "json"
+    temperature: 0.1
+    max_tokens: 2048
+    num_ctx: 1024
+    num_keep: 2048
+    num_predict: 512
+    repeat_last_n: 128
+    # cloud_model:
+    #   api: "your-api-key-here"
+    #   model: "auto"
+    #   url: "https://api.siliconflow.cn/v1/"
+    #   enabled: false
+    #   type: "openai"
+    #   max_prompts: 30000
+    #   temperature: 0.1
+  - name: "qwen2.5-coder:3b"
+    size: "M"
+    format: "json"
+    temperature: 0.1
+    max_tokens: 5000
+    num_ctx: 3000
+    num_keep: 5000
+    num_predict: 512
+    prompt_length: 1501
+    repeat_last_n: 128
+  - name: "qwen2.5-coder:7b"
+    size: "L"
+    format: "json"
+    temperature: 0.1
+    max_tokens: 8000
+    num_ctx: 6000
+    num_keep: 8000
+    num_predict: 700
+    prompt_length: 6001
+    repeat_last_n: 128
+  - name: "qwen2.5-coder:7b"
+    size: "XL"
+    format: "json"
+    temperature: 0.1
+    max_tokens: 18000
+    num_ctx: 12000
+    num_keep: 18000
+    num_predict: 1000
+    prompt_length: 11001
+    repeat_last_n: 128
+  - name: "qwen2.5-coder:7b"
+    size: "XXL"
+    format: "json"
+    temperature: 0.1
+    max_tokens: 30000
+    num_ctx: 18000
+    num_keep: 18000
+    num_predict: 1200
+    prompt_length: 20001
+    repeat_last_n: 128
+
+# ─── 代码分析提示词 ───────────────────────────────
+ana_prompts:
+  role: |
+    你是一个专业的架构师，请仔细阅读以下函数代码：
+  route: |
+    该函数的所处路径和包名：
+  imports: |
+    该函数使用了以下导入包：
+  internal_deps: |
+    该函数调用了以下内部函数：
+  external_deps: |
+    并使用了外部库:
+  main: |
+    请用几句话为以上代码生成该实现的<功能描述>，并说明它的<执行流程>。
+    （输出必须为一个合法的 JSON 对象，<功能描述>的Key是"description"，Value是字符串类型；<执行流程>的Key是"process"，Value是字符串数组；所有Value均使用中文描述。）
+
+# ─── 关键词提示词 ─────────────────────────────────
+keyword_prompts:
+  system: |
+    #### 1．角色
+      你是一名**关键词预测智能体**，负责根据用户输入的搜索词或句子，提炼并预测用户可能想进一步查询的多个关键词，并提供中英对照。
+    #### 2．目标
+      接收用户提供的搜索词/句，理解其意图与核心信息，生成一组关键词。
+    #### 3．输出规范
+    - 输出格式为**纯 JSON 数组**，仅包含字符串元素，如 ` + "`" + `["狗", "dog", "猫", "cat"]` + "`" + `。
+    - 建议生成 5–10 个关键词
+    - 不得添加其他文本、注释或 Markdown。
+  user: |
+    {search_query}
+
+# ─── 模块分析提示词 ───────────────────────────────
+module_analyzer_prompts:
+  header: "请为以下目录生成一个全面的模块级描述。目录路径: \n"
+  sub_module_header: |
+    该目录包含以下子模块:
+  sub_module_file: "- 文件: \n"
+  sub_module_dir: "- 目录: \n"
+  sub_module_desc: "描述: \n"
+  footer: |
+    请基于以上子模块的功能，生成一个简洁但全面的目录级描述，包括：
+    1. 该目录的主要功能和目的
+    2. 目录中实现的核心功能和关键组件
+    3. 该目录在项目中的作用
+    4. 目录的设计模式或架构特点（如果明显）
+
+    请直接给出描述，不要包含标题或前缀。
+
+# ─── 文件分析提示词 ───────────────────────────────
+file_analyzer_prompts:
+  header: "请为以下文件生成一个全面的模块级描述。文件路径: \n"
+  sub_module_header: "文件中包含的函数/方法及其描述:"
+  footer: |
+    请基于以上函数的功能，生成一个简洁但全面的文件级描述，包括：
+    1. 该文件的主要功能和目的
+    2. 文件中实现的核心功能和关键组件
+    3. 该文件在项目中的作用
+    4. 文件的设计模式或架构特点（如果明显）
+
+    请直接给出描述，不要包含标题或前缀。
+
+# ─── 项目分析提示词 ───────────────────────────────
+repo_analyzer_prompts:
+  header: |
+    请为以下项目生成一个全面的项目级描述。项目路径:
+  sub_module_header: |
+    该项目包含以下主要模块或目录:
+  sub_module_file: |
+    - 文件:
+  sub_module_dir: |
+    - 目录:
+  sub_module_desc: |
+    描述:
+  footer: |
+    请基于以上所有子模块的功能和描述，生成一份完整、详细且具有可读性的项目总览介绍。
+
+# ─── API 认证 (可选) ──────────────────────────────
+# api_token: ""
+# api_url: ""
+# api_model: ""
+# api_url_simple: ""
+# auth_base_url: ""
+`
+
+	return os.WriteFile(configPath, []byte(template), 0644)
 }
