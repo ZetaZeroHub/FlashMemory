@@ -129,9 +129,7 @@ func runServeDaemon(configPath string, pidFile string) error {
 	cmd.Stdout = lf
 	cmd.Stderr = lf
 	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true, // Detach from terminal
-	}
+	cmd.SysProcAttr = getSysProcAttr()
 
 	if err := cmd.Start(); err != nil {
 		lf.Close()
