@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/kinglegendzzh/flashmemory/cmd/common"
+	"github.com/kinglegendzzh/flashmemory/resource"
 	"github.com/spf13/cobra"
 )
 
@@ -76,61 +77,12 @@ func runInit() error {
 }
 
 func writeDefaultConfig(path string) error {
-	defaultConfig := `# FlashMemory Configuration
+	template := `# FlashMemory Configuration
 # 完整配置参考: https://github.com/ZetaZeroHub/FlashMemory
 
-# LLM API 配置
-api_base_url: http://127.0.0.1:11434
-api_url: https://api.githave.com/api/v1
-api_url_simple: https://api.githave.com
-auth_base_url: https://githave.com
-completion_api: /api/generate
-embedding_api: /api/embed
+` + string(resource.DefaultConfigYAML)
 
-# 模型配置
-default_model: qwen2.5-coder:1.5b
-embedding_model: qwen2.5-coder:0.5b
-normalize_model: qwen2.5-coder:0.5b
-default_format: json
-default_temp: 0.1
-default_max_worker: 1
-
-# Embedding 配置
-embedding_max_batch: 30
-embedding_max_worker: 3
-embedding_cloud_model:
-  api: ""
-  enabled: true
-  max_prompts: 30000
-  model: BAAI/bge-large-zh-v1.5
-  type: githave
-  url: https://api.githave.com/v1/
-
-default_cloud_model:
-  api: ""
-  enabled: true
-  max_prompts: 30000
-  model: auto
-  type: githave
-  url: https://api.githave.com/v1/
-
-# 数据库配置
-db_writer_queue_size: 300
-db_writer_max_retries: 7
-db_writer_retry_interval_ms: 30
-
-# 解析器配置
-code_limit: 23000
-prompt_limit: 30000
-parser_code_line_limit: 200
-parser_code_chunk_limit: 50
-
-# 超时配置 (秒)
-llm_local_timeout_sec: 300
-llm_cloud_timeout_sec: 300
-`
-
-	return os.WriteFile(path, []byte(defaultConfig), 0644)
+	return os.WriteFile(path, []byte(template), 0644)
 }
 
 // EnsureInit checks if FlashMemory is initialized, auto-inits if needed
