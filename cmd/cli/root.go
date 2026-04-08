@@ -11,8 +11,7 @@ import (
 )
 
 var (
-	// Version is set at build time via ldflags
-	Version = "0.1.3"
+	Version = "0.1.4"
 
 	// Global flags
 	langFlag   string
