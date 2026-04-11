@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/kinglegendzzh/flashmemory/cmd/common"
+	"github.com/kinglegendzzh/flashmemory/config"
 	"github.com/kinglegendzzh/flashmemory/resource"
 	"github.com/spf13/cobra"
 )
@@ -35,7 +36,7 @@ func runInit() error {
 		return fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
-	// Create config file if not exists
+	// Create config file if not exists, or merge new defaults into existing
 	if !fileExists(configPath) {
 		if err := writeDefaultConfig(configPath); err != nil {
 			return fmt.Errorf("failed to create config file: %w", err)
@@ -46,10 +47,27 @@ func runInit() error {
 			fmt.Printf("  ✅ Config file created: %s\n", configPath)
 		}
 	} else {
-		if common.IsZH() {
-			fmt.Printf("  ℹ️  配置文件已存在: %s\n", configPath)
+		// Incremental merge: add new keys without overwriting user values
+		added, err := config.MergeDefaultsIntoConfig(configPath)
+		if err != nil {
+			// Non-fatal: log and continue
+			if common.IsZH() {
+				fmt.Printf("  ⚠️  配置合并失败: %v\n", err)
+			} else {
+				fmt.Printf("  ⚠️  Config merge failed: %v\n", err)
+			}
+		} else if added > 0 {
+			if common.IsZH() {
+				fmt.Printf("  🔄 配置已升级: 新增 %d 个配置项 (%s)\n", added, configPath)
+			} else {
+				fmt.Printf("  🔄 Config upgraded: %d new keys added (%s)\n", added, configPath)
+			}
 		} else {
-			fmt.Printf("  ℹ️  Config file already exists: %s\n", configPath)
+			if common.IsZH() {
+				fmt.Printf("  ℹ️  配置已是最新: %s\n", configPath)
+			} else {
+				fmt.Printf("  ℹ️  Config is up to date: %s\n", configPath)
+			}
 		}
 	}
 

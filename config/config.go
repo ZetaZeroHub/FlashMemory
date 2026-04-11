@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"github.com/kinglegendzzh/flashmemory/resource"
@@ -153,6 +154,8 @@ type Config struct {
 	ApiUrlSimple string `mapstructure:"api_url_simple" yaml:"api_url_simple" json:"api_url_simple,omitempty"`
 	// Zvec 引擎配置
 	ZvecConfig ZvecConfig `mapstructure:"zvec_config" yaml:"zvec_config" json:"zvec_config,omitempty"`
+	// Language preference (persisted via --lang toggle)
+	Lang string `mapstructure:"lang" yaml:"lang" json:"lang,omitempty"`
 }
 
 // ZvecConfig Zvec 向量引擎配置
@@ -276,23 +279,78 @@ func ResolveConfigPath(explicit string) string {
 	return ""
 }
 
-// GenerateDefaultConfig 在指定路径生成带注释的默认 fm.yaml 配置模板
+// GenerateDefaultConfig creates or incrementally upgrades the config file at configPath.
+// If the file doesn't exist, it generates a fresh default config.
+// If the file exists, it merges any new default keys into it without overwriting user values.
 func GenerateDefaultConfig(configPath string) error {
 	dir := filepath.Dir(configPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("创建目录 %s 失败: %w", dir, err)
+		return fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
 
-	// 如果文件已存在则跳过
 	if _, err := os.Stat(configPath); err == nil {
-		return fmt.Errorf("配置文件已存在: %s", configPath)
+		return fmt.Errorf("config file already exists: %s", configPath)
 	}
 
-	template := `# FlashMemory 配置文件
-# 生成时间: ` + time.Now().Format("2006-01-02 15:04:05") + `
-# 详细说明: https://github.com/ZetaZeroHub/FlashMemory
+	template := `# FlashMemory Configuration
+# Generated: ` + time.Now().Format("2006-01-02 15:04:05") + `
+# Reference: https://github.com/ZetaZeroHub/FlashMemory
 
 ` + string(resource.DefaultConfigYAML)
 
-return os.WriteFile(configPath, []byte(template), 0644)
+	return os.WriteFile(configPath, []byte(template), 0644)
+}
+
+// MergeDefaultsIntoConfig incrementally merges new default keys from the embedded
+// resource/fm.yaml into an existing user config file, without overwriting user values.
+// Returns the number of new keys added.
+func MergeDefaultsIntoConfig(configPath string) (int, error) {
+	existing, err := os.ReadFile(configPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read config: %w", err)
+	}
+
+	// Parse existing config as map
+	var userMap map[string]interface{}
+	if err := yaml.Unmarshal(existing, &userMap); err != nil {
+		return 0, fmt.Errorf("failed to parse existing config: %w", err)
+	}
+	if userMap == nil {
+		userMap = make(map[string]interface{})
+	}
+
+	// Parse default config as map
+	var defaultMap map[string]interface{}
+	if err := yaml.Unmarshal(resource.DefaultConfigYAML, &defaultMap); err != nil {
+		return 0, fmt.Errorf("failed to parse default config: %w", err)
+	}
+
+	// Merge: only add keys that don't exist in user config (top-level)
+	added := 0
+	for key, val := range defaultMap {
+		if _, exists := userMap[key]; !exists {
+			userMap[key] = val
+			added++
+			logs.Infof("[config-merge] Added new key: %s", key)
+		}
+	}
+
+	if added == 0 {
+		return 0, nil
+	}
+
+	// Write back
+	merged, err := yaml.Marshal(userMap)
+	if err != nil {
+		return 0, fmt.Errorf("failed to marshal merged config: %w", err)
+	}
+
+	header := fmt.Sprintf("# FlashMemory Configuration\n# Updated: %s\n# Reference: https://github.com/ZetaZeroHub/FlashMemory\n\n",
+		time.Now().Format("2006-01-02 15:04:05"))
+
+	if err := os.WriteFile(configPath, append([]byte(header), merged...), 0644); err != nil {
+		return 0, fmt.Errorf("failed to write merged config: %w", err)
+	}
+
+	return added, nil
 }

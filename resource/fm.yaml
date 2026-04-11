@@ -13,6 +13,17 @@ ana_prompts:
     route: |
         该函数的所处路径和包名：
 api_base_url: http://127.0.0.1:11434
+# Language preference: en | zh (default: en)
+lang: en
+# Zvec vector engine config (use -engine zvec to enable)
+zvec_config:
+    engine: faiss
+    collection_dir: .gitgo/zvec_collections
+    dimension: 384
+    python_path: ""
+    metric_type: cosine
+    query_threads: 4
+    optimize_on_build: true
 api_url: https://api.githave.com/api/v1
 api_url_simple: https://api.githave.com
 auth_base_url: https://githave.com
