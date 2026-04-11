@@ -83,84 +83,248 @@ func NewZvecWrapper(dimension int, collectionPath string, pythonPath string) (*Z
 	return zw, nil
 }
 
-// startBridge 启动 Python zvec_bridge 子进程
+// startBridge launches the Python zvec_bridge subprocess using a multi-strategy approach:
+//
+//	Strategy 1: python3 -m flashmemory.zvec_bridge (pip-installed package)
+//	Strategy 2: local zvec_bridge.py script (dev mode)
+//	Strategy 3: auto-provision a venv with flashmemory[embedding], then retry Strategy 1
 func (zw *ZvecWrapper) startBridge() error {
-	// 定位 zvec_bridge.py 脚本
-	bridgeScript := zw.findBridgeScript()
-	if bridgeScript == "" {
-		return fmt.Errorf("找不到 zvec_bridge.py 脚本")
+	// Strategy 1: Try module mode (pip installed globally or in active venv)
+	logs.Infof("[bridge] Strategy 1: trying module mode (python3 -m flashmemory.zvec_bridge)")
+	if err := zw.tryStartBridgeModule(zw.PythonPath); err == nil {
+		return nil
 	}
 
-	logs.Infof("启动 Zvec Bridge: %s %s", zw.PythonPath, bridgeScript)
+	// Strategy 2: Try local script path (dev/source mode)
+	if script := zw.findBridgeScript(); script != "" {
+		logs.Infof("[bridge] Strategy 2: trying local script: %s", script)
+		if err := zw.tryStartBridgeScript(zw.PythonPath, script); err == nil {
+			return nil
+		}
+	}
 
-	zw.cmd = exec.Command(zw.PythonPath, "-u", bridgeScript)
-	zw.cmd.Stderr = os.Stderr // Python 日志输出到 stderr
+	// Strategy 3: Check managed venv, auto-provision if needed
+	venvPython := zw.getManagedVenvPython()
+	if venvPython != "" {
+		// Managed venv exists, try using it
+		logs.Infof("[bridge] Strategy 3a: trying managed venv: %s", venvPython)
+		if err := zw.tryStartBridgeModule(venvPython); err == nil {
+			return nil
+		}
+		logs.Warnf("[bridge] Managed venv exists but bridge failed, will re-provision")
+	}
 
-	var err error
-	zw.stdin, err = zw.cmd.StdinPipe()
+	// Auto-provision: create venv and install flashmemory[embedding]
+	logs.Infof("[bridge] Strategy 3b: auto-provisioning Python environment...")
+	provisionedPython, err := zw.autoProvisionPythonEnv()
 	if err != nil {
-		return fmt.Errorf("获取 stdin pipe 失败: %w", err)
+		return fmt.Errorf("all bridge strategies failed, auto-provision also failed: %w", err)
 	}
 
-	stdoutPipe, err := zw.cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("获取 stdout pipe 失败: %w", err)
-	}
-	zw.stdout = bufio.NewScanner(stdoutPipe)
-	// 增大 scanner 缓冲区以处理大的搜索结果
-	zw.stdout.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
-
-	if err := zw.cmd.Start(); err != nil {
-		return fmt.Errorf("启动 Python 进程失败: %w", err)
+	// Retry module mode with provisioned venv
+	logs.Infof("[bridge] Retrying module mode with provisioned venv: %s", provisionedPython)
+	if err := zw.tryStartBridgeModule(provisionedPython); err != nil {
+		return fmt.Errorf("bridge failed even after auto-provision: %w", err)
 	}
 
-	// 等待 ready 信号
-	resp, err := zw.readResponse()
-	if err != nil {
-		return fmt.Errorf("等待 Bridge ready 失败: %w", err)
-	}
-	if resp.Status != "success" || resp.Message != "ready" {
-		return fmt.Errorf("Bridge 返回异常: %s", resp.Message)
-	}
-
-	zw.ready = true
-	logs.Infof("Zvec Bridge 已就绪")
 	return nil
 }
 
-// findBridgeScript 查找 zvec_bridge.py 脚本路径
-func (zw *ZvecWrapper) findBridgeScript() string {
-	// 查找策略：
-	// 1. 从可执行文件目录查找
-	// 2. 从源代码目录查找
-	// 3. 从工作目录查找
+// tryStartBridgeModule tries to start the bridge via `python -m flashmemory.zvec_bridge`
+func (zw *ZvecWrapper) tryStartBridgeModule(pythonPath string) error {
+	cmd := exec.Command(pythonPath, "-u", "-m", "flashmemory.zvec_bridge")
+	cmd.Stderr = os.Stderr
+	return zw.launchAndWaitReady(cmd)
+}
 
+// tryStartBridgeScript tries to start the bridge via a local .py script
+func (zw *ZvecWrapper) tryStartBridgeScript(pythonPath string, scriptPath string) error {
+	cmd := exec.Command(pythonPath, "-u", scriptPath)
+	cmd.Stderr = os.Stderr
+	return zw.launchAndWaitReady(cmd)
+}
+
+// launchAndWaitReady starts the subprocess command and waits for the "ready" JSON-line response
+func (zw *ZvecWrapper) launchAndWaitReady(cmd *exec.Cmd) error {
+	var err error
+	zw.stdin, err = cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stdin pipe: %w", err)
+	}
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stdout pipe: %w", err)
+	}
+	zw.stdout = bufio.NewScanner(stdoutPipe)
+	// Increase scanner buffer for large search results
+	zw.stdout.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start Python process: %w", err)
+	}
+	zw.cmd = cmd
+
+	// Wait for ready signal
+	resp, err := zw.readResponse()
+	if err != nil {
+		// Process started but didn't respond correctly — kill it
+		cmd.Process.Kill()
+		cmd.Wait()
+		zw.cmd = nil
+		return fmt.Errorf("bridge did not become ready: %w", err)
+	}
+	if resp.Status != "success" || resp.Message != "ready" {
+		cmd.Process.Kill()
+		cmd.Wait()
+		zw.cmd = nil
+		return fmt.Errorf("bridge returned unexpected status: %s", resp.Message)
+	}
+
+	zw.ready = true
+	logs.Infof("[bridge] Zvec Bridge is ready (pid=%d)", cmd.Process.Pid)
+	return nil
+}
+
+// getManagedVenvDir returns the path to the managed venv directory (~/.flashmemory/pyenv)
+func (zw *ZvecWrapper) getManagedVenvDir() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(homeDir, ".flashmemory", "pyenv")
+}
+
+// getManagedVenvPython returns the python binary path inside the managed venv, or "" if not exists
+func (zw *ZvecWrapper) getManagedVenvPython() string {
+	venvDir := zw.getManagedVenvDir()
+	if venvDir == "" {
+		return ""
+	}
+
+	// Platform-aware python path
+	var pythonBin string
+	if _, err := os.Stat(filepath.Join(venvDir, "bin", "python3")); err == nil {
+		pythonBin = filepath.Join(venvDir, "bin", "python3")
+	} else if _, err := os.Stat(filepath.Join(venvDir, "Scripts", "python.exe")); err == nil {
+		pythonBin = filepath.Join(venvDir, "Scripts", "python.exe")
+	}
+
+	return pythonBin
+}
+
+// autoProvisionPythonEnv creates a managed venv at ~/.flashmemory/pyenv and installs flashmemory[embedding]
+func (zw *ZvecWrapper) autoProvisionPythonEnv() (string, error) {
+	venvDir := zw.getManagedVenvDir()
+	if venvDir == "" {
+		return "", fmt.Errorf("cannot determine home directory for managed venv")
+	}
+
+	logs.Infof("[provision] Creating managed Python environment at: %s", venvDir)
+	fmt.Fprintf(os.Stderr, "\n⚡ FlashMemory: Setting up Zvec Python environment (first-time only)...\n")
+
+	// Step 1: Find a working python3
+	pythonPath := zw.findSystemPython()
+	if pythonPath == "" {
+		return "", fmt.Errorf("python3 not found on system, please install Python 3.8+ first")
+	}
+	logs.Infof("[provision] Using system Python: %s", pythonPath)
+
+	// Step 2: Create venv (remove old if exists)
+	os.RemoveAll(venvDir)
+	os.MkdirAll(filepath.Dir(venvDir), 0755)
+
+	createCmd := exec.Command(pythonPath, "-m", "venv", venvDir)
+	createCmd.Stderr = os.Stderr
+	createCmd.Stdout = os.Stdout
+	if err := createCmd.Run(); err != nil {
+		return "", fmt.Errorf("failed to create venv: %w", err)
+	}
+	logs.Infof("[provision] Venv created successfully")
+
+	// Step 3: Get venv python path
+	venvPython := zw.getManagedVenvPython()
+	if venvPython == "" {
+		return "", fmt.Errorf("venv created but python binary not found in %s", venvDir)
+	}
+
+	// Step 4: Upgrade pip (quiet)
+	upgradeCmd := exec.Command(venvPython, "-m", "pip", "install", "--upgrade", "pip", "-q")
+	upgradeCmd.Stderr = os.Stderr
+	upgradeCmd.Run() // best-effort, don't fail on this
+
+	// Step 5: Install flashmemory[embedding]
+	fmt.Fprintf(os.Stderr, "📦 Installing flashmemory[embedding]...\n")
+	installCmd := exec.Command(venvPython, "-m", "pip", "install", "flashmemory[embedding]", "-q")
+	installCmd.Stderr = os.Stderr
+	installCmd.Stdout = os.Stdout
+	if err := installCmd.Run(); err != nil {
+		// Fallback: try without [embedding] extras
+		logs.Warnf("[provision] flashmemory[embedding] install failed, trying base package")
+		fallbackCmd := exec.Command(venvPython, "-m", "pip", "install", "flashmemory", "-q")
+		fallbackCmd.Stderr = os.Stderr
+		fallbackCmd.Stdout = os.Stdout
+		if err2 := fallbackCmd.Run(); err2 != nil {
+			return "", fmt.Errorf("pip install flashmemory failed: %w (original: %v)", err2, err)
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "✅ Zvec Python environment ready!\n\n")
+	logs.Infof("[provision] flashmemory[embedding] installed successfully in managed venv")
+
+	return venvPython, nil
+}
+
+// findSystemPython locates a usable python3 binary on the system
+func (zw *ZvecWrapper) findSystemPython() string {
+	candidates := []string{"python3", "python"}
+
+	for _, name := range candidates {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			continue
+		}
+		// Verify it's Python 3.x
+		out, err := exec.Command(path, "-c", "import sys; print(sys.version_info.major)").Output()
+		if err != nil {
+			continue
+		}
+		version := string(out)
+		if len(version) > 0 && version[0] == '3' {
+			return path
+		}
+	}
+
+	return ""
+}
+
+// findBridgeScript locates the zvec_bridge.py script for dev/source mode
+func (zw *ZvecWrapper) findBridgeScript() string {
 	candidates := []string{}
 
-	// 可执行文件同目录
+	// Next to the executable binary
 	if exePath, err := os.Executable(); err == nil {
 		candidates = append(candidates,
 			filepath.Join(filepath.Dir(exePath), "pip-package", "flashmemory", "zvec_bridge.py"),
 		)
 	}
 
-	// 当前工作目录
+	// Current working directory
 	if cwd, err := os.Getwd(); err == nil {
 		candidates = append(candidates,
 			filepath.Join(cwd, "pip-package", "flashmemory", "zvec_bridge.py"),
 		)
 	}
 
-	// 源码目录 (开发模式)
-	// 通过 runtime 获取源文件路径
+	// Relative path (source tree)
 	candidates = append(candidates,
 		filepath.Join("pip-package", "flashmemory", "zvec_bridge.py"),
 	)
 
-	for _, path := range candidates {
-		if absPath, err := filepath.Abs(path); err == nil {
+	for _, p := range candidates {
+		if absPath, err := filepath.Abs(p); err == nil {
 			if _, err := os.Stat(absPath); err == nil {
-				logs.Infof("找到 zvec_bridge.py: %s", absPath)
+				logs.Infof("[bridge] Found zvec_bridge.py: %s", absPath)
 				return absPath
 			}
 		}
