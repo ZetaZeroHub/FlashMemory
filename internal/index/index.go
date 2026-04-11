@@ -230,6 +230,45 @@ func NewFaissWrapper(dimension int, options ...map[string]interface{}) FaissWrap
 	return NewMemoryFaissWrapper(dimension)
 }
 
+// NewZvecFaissWrapper 创建基于 Zvec 的向量引擎封装
+// collectionPath 为 Collection 存储目录 (如 .gitgo/zvec_collections)
+// pythonPath 为 Python 可执行文件路径，空则使用默认 python3
+func NewZvecFaissWrapper(dimension int, collectionPath string, pythonPath string) FaissWrapper {
+	wrapper, err := NewZvecWrapper(dimension, collectionPath, pythonPath)
+	if err != nil {
+		fmt.Printf("Warning: Failed to create Zvec engine: %v, falling back to in-memory implementation\n", err)
+		return NewMemoryFaissWrapper(dimension)
+	}
+	return wrapper
+}
+
+// NewFaissWrapperByEngine 根据 engine 参数选择向量引擎
+// engine: "zvec" 使用 Zvec 引擎, "faiss" 或 "" 使用原有 FAISS/Memory 引擎
+func NewFaissWrapperByEngine(engine string, dimension int, options ...map[string]interface{}) FaissWrapper {
+	var opts map[string]interface{}
+	if len(options) > 0 {
+		opts = options[0]
+	} else {
+		opts = map[string]interface{}{}
+	}
+
+	switch engine {
+	case "zvec":
+		collectionPath, _ := opts["collection_path"].(string)
+		if collectionPath == "" {
+			collectionPath = filepath.Join(".gitgo", "zvec_collections")
+		}
+		pythonPath, _ := opts["python_path"].(string)
+		logs.Infof("使用 Zvec 引擎, collection_path=%s, dimension=%d", collectionPath, dimension)
+		return NewZvecFaissWrapper(dimension, collectionPath, pythonPath)
+
+	default:
+		// 使用原有的 FAISS/Memory 引擎
+		logs.Infof("使用 FAISS 引擎 (engine=%s), dimension=%d", engine, dimension)
+		return NewFaissWrapper(dimension, opts)
+	}
+}
+
 // SetIndexSimilarityMetric 允许在运行时切换相似度计算方法，metric 可取 "cosine" 或 "euclidean"。
 func (idx *Indexer) SetIndexSimilarityMetric(metric string) {
 	idx.FaissIndex.SetSimilarityMetric(metric)

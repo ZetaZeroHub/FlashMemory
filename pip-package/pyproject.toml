@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flashmemory"
-version = "0.1.5"
+version = "0.4.0"
 description = "FlashMemory - Cross-language code analysis and semantic search system"
 readme = "README.md"
 license = {text = "MIT"}
@@ -28,9 +28,30 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Operating System :: Microsoft :: Windows",
 ]
-keywords = ["code-analysis", "semantic-search", "llm", "faiss", "code-indexing"]
+keywords = ["code-analysis", "semantic-search", "llm", "faiss", "zvec", "vector-database", "code-indexing"]
 dependencies = [
     "requests>=2.25.0",
+]
+
+[project.optional-dependencies]
+zvec = [
+    "zvec>=0.1.1",
+    "sentence-transformers>=2.0.0",
+]
+embedding = [
+    "zvec>=0.1.1",
+    "sentence-transformers>=2.0.0",
+]
+cloud = [
+    "openai",
+    "dashscope",
+]
+full = [
+    "zvec>=0.1.1",
+    "sentence-transformers>=2.0.0",
+    "openai",
+    "dashscope",
+    "dashtext",
 ]
 
 [project.urls]
@@ -41,6 +62,7 @@ Issues = "https://github.com/ZetaZeroHub/FlashMemory/issues"
 [project.scripts]
 fm = "flashmemory.cli:main_fm"
 fm_http = "flashmemory.cli:main_fm_http"
+zvec_bridge = "flashmemory.zvec_bridge:main"
 
 [tool.setuptools.packages.find]
 include = ["flashmemory*"]

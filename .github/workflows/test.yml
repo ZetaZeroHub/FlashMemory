@@ -1,0 +1,41 @@
+name: Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  GO_VERSION: '1.24'
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    name: Python Tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run tests
+        working-directory: pip-package
+        run: |
+          pip install pytest
+          python -m pytest tests/ -v --tb=short
+
+  go-build:
+    runs-on: ubuntu-latest
+    name: Go Build & Test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Build
+        run: |
+          go mod tidy
+          go build ./...
+      - name: Test
+        run: go test ./internal/index/ -v -count=1 -timeout 60s

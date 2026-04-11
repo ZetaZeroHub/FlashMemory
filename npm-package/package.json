@@ -1,14 +1,16 @@
 {
   "name": "@zhouzhanghao001111/flashmemory",
-  "version": "0.1.5",
-  "description": "FlashMemory - Cross-language code analysis and semantic search system. Supports Go, Python, JavaScript, Java, C++ code indexing with LLM-powered analysis.",
+  "version": "0.4.0",
+  "description": "FlashMemory - Cross-language code analysis and semantic search system with hybrid vector search. Supports Go, Python, JavaScript, Java, C++ code indexing with LLM-powered analysis.",
   "keywords": [
     "code-analysis",
     "semantic-search",
     "code-indexing",
     "llm",
-    "faiss",
-    "knowledge-graph"
+    "zvec",
+    "vector-search",
+    "knowledge-graph",
+    "mcp"
   ],
   "homepage": "https://github.com/ZetaZeroHub/FlashMemory",
   "bugs": {

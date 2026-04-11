@@ -59,7 +59,14 @@ func main() {
 	faissServicePath := flag.String("faiss_path", "", i18nFlag("指定 FAISSService 目录绝对路径", "Specify FAISSService absolute path"))
 	filePath := flag.String("file", "", i18nFlag("定量更新的文件或文件夹", "Specify file or dir for partial update"))
 	useFaiss := flag.Bool("use_faiss", false, i18nFlag("使用 Faiss 原生索引存储", "Use Faiss native index storage"))
+	engineType := flag.String("engine", "faiss", i18nFlag("向量引擎类型: faiss(默认), zvec(推荐)", "Vector engine type: faiss(default), zvec(recommended)"))
 	flag.Parse()
+
+	// 判断是否使用 Zvec 引擎
+	useZvec := *engineType == "zvec"
+	if useZvec {
+		log.Println("使用 Zvec 向量引擎 (subprocess stdin/stdout 模式)")
+	}
 
 	// 获取FAISSService目录的路径
 	var faissServiceDir string
@@ -68,97 +75,102 @@ func main() {
 		ext = ".faiss"
 	}
 
-	// （优先级最高）从命令行参数获取绝对路径
-	if *faissServicePath != "" {
-		// 检查用户提供的路径是否存在
-		if _, err := os.Stat(*faissServicePath); err == nil {
-			faissServiceDir = *faissServicePath
-			log.Printf("正在从命令行参数获取FAISSService目录: %s", faissServiceDir)
-		} else {
-			log.Printf("警告：命令行指定的FAISSService目录 %s 不存在或无法访问: %v", *faissServicePath, err)
-		}
-	}
-
-	// 如果方法4未找到，继续尝试其他方法
-	if faissServiceDir == "" {
-		// 方法1：尝试从源文件路径获取（适用于go run）
-		sourceDir, err := utils.GetSourceFileDir()
-		log.Printf("正在从源文件路径获取FAISSService目录: %s", sourceDir)
-		if err == nil {
-			// 检查源文件目录下是否存在FAISSService
-			tempDir := filepath.Join(sourceDir, "FAISSService")
-			if _, err := os.Stat(tempDir); err == nil {
-				faissServiceDir = tempDir
-				log.Printf("从源文件目录找到FAISSService: %s", faissServiceDir)
+	// Zvec 模式下跳过 FAISS 服务启动
+	if !useZvec {
+		// （优先级最高）从命令行参数获取绝对路径
+		if *faissServicePath != "" {
+			// 检查用户提供的路径是否存在
+			if _, err := os.Stat(*faissServicePath); err == nil {
+				faissServiceDir = *faissServicePath
+				log.Printf("正在从命令行参数获取FAISSService目录: %s", faissServiceDir)
+			} else {
+				log.Printf("警告：命令行指定的FAISSService目录 %s 不存在或无法访问: %v", *faissServicePath, err)
 			}
 		}
-	}
 
-	// 方法2：如果方法1失败，尝试从可执行文件路径获取（适用于编译后的二进制文件）
-	if faissServiceDir == "" {
-		execPath, err := os.Executable()
+		// 如果方法4未找到，继续尝试其他方法
+		if faissServiceDir == "" {
+			// 方法1：尝试从源文件路径获取（适用于go run）
+			sourceDir, err := utils.GetSourceFileDir()
+			log.Printf("正在从源文件路径获取FAISSService目录: %s", sourceDir)
+			if err == nil {
+				// 检查源文件目录下是否存在FAISSService
+				tempDir := filepath.Join(sourceDir, "FAISSService")
+				if _, err := os.Stat(tempDir); err == nil {
+					faissServiceDir = tempDir
+					log.Printf("从源文件目录找到FAISSService: %s", faissServiceDir)
+				}
+			}
+		}
+
+		// 方法2：如果方法1失败，尝试从可执行文件路径获取（适用于编译后的二进制文件）
+		if faissServiceDir == "" {
+			execPath, err := os.Executable()
+			if err != nil {
+				log.Fatalf("无法获取可执行文件路径: %v", err)
+			}
+			execDir := filepath.Dir(execPath)
+			tempDir := filepath.Join(execDir, "FAISSService")
+			log.Printf("正在从可执行文件路径获取FAISSService目录: %s", execDir)
+			if _, err := os.Stat(tempDir); err == nil {
+				faissServiceDir = tempDir
+				log.Printf("从可执行文件目录找到FAISSService: %s", faissServiceDir)
+			}
+		}
+
+		// 方法3：如果前两种方法都失败，尝试从当前工作目录获取
+		if faissServiceDir == "" {
+			cwd, err := os.Getwd()
+			if err != nil {
+				log.Fatalf("无法获取当前工作目录: %v", err)
+			}
+			log.Printf("正在从当前工作目录获取FAISSService目录: %s", cwd)
+			tempDir := filepath.Join(cwd, "cmd", "main", "FAISSService")
+			if _, err := os.Stat(tempDir); err == nil {
+				faissServiceDir = tempDir
+				log.Printf("从当前工作目录找到FAISSService: %s", faissServiceDir)
+			}
+		}
+
+		// 如果所有方法都失败，报错退出
+		if faissServiceDir == "" {
+			log.Fatalf("无法找到FAISSService目录，请确保FAISSService目录存在于源文件目录或可执行文件目录下")
+		}
+
+		// 检查Python环境
+		if err := utils.CheckPythonEnvironment(*faissType, faissServiceDir); err != nil {
+			log.Fatalf("Python环境检查失败: %v", err)
+		}
+
+		// 启动Faiss服务
+		faissProcess, err := utils.StartFaissService(faissServiceDir)
 		if err != nil {
-			log.Fatalf("无法获取可执行文件路径: %v", err)
+			log.Fatalf("启动Faiss服务失败: %v", err)
 		}
-		execDir := filepath.Dir(execPath)
-		tempDir := filepath.Join(execDir, "FAISSService")
-		log.Printf("正在从可执行文件路径获取FAISSService目录: %s", execDir)
-		if _, err := os.Stat(tempDir); err == nil {
-			faissServiceDir = tempDir
-			log.Printf("从可执行文件目录找到FAISSService: %s", faissServiceDir)
+
+		// 确保在程序结束时停止Faiss服务
+		defer utils.StopFaissService(faissProcess)
+
+		log.Println("正在启动Faiss服务...")
+
+		// 轮询检测Faiss服务状态
+		maxRetries := 60
+		retryInterval := time.Second
+		for i := 0; i < maxRetries; i++ {
+			resp, err := http.Get(index.DefaultFaissServerURL + "/health")
+			if err == nil && resp.StatusCode == http.StatusOK {
+				resp.Body.Close()
+				log.Println("Faiss服务已成功启动")
+				break
+			}
+			if i == maxRetries-1 {
+				log.Fatalf("Faiss服务启动超时，超过%d秒仍未响应", maxRetries)
+			}
+			log.Printf("等待Faiss服务启动... (尝试 %d/%d)", i+1, maxRetries)
+			time.Sleep(retryInterval)
 		}
-	}
-
-	// 方法3：如果前两种方法都失败，尝试从当前工作目录获取
-	if faissServiceDir == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			log.Fatalf("无法获取当前工作目录: %v", err)
-		}
-		log.Printf("正在从当前工作目录获取FAISSService目录: %s", cwd)
-		tempDir := filepath.Join(cwd, "cmd", "main", "FAISSService")
-		if _, err := os.Stat(tempDir); err == nil {
-			faissServiceDir = tempDir
-			log.Printf("从当前工作目录找到FAISSService: %s", faissServiceDir)
-		}
-	}
-
-	// 如果所有方法都失败，报错退出
-	if faissServiceDir == "" {
-		log.Fatalf("无法找到FAISSService目录，请确保FAISSService目录存在于源文件目录或可执行文件目录下")
-	}
-
-	// 检查Python环境
-	if err := utils.CheckPythonEnvironment(*faissType, faissServiceDir); err != nil {
-		log.Fatalf("Python环境检查失败: %v", err)
-	}
-
-	// 启动Faiss服务
-	faissProcess, err := utils.StartFaissService(faissServiceDir)
-	if err != nil {
-		log.Fatalf("启动Faiss服务失败: %v", err)
-	}
-
-	// 确保在程序结束时停止Faiss服务
-	defer utils.StopFaissService(faissProcess)
-
-	log.Println("正在启动Faiss服务...")
-
-	// 轮询检测Faiss服务状态
-	maxRetries := 60
-	retryInterval := time.Second
-	for i := 0; i < maxRetries; i++ {
-		resp, err := http.Get(index.DefaultFaissServerURL + "/health")
-		if err == nil && resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
-			log.Println("Faiss服务已成功启动")
-			break
-		}
-		if i == maxRetries-1 {
-			log.Fatalf("Faiss服务启动超时，超过%d秒仍未响应", maxRetries)
-		}
-		log.Printf("等待Faiss服务启动... (尝试 %d/%d)", i+1, maxRetries)
-		time.Sleep(retryInterval)
+	} else {
+		log.Println("Zvec 模式: 跳过 FAISS HTTP 服务启动")
 	}
 
 	// 创建.gitgo目录用于存储
@@ -620,9 +632,9 @@ func main() {
 	} else if *forceFullIndex {
 		// 全量索引模式：遍历整个项目目录
 		log.Println("全量索引模式：遍历整个项目目录")
-		err = filepath.Walk(*projDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return err
+		err := filepath.Walk(*projDir, func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
 			}
 			if info.IsDir() {
 				// 跳过以点开头的隐藏目录
@@ -639,9 +651,9 @@ func main() {
 			}
 			return nil
 		})
-	}
-	if err != nil {
-		log.Fatalf("遍历项目目录失败: %v", err)
+		if err != nil {
+			log.Fatalf("遍历项目目录失败: %v", err)
+		}
 	}
 	if len(files) == 0 {
 		log.Println("No source code files found in the provided directory.")
@@ -713,13 +725,23 @@ func main() {
 		log.Fatalf("获取gitgo目录绝对路径失败: %v", err)
 	}
 
-	// 创建FaissWrapper，传入存储路径选项
-	faissOptions := map[string]interface{}{
-		"storage_path": absGitgoDir,
-		"server_url":   index.DefaultFaissServerURL, // 使用默认的Faiss HTTP服务URL
-		"index_id":     projDir,                     // 设置一个有意义的索引ID
+	// 根据引擎类型创建向量索引
+	var faissIdx index.FaissWrapper
+	if useZvec {
+		// 使用 Zvec 引擎 (subprocess stdin/stdout 模式)
+		zvecCollPath := filepath.Join(absGitgoDir, "zvec_collections")
+		log.Printf("创建 Zvec 引擎, collection_path=%s, dimension=384", zvecCollPath)
+		faissIdx = index.NewZvecFaissWrapper(384, zvecCollPath, "")
+	} else {
+		// 使用原有 FAISS 引擎
+		faissOptions := map[string]interface{}{
+			"storage_path": absGitgoDir,
+			"server_url":   index.DefaultFaissServerURL,
+			"index_id":     projDir,
+		}
+		faissIdx = index.NewFaissWrapper(128, faissOptions) // 假设128维向量
 	}
-	idx := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapper(128, faissOptions)} // 假设128维向量
+	idx := &index.Indexer{DB: db, FaissIndex: faissIdx}
 	err = idx.SaveAnalysisToDBHttp(results, *projDir)
 	if err != nil {
 		log.Fatalf("保存分析结果到数据库失败: %v", err)

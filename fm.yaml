@@ -4,6 +4,16 @@ parser_code_line_limit: 200
 code_limit: 23000
 prompt_limit: 30000
 pip_path: "https://mirrors.aliyun.com/pypi/simple"
+
+# Zvec 向量引擎配置 (可选，使用 -engine zvec 启用)
+zvec_config:
+  engine: faiss              # zvec | faiss | memory (默认 faiss，保持向后兼容)
+  collection_dir: .gitgo/zvec_collections  # Zvec Collection 存储目录
+  dimension: 384             # 向量维度 (all-MiniLM-L6-v2 默认 384)
+  python_path: ""            # Python 路径，空则使用系统默认 python3
+  metric_type: cosine        # 相似度度量: cosine | l2 | ip
+  query_threads: 4           # 查询线程数
+  optimize_on_build: true    # 构建索引后自动优化
 api_base_url: "http://127.0.0.1:11434"
 completion_api: "/api/generate"
 embedding_api: "/api/embed"
@@ -19,14 +29,14 @@ embedding_model: "quentinz/bge-large-zh-v1.5:latest"
 embedding_max_batch: 30
 embedding_max_worker: 3
 embedding_cloud_model:
-  api: sk-xwabqpmisvjrproxhtbgitobryhfiakeuwzrguiryrbmfjzi
+  api: ""
   model: BAAI/bge-large-zh-v1.5
   url: https://api.siliconflow.cn/v1/
   enabled: true
   type: openai
   max_prompts: 30000
 default_cloud_model:
-  api: sk-xwabqpmisvjrproxhtbgitobryhfiakeuwzrguiryrbmfjzi
+  api: ""
   model: Qwen/Qwen2.5-Coder-7B-Instruct
   url: https://api.siliconflow.cn/v1/
   enabled: true
@@ -211,7 +221,7 @@ model_configs:
     size: "S"
     temperature: 0.1
     cloud_model:
-      api: sk-xwabqpmisvjrproxhtbgitobryhfiakeuwzrguiryrbmfjzi
+      api: ""
       model: Qwen/Qwen2.5-Coder-7B-Instruct
       url: https://api.siliconflow.cn/v1/
       enabled: true
@@ -231,7 +241,7 @@ model_configs:
     size: "M"
     temperature: 0.1
     cloud_model:
-      api: sk-xwabqpmisvjrproxhtbgitobryhfiakeuwzrguiryrbmfjzi
+      api: ""
       model: Qwen/Qwen2.5-Coder-7B-Instruct
       url: https://api.siliconflow.cn/v1/
       enabled: true
@@ -251,7 +261,7 @@ model_configs:
     size: "L"
     temperature: 0.1
     cloud_model:
-      api: sk-xwabqpmisvjrproxhtbgitobryhfiakeuwzrguiryrbmfjzi
+      api: ""
       model: Qwen/Qwen2.5-Coder-7B-Instruct
       url: https://api.siliconflow.cn/v1/
       enabled: true
@@ -271,7 +281,7 @@ model_configs:
     size: "XL"
     temperature: 0.1
     cloud_model:
-      api: sk-xwabqpmisvjrproxhtbgitobryhfiakeuwzrguiryrbmfjzi
+      api: ""
       model: Qwen/Qwen2.5-Coder-7B-Instruct
       url: https://api.siliconflow.cn/v1/
       enabled: true
@@ -291,7 +301,7 @@ model_configs:
     size: "XXL"
     temperature: 0.1
     cloud_model:
-      api: sk-xwabqpmisvjrproxhtbgitobryhfiakeuwzrguiryrbmfjzi
+      api: ""
       model: Qwen/Qwen2.5-Coder-7B-Instruct
       url: https://api.siliconflow.cn/v1/
       enabled: true

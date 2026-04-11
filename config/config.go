@@ -151,6 +151,19 @@ type Config struct {
 	ApiModel     string `mapstructure:"api_model" yaml:"api_model" json:"api_model,omitempty"`
 	AuthBaseUrl  string `mapstructure:"auth_base_url" yaml:"auth_base_url" json:"auth_base_url,omitempty"`
 	ApiUrlSimple string `mapstructure:"api_url_simple" yaml:"api_url_simple" json:"api_url_simple,omitempty"`
+	// Zvec 引擎配置
+	ZvecConfig ZvecConfig `mapstructure:"zvec_config" yaml:"zvec_config" json:"zvec_config,omitempty"`
+}
+
+// ZvecConfig Zvec 向量引擎配置
+type ZvecConfig struct {
+	Engine        string `mapstructure:"engine" yaml:"engine" json:"engine,omitempty"`                   // zvec | faiss | memory
+	CollectionDir string `mapstructure:"collection_dir" yaml:"collection_dir" json:"collection_dir,omitempty"` // 默认 .gitgo/zvec_collections
+	Dimension     int    `mapstructure:"dimension" yaml:"dimension" json:"dimension,omitempty"`           // 向量维度, 默认 384
+	PythonPath    string `mapstructure:"python_path" yaml:"python_path" json:"python_path,omitempty"`     // Python 路径, 默认 python3
+	MetricType    string `mapstructure:"metric_type" yaml:"metric_type" json:"metric_type,omitempty"`     // cosine | l2 | ip
+	QueryThreads  int    `mapstructure:"query_threads" yaml:"query_threads" json:"query_threads,omitempty"` // 查询线程数
+	OptimizeOnBuild bool `mapstructure:"optimize_on_build" yaml:"optimize_on_build" json:"optimize_on_build,omitempty"` // 构建后自动优化
 }
 
 // LoadConfig 加载配置（优先文件，其次环境变量），并保证仅加载一次
