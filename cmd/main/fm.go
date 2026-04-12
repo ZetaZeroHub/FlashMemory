@@ -220,7 +220,7 @@ func main() {
 			"server_url":   index.DefaultFaissServerURL,
 			"index_id":     projDir,
 		}
-		idx := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapper(128, faissOptions)}
+		idx := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapperByEngine(*engineType, 128, faissOptions)}
 
 		// 加载现有索引
 		err = idx.FaissIndex.LoadFromFile(faissIndexPath)
@@ -739,7 +739,7 @@ func main() {
 			"server_url":   index.DefaultFaissServerURL,
 			"index_id":     projDir,
 		}
-		faissIdx = index.NewFaissWrapper(128, faissOptions) // 假设128维向量
+		faissIdx = index.NewFaissWrapperByEngine(*engineType, 128, faissOptions) // 假设128维向量
 	}
 	idx := &index.Indexer{DB: db, FaissIndex: faissIdx}
 	err = idx.SaveAnalysisToDBHttp(results, *projDir)

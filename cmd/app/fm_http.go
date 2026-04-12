@@ -370,7 +370,7 @@ func searchHandler() echo.HandlerFunc {
 			"server_url":   index.DefaultFaissServerURL,
 			"index_id":     req.ProjectDir,
 		}
-		idx := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapper(128, faissOptions)}
+		idx := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapperByEngine(config.GetEngine(), 128, faissOptions)}
 
 		if _, err := os.Stat(faissIndexPath); os.IsNotExist(err) {
 			logs.Infof("正在初始化Faiss索引...")
@@ -470,7 +470,7 @@ func searchHandler() echo.HandlerFunc {
 			"server_url":   index.DefaultFaissServerURL,
 			"index_id":     fmt.Sprintf("%s_module", req.ProjectDir),
 		}
-		idxModule := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapper(128, faissModuleOptions)}
+		idxModule := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapperByEngine(config.GetEngine(), 128, faissModuleOptions)}
 
 		if _, err := os.Stat(faissModulePath); os.IsNotExist(err) {
 			logs.Infof("正在初始化模块描述向量...")
