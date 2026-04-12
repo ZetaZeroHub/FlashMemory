@@ -360,3 +360,11 @@ func MergeDefaultsIntoConfig(configPath string) (int, error) {
 
 	return added, nil
 }
+
+// GetEngine returns the configured vector engine (zvec, faiss, memory). Defaults to zvec.
+func GetEngine() string {
+	if GlobalOllamaConfig != nil && GlobalOllamaConfig.ZvecConfig.Engine != "" {
+		return GlobalOllamaConfig.ZvecConfig.Engine
+	}
+	return "zvec"
+}
