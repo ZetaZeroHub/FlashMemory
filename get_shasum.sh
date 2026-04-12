@@ -1,5 +1,5 @@
 #!/bin/bash
-VERSION=0.4.3
+VERSION=0.4.4
 file=tmp_download.tar.gz
 for OS_ARCH in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do
   URL="https://github.com/ZetaZeroHub/FlashMemory/releases/download/v${VERSION}/flashmemory_${VERSION}_${OS_ARCH}.tar.gz"

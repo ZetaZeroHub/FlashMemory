@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	Version = "0.4.3"
+	Version = "0.4.4"
 
 	// Global flags
 	langFlag   string
