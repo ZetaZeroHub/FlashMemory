@@ -2,7 +2,7 @@ import urllib.request
 import hashlib
 import sys
 
-version = "0.1.5"
+version = "0.4.2"
 platforms = ["darwin_amd64", "darwin_arm64", "linux_amd64", "linux_arm64"]
 
 for plat in platforms:

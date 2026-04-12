@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flashmemory"
-version = "0.4.1"
+version = "0.4.2"
 description = "FlashMemory - Cross-language code analysis and semantic search system"
 readme = "README.md"
 license = {text = "MIT"}
