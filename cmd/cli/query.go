@@ -62,6 +62,9 @@ func runQuery(queryStr string) error {
 	if langFlag != "" {
 		coreArgs = append(coreArgs, "-lang", langFlag)
 	}
+	if engineFlag != "" {
+		coreArgs = append(coreArgs, "-engine", engineFlag)
+	}
 
 	cmd := exec.Command(fmBin, coreArgs...)
 	cmd.Stdout = os.Stdout

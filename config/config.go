@@ -209,6 +209,12 @@ func LoadConfig() (*Config, error) {
 			loadConfigErr = fmt.Errorf("unmarshal config file error: %v", err)
 			return
 		}
+		
+		// If FM_ENGINE is set, it overrides the config parameter
+		if envEngine := os.Getenv("FM_ENGINE"); envEngine != "" {
+			cfg.ZvecConfig.Engine = envEngine
+		}
+		
 		GlobalOllamaConfig = &cfg
 	})
 

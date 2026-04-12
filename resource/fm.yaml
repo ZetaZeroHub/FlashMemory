@@ -17,7 +17,7 @@ api_base_url: http://127.0.0.1:11434
 lang: en
 # Zvec vector engine config (use -engine zvec to enable)
 zvec_config:
-    engine: faiss
+    engine: zvec
     collection_dir: .gitgo/zvec_collections
     dimension: 384
     python_path: ""

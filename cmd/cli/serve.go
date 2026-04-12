@@ -88,6 +88,9 @@ func runServeForeground(configPath string) error {
 
 	env := os.Environ()
 	env = append(env, fmt.Sprintf("FM_PORT=%s", servePort))
+	if engineFlag != "" {
+		env = append(env, fmt.Sprintf("FM_ENGINE=%s", engineFlag))
+	}
 	if faissDir := resolveFaissServiceDir(""); faissDir != "" {
 		env = append(env, fmt.Sprintf("FAISS_SERVICE_PATH=%s", faissDir))
 	}
@@ -121,6 +124,9 @@ func runServeDaemon(configPath string, pidFile string) error {
 
 	env := os.Environ()
 	env = append(env, fmt.Sprintf("FM_PORT=%s", servePort))
+	if engineFlag != "" {
+		env = append(env, fmt.Sprintf("FM_ENGINE=%s", engineFlag))
+	}
 	if faissDir := resolveFaissServiceDir(""); faissDir != "" {
 		env = append(env, fmt.Sprintf("FAISS_SERVICE_PATH=%s", faissDir))
 	}

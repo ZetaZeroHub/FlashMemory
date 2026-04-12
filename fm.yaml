@@ -7,7 +7,7 @@ pip_path: "https://mirrors.aliyun.com/pypi/simple"
 
 # Zvec 向量引擎配置 (可选，使用 -engine zvec 启用)
 zvec_config:
-  engine: faiss              # zvec | faiss | memory (默认 faiss，保持向后兼容)
+  engine: zvec              # zvec | faiss | memory
   collection_dir: .gitgo/zvec_collections  # Zvec Collection 存储目录
   dimension: 384             # 向量维度 (all-MiniLM-L6-v2 默认 384)
   python_path: ""            # Python 路径，空则使用系统默认 python3

@@ -59,7 +59,7 @@ func main() {
 	faissServicePath := flag.String("faiss_path", "", i18nFlag("指定 FAISSService 目录绝对路径", "Specify FAISSService absolute path"))
 	filePath := flag.String("file", "", i18nFlag("定量更新的文件或文件夹", "Specify file or dir for partial update"))
 	useFaiss := flag.Bool("use_faiss", false, i18nFlag("使用 Faiss 原生索引存储", "Use Faiss native index storage"))
-	engineType := flag.String("engine", "faiss", i18nFlag("向量引擎类型: faiss(默认), zvec(推荐)", "Vector engine type: faiss(default), zvec(recommended)"))
+	engineType := flag.String("engine", "zvec", i18nFlag("向量引擎类型: zvec(默认), faiss, memory", "Vector engine type: zvec(default), faiss, memory"))
 	flag.Parse()
 
 	// 判断是否使用 Zvec 引擎

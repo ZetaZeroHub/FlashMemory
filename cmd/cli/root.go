@@ -16,6 +16,7 @@ var (
 	// Global flags
 	langFlag   string
 	configFlag string
+	engineFlag string
 
 	// Home directory for FlashMemory
 	fmHome string
@@ -193,6 +194,7 @@ func Execute() {
 
 	rootCmd.PersistentFlags().StringVar(&langFlag, "lang", "", i18n("指定语言 (zh/en)", "Target language (zh/en)"))
 	rootCmd.PersistentFlags().StringVarP(&configFlag, "config", "c", "", i18n("配置文件路径", "Config file path"))
+	rootCmd.PersistentFlags().StringVar(&engineFlag, "engine", "", i18n("指定向量引擎 (zvec/faiss)", "Specify vector engine (zvec/faiss)"))
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
