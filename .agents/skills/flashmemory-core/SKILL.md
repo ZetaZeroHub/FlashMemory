@@ -1,13 +1,14 @@
 ---
 name: flashmemory-core
-description: >-
-  FlashMemory CLI — cross-language code analysis and semantic search system.
-  Use this skill when working with large codebases, needing to understand project
-  architecture, searching for implementations across files, or building semantic
-  indexes for code navigation. Covers init, index, query, serve, and config
-  workflows. Triggers on: code search, codebase analysis, semantic search,
-  code indexing, project architecture, flashmemory, fm cli, code navigation,
-  vector search, code understanding, large codebase, find implementation.
+description: >
+  FlashMemory CLI for cross-language code analysis and semantic search.
+  Use this skill when you need to understand project architecture, locate
+  implementations, or index large codebases using natural language queries.
+  Make sure to use this skill whenever the user asks about the codebase structure, finding code, or searching files.
+metadata:
+  version: 1.0.0
+  category: developer-tools
+  tags: [search, index, code-analysis, flashmemory]
 ---
 
 # FlashMemory Core — AI Agent Integration Guide
@@ -79,7 +80,7 @@ fm version       → Show version
 
 ---
 
-## Step-by-Step Usage
+## Instructions
 
 ### 1. Initialize FlashMemory
 

@@ -1,14 +1,14 @@
 ---
 name: flashmemory-query
-description: >-
-  FlashMemory semantic code search skill — find implementations, understand
-  architecture, and navigate large codebases using natural language queries
-  instead of grep. Use this skill when the user asks to find code, locate
-  implementations, understand how something works, or when you need to search
-  a codebase that is too large to read entirely. Triggers on: code search,
-  find implementation, where is, how does, semantic search, fm query,
-  search codebase, locate function, find usage, code navigation, grep
-  alternative, natural language search, hybrid search.
+description: >
+  Search the codebase using FlashMemory semantic queries to find implementations,
+  understand architecture, and navigate unfamiliar code without knowing exact filenames.
+  Use this skill whenever the user asks to find specific code, locate a function's implementation,
+  understand how something works, or when you need to research a codebase that is too large to read entirely.
+metadata:
+  version: 1.0.0
+  category: developer-tools
+  tags: [query, semantic-search, flashmemory]
 ---
 
 # FlashMemory Query — Semantic Code Search
@@ -82,7 +82,7 @@ fm query "config loading" --dir /path/to/project
 | `--engine <e>` | string | `zvec` | Vector engine to use |
 | `--lang <l>` | string | `en` | UI language |
 
-## Search Modes Explained
+## Instructions
 
 ### `semantic` (default)
 
@@ -128,7 +128,7 @@ gives the best results at the cost of slightly more compute.
 fm query "JWT validation middleware" --mode hybrid --limit 10
 ```
 
-## Agent Search Strategies
+## Examples
 
 ### Strategy 1: Broad-to-Narrow
 

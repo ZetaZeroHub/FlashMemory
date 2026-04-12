@@ -1,12 +1,14 @@
 ---
 name: flashmemory-index
-description: >-
-  FlashMemory code indexing skill — build and maintain semantic vector indexes
-  for large codebases. Use this skill when you need to index a new project,
-  re-index after code changes, perform incremental file updates, or switch
-  between vector engine backends (Zvec, FAISS). Triggers on: code indexing,
-  build index, re-index, vector index, incremental update, full reindex,
-  flashmemory index, fm index, zvec, faiss, embedding, vectorize code.
+description: >
+  Build and maintain semantic vector indexes for large codebases using FlashMemory.
+  Use this skill whenever you need to index a new project, re-index after making code changes,
+  perform incremental file updates, or switch between vector engine backends. Make sure
+  to use this whenever you modify code or pull new changes so the semantic search index stays up-to-date.
+metadata:
+  version: 1.0.0
+  category: developer-tools
+  tags: [index, vectorization, flashmemory]
 ---
 
 # FlashMemory Index — Code Vectorization & Index Management
@@ -91,7 +93,18 @@ fm index . --commit abc1234
 | `--lang <l>` | string | `en` | UI language |
 | `-c, --config <p>` | string | `~/.flashmemory/config.yaml` | Config file |
 
-## Practical Scenarios
+## Instructions
+
+### Step 1: Initialize FlashMemory
+Ensure FlashMemory is initialized in the environment:
+`fm init`
+
+### Step 2: Index the Codebase
+Build or update the semantic vector index. Use `--file` for surgical updates:
+`fm index .` (for full)
+`fm index . --file <path>` (for incremental update)
+
+## Examples
 
 ### Scenario 1: First-Time Project Setup
 
