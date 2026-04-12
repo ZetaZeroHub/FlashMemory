@@ -11,28 +11,28 @@
 class Flashmemory < Formula
   desc "Cross-language code analysis and semantic search system"
   homepage "https://github.com/ZetaZeroHub/FlashMemory"
-  version "0.4.2"
+  version "0.4.3"
   license "MIT"
 
   on_macos do
     on_intel do
       url "https://github.com/ZetaZeroHub/FlashMemory/releases/download/v#{version}/flashmemory_#{version}_darwin_amd64.tar.gz"
-      sha256 "cd02ece131160d94db1aae7dd1a576e9e6137a2d9cdeeef7faa75ea9326f42f1"
+      sha256 "b8c070a272bb5238f04be02866a82eca50b4d52fca3668a055c6540c550ebdd6"
     end
     on_arm do
       url "https://github.com/ZetaZeroHub/FlashMemory/releases/download/v#{version}/flashmemory_#{version}_darwin_arm64.tar.gz"
-      sha256 "b350e4b3fe323f51b99625d6205e54121b4cbe723701100a37072983526ddf57"
+      sha256 "df72969af8d3f59c86e20ca1dd1b6d6a8ec3a292c6b3c83d893fa20bea906ba1"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/ZetaZeroHub/FlashMemory/releases/download/v#{version}/flashmemory_#{version}_linux_amd64.tar.gz"
-      sha256 "6fe35f2f5f23f9a8aa1874731d71a21d82ec8e3030e5aa22eafef5134a7d53db"
+      sha256 "191eafe07a6cc19d875e9b1bfadb0b69b9450ac9cae719b7550dc24ed7fa5efc"
     end
     on_arm do
       url "https://github.com/ZetaZeroHub/FlashMemory/releases/download/v#{version}/flashmemory_#{version}_linux_arm64.tar.gz"
-      sha256 "7b87fd8c10ff1826951666dc381c0f4a3e61bbd275f51965b0aa2b35c0fd9679"
+      sha256 "c767c25b4a3c8748ee04feb81a01ed5e856d3fd66dd9a50a09218abf799511a4"
     end
   end
 
