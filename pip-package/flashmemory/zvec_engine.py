@@ -138,7 +138,6 @@ class ZvecEngine:
                     zvec.VectorSchema(
                         name="sparse_embedding",
                         data_type=zvec.DataType.SPARSE_VECTOR_FP32,
-                        index_param=zvec.SparseIndexParam(),
                     ),
                 ],
             )
