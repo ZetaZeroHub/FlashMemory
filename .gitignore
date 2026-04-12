@@ -40,6 +40,11 @@ flashmemory.gitgo.tar.gz
 
 # --- AI tools ---
 .agents/
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/flashmemory-core/
+!.agents/skills/flashmemory-index/
+!.agents/skills/flashmemory-query/
 .claude/
 .trae/
 .githave/
