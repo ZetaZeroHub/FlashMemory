@@ -198,6 +198,14 @@ The function collection schema includes:
 | `func_type` | STRING | InvertIndex | Scalar filtering |
 | `description` | STRING | — | Metadata |
 
+### 3.5 Production-ready Robustness & Optimizations
+
+Recent updates have stabilized the Zvec Hybrid search experience for scale:
+1. **Precise Token Chunking**: Fully resolved API Limit (413) exceptions during semantic embedding. Long inputs (e.g. huge `code_desc`) are accurately divided via a conservative 1:1 rune length estimator, guaranteeing safe batch ingestion sizes to Cloud Models.
+2. **Dynamic Metadata Injection**: When the Go core dispatches vectors to the Python Zvec Database, it injects function names, descriptions, and file paths. This guarantees that `BM25EmbeddingFunction` accurately processes textual contexts into Sparse Vectors.
+3. **Resilient Bridge Timeouts**: When querying or inserting vectors for the first time, language tokenizers (like Jieba's DAG dictionary builder) can temporarily bottleneck the CPU for over 15 seconds. The Go Bridge TTL was optimized to 600s, preventing accidental timeout assertions while keeping the background `faiss` subprocess healthy.
+4. **Instant `-query_only` Reads**: Fixed an issue where running ad-hoc queries re-triggered large database batches. Zvec now dynamically captures disk dimensions and bypasses vector rebuilding completely, letting developers experience millisecond hybrid searches straight from the terminal.
+
 ---
 
 ## 4. Embedding Provider (Phase 3)

@@ -110,7 +110,7 @@ func (se *SearchEngine) Query(query string, opts SearchOptions) ([]SearchResult,
 	fmt.Println("Search Results:")
 	for _, res := range results {
 		fmt.Printf("- %s (Package: %s, File: %s) Score: %.3f\n", res.Name, res.Package, res.File, res.Score)
-		fmt.Printf("  Description: %s\n", res.Description)
+		fmt.Printf("  Description: %s...\n", res.Description[:min(len(res.Description), 200)])
 		if opts.IncludeCode && res.CodeSnippet != "" {
 			fmt.Printf(" Has Code Snippet.\n")
 		}
@@ -119,22 +119,35 @@ func (se *SearchEngine) Query(query string, opts SearchOptions) ([]SearchResult,
 }
 
 // semanticSearch performs vector similarity search using embeddings.
+// When the underlying engine is ZvecWrapper, it automatically uses hybrid search
+// with BM25 sparse vector generation from query text for improved ranking.
 func semanticSearch(se *SearchEngine, query string, opts SearchOptions) ([]SearchResult, error) {
 	var vector []float32
+	var queryText string // Original query text for BM25 sparse generation
 	if opts.SearchMode != "semantic" {
 		se.Keywords = append(se.Keywords, query)
 		logs.Infof("semanticSearch mixed semantic search: %s", se.Keywords)
-		// 使用 Ollama 的 embedding 计算查询向量
-		vector = SimpleEmbedding(strings.Join(se.Keywords, " "), se.Indexer.FaissIndex.Dimension())
+		queryText = strings.Join(se.Keywords, " ")
+		vector = SimpleEmbedding(queryText, se.Indexer.FaissIndex.Dimension())
 	} else {
 		logs.Infof("semanticSearch semantic search: %s", query)
-		// 使用 Ollama 的 embedding 计算查询向量
+		queryText = query
 		vector = SimpleEmbedding(query, se.Indexer.FaissIndex.Dimension())
 	}
-	// 使用 Faiss 搜索向量
-	funcIDs := se.Indexer.FaissIndex.SearchVectors(vector, opts.Limit)
+
+	// Search using vector index - prefer hybrid search with ZvecWrapper
+	var funcIDs []int
+	if zvecW, ok := se.Indexer.FaissIndex.(*index.ZvecWrapper); ok && !se.Module {
+		// ZvecWrapper: use hybrid search with auto BM25 sparse generation from query text
+		logs.Infof("Using ZvecWrapper hybrid search with query_text for auto BM25 sparse")
+		funcIDs = zvecW.HybridSearchVectors(vector, nil, opts.Limit, "", queryText, false)
+	} else if se.Module {
+		funcIDs = se.Indexer.FaissIndex.SearchModuleVectors(vector, opts.Limit)
+	} else {
+		funcIDs = se.Indexer.FaissIndex.SearchVectors(vector, opts.Limit)
+	}
 	if len(funcIDs) == 0 {
-		return nil, nil // 没有结果
+		return nil, nil // No results
 	}
 
 	results := make([]SearchResult, 0, len(funcIDs))
@@ -150,9 +163,9 @@ func semanticSearch(se *SearchEngine, query string, opts SearchOptions) ([]Searc
 			logs.Warnf("fetch function from db error: %v", err)
 			continue
 		}
-		// 获取语义相似得分
+		// Get semantic similarity score
 		res.Score = se.Indexer.FaissIndex.GetScore(id)
-		// 过滤得分过低的结果
+		// Filter out low-score results
 		if res.Score >= opts.MinScore {
 			results = append(results, res)
 		}
@@ -363,7 +376,7 @@ func SimpleEmbedding(query string, dim int) []float32 {
 		log.Printf("embedding error: %v, falling back to dummy embedding", err)
 		return dummyEmbedding(query, dim)
 	}
-	logs.Infof("Ollama embedding success:dim=%d", dim)
+	logs.Infof("embedding success: dim=%d", dim)
 	return embedding[0]
 }
 
@@ -373,7 +386,7 @@ func SimpleEmbeddingBatch(query []string, dim int) ([][]float32, error) {
 		log.Printf("batch embedding error: %v", err)
 		return nil, err
 	}
-	logs.Infof("batch Ollama embedding success:len=%v, dim=%d", len(embedding), dim)
+	logs.Infof("batch embedding success: len=%v, dim=%d", len(embedding), dim)
 	return embedding, nil
 }
 

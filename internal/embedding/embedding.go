@@ -12,8 +12,9 @@ import (
 
 // 简单估算文本的 token 数量
 func estimateTokens(text string) int {
-	// 简单估算，中英文混合每2字符约等于1 token，实际部署可用更准的分词器
-	return len([]rune(text)) / 2
+	// 对于 BGE 等多语言/中文优化的词表，1个中文字符或标点基本就是 1 个 token。
+	// 这里采用保守的 1:1 估算（rune 数），避免因为除以 2 导致超长的中文代码被漏判而引发 413 错误。
+	return len([]rune(text))
 }
 
 // 按 token 数切分文本
@@ -76,6 +77,9 @@ func EnsureEmbeddingsBatch(idx *index.Indexer) error {
 	type batch struct {
 		ids   []int
 		texts []string
+		names []string
+		descs []string
+		paths []string
 	}
 	var batches []batch
 	for i := 0; i < len(records); i += batchSize {
@@ -88,6 +92,9 @@ func EnsureEmbeddingsBatch(idx *index.Indexer) error {
 			b.ids = append(b.ids, r.id)
 			text := fmt.Sprintf("name: %s\npacakge: %s\nfile path: %s\n%s", r.name, r.pkg, r.file, r.desc)
 			b.texts = append(b.texts, text)
+			b.names = append(b.names, r.name)
+			b.descs = append(b.descs, r.desc)
+			b.paths = append(b.paths, r.file)
 		}
 		batches = append(batches, b)
 	}
@@ -171,8 +178,29 @@ func EnsureEmbeddingsBatch(idx *index.Indexer) error {
 					for i := range avg {
 						avg[i] /= float32(len(vecs))
 					}
-					if e := idx.FaissIndex.AddVector(id, avg); e != nil {
-						logs.Errorf("Failed to add vector for function %d: %v", id, e)
+					// 尝试向 Zvec 注入元数据以便建立 BM25 稀疏索引
+					if zvecApp, ok := idx.FaissIndex.(*index.ZvecWrapper); ok {
+						var fname, fdesc, fpath string
+						for idxInBatch, batchId := range b.ids {
+							if batchId == id {
+								fname = b.names[idxInBatch]
+								fdesc = b.descs[idxInBatch]
+								fpath = b.paths[idxInBatch]
+								break
+							}
+						}
+						e := zvecApp.AddFunctionVector(id, avg, map[string]interface{}{
+							"func_name":   fname,
+							"description": fdesc,
+							"file_path":   fpath,
+						})
+						if e != nil {
+							logs.Errorf("Failed to add Zvec function vector %d: %v", id, e)
+						}
+					} else {
+						if e := idx.FaissIndex.AddVector(id, avg); e != nil {
+							logs.Errorf("Failed to add vector for function %d: %v", id, e)
+						}
 					}
 				}
 				wg.Done()
@@ -229,6 +257,9 @@ func EnsureCodeDescEmbeddingsBatch(idx *index.Indexer) error {
 	type batch struct {
 		ids   []int
 		texts []string
+		names []string
+		descs []string
+		paths []string
 	}
 	var batches []batch
 	for i := 0; i < len(records); i += batchSize {
@@ -241,6 +272,9 @@ func EnsureCodeDescEmbeddingsBatch(idx *index.Indexer) error {
 			b.ids = append(b.ids, r.id)
 			text := fmt.Sprintf("name: %s\npath: %s\ndescription: %s", r.name, r.path, r.description)
 			b.texts = append(b.texts, text)
+			b.names = append(b.names, r.name)
+			b.descs = append(b.descs, r.description)
+			b.paths = append(b.paths, r.path)
 		}
 		batches = append(batches, b)
 	}
@@ -310,8 +344,15 @@ func EnsureCodeDescEmbeddingsBatch(idx *index.Indexer) error {
 					for i := range avg {
 						avg[i] /= float32(len(vecs))
 					}
-					if e := idx.FaissIndex.AddVector(id, avg); e != nil {
-						logs.Errorf("Failed to add vector for code_desc %d: %v", id, e)
+					if zvecApp, ok := idx.FaissIndex.(*index.ZvecWrapper); ok {
+						e := zvecApp.AddModuleVector(id, avg)
+						if e != nil {
+							logs.Errorf("Failed to add Zvec module vector %d: %v", id, e)
+						}
+					} else {
+						if e := idx.FaissIndex.AddVector(id, avg); e != nil {
+							logs.Errorf("Failed to add vector for code_desc %d: %v", id, e)
+						}
 					}
 				}
 				wg.Done()

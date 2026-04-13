@@ -155,7 +155,7 @@ class TestSearchPipeline(unittest.TestCase):
         mock_doc2.fields = {"func_name": "DownloadFile", "language": "go"}
 
         self.engine.search_functions.return_value = [mock_doc1, mock_doc2]
-        self.engine.hybrid_search_functions.return_value = [mock_doc1, mock_doc2]
+        self.engine.hybrid_search.return_value = [mock_doc1, mock_doc2]
         self.engine.search_modules.return_value = [mock_doc1]
 
     def test_basic_search(self):
@@ -267,7 +267,7 @@ class TestSearchPipelineWithSparse(unittest.TestCase):
         mock_doc.id = "func_1"
         mock_doc.score = 0.92
         mock_doc.fields = {"func_name": "test"}
-        self.engine.hybrid_search_functions.return_value = [mock_doc]
+        self.engine.hybrid_search.return_value = [mock_doc]
 
     def test_hybrid_search_called(self):
         """When sparse is available, hybrid search should be used."""
@@ -275,8 +275,8 @@ class TestSearchPipelineWithSparse(unittest.TestCase):
         pipeline = SearchPipeline(self.engine, self.provider)
 
         results = pipeline.search("test query", top_k=5)
-        # Should use hybrid_search_functions (not search_functions)
-        self.engine.hybrid_search_functions.assert_called()
+        # Should use hybrid_search (not search_functions)
+        self.engine.hybrid_search.assert_called()
         self.engine.search_functions.assert_not_called()
         self.assertEqual(len(results), 1)
 

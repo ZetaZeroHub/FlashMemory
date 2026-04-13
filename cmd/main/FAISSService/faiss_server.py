@@ -55,6 +55,76 @@ STATS = {
 # 线程锁，用于保护关键操作
 index_lock = threading.RLock()
 
+
+def get_or_create_index(index_id, dimension=None, use_inner_product=True):
+    """
+    获取或自动创建指定 index_id 的索引。
+    1. 先查内存
+    2. 再尝试从磁盘加载（saved_indices目录下）
+    3. 若都没有，则新建
+    返回: (index_data, is_new)
+    """
+    with index_lock:
+        # 1. 先查内存
+        if index_id in indices:
+            return indices[index_id], False
+
+        # 2. 查磁盘
+        import glob
+        save_dir = CONFIG['DEFAULT_SAVE_DIR']
+        pattern = os.path.join(save_dir, f"{index_id}*.index")
+        files = glob.glob(pattern)
+        if files:
+            # 取最新的一个
+            files.sort(key=os.path.getmtime, reverse=True)
+            index_path = files[0]
+            meta_path = index_path + '.meta'
+            try:
+                index = faiss.read_index(index_path)
+                if os.path.exists(meta_path):
+                    with open(meta_path, 'r') as f:
+                        metadata = json.load(f)
+                        dim = metadata.get('dimension', dimension or 768)
+                        metric_type = metadata.get('metric_type', 1 if use_inner_product else 0)
+                        id_map = {int(k): v for k, v in metadata.get('id_map', {}).items()}
+                else:
+                    dim = index.d
+                    metric_type = 1 if use_inner_product else 0
+                    id_map = {}
+                indices[index_id] = {
+                    'index': index,
+                    'dimension': dim,
+                    'metric_type': metric_type,
+                    'scores': {},
+                    'id_map': id_map
+                }
+                logger.info(f"自动从磁盘加载索引 {index_id} 成功: {index_path}")
+                return indices[index_id], False
+            except Exception as e:
+                logger.error(f"自动加载索引 {index_id} 失败: {e}")
+                # 继续尝试新建
+
+        # 3. 新建
+        dim = dimension or 768
+        metric_type = 1 if use_inner_product else 0
+        try:
+            if metric_type == 1:
+                index = faiss.IndexFlatIP(dim)
+            else:
+                index = faiss.IndexFlatL2(dim)
+            indices[index_id] = {
+                'index': index,
+                'dimension': dim,
+                'metric_type': metric_type,
+                'scores': {},
+                'id_map': {}
+            }
+            logger.info(f"自动新建索引 {index_id}, dimension={dim}, metric_type={metric_type}")
+            return indices[index_id], True
+        except Exception as e:
+            logger.error(f"自动新建索引 {index_id} 失败: {e}")
+            raise
+
 @app.route('/create_index', methods=['POST'])
 def create_index():
     """创建一个新的Faiss索引"""
@@ -99,9 +169,14 @@ def add_vector():
     func_id = data.get('func_id')
     vector = data.get('vector')
     
-    if index_id not in indices:
-        return jsonify({'status': 'error', 'message': f'Index {index_id} not found'}), 404
-    
+    # 自动确保index存在（自动加载/新建）
+    dimension = data.get('dimension', 768)
+    use_inner_product = data.get('use_inner_product', True)
+    try:
+        index_data, _ = get_or_create_index(index_id, dimension=dimension, use_inner_product=use_inner_product)
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Failed to get/create index: {e}'}), 500
+
     if func_id is None or vector is None:
         return jsonify({'status': 'error', 'message': 'Missing func_id or vector'}), 400
     
@@ -189,9 +264,14 @@ def add_vectors_batch():
     func_ids = data.get('func_ids', [])
     vectors = data.get('vectors', [])
     
-    if index_id not in indices:
-        return jsonify({'status': 'error', 'message': f'Index {index_id} not found'}), 404
-    
+    # 自动确保index存在（自动加载/新建）
+    dimension = data.get('dimension', 768)
+    use_inner_product = data.get('use_inner_product', True)
+    try:
+        index_data, _ = get_or_create_index(index_id, dimension=dimension, use_inner_product=use_inner_product)
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Failed to get/create index: {e}'}), 500
+
     if not func_ids or not vectors:
         return jsonify({'status': 'error', 'message': 'Missing func_ids or vectors'}), 400
     

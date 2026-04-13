@@ -3,7 +3,7 @@ Phase 2 单元测试
 
 测试混合搜索相关功能：
 - Sparse 向量 Schema
-- hybrid_search_functions 方法
+- hybrid_search 方法
 - 带 sparse embedding 的 upsert
 - Bridge hybrid_search action
 """
@@ -100,7 +100,7 @@ class MockZvecModule:
 # ============================================================
 
 class TestHybridSearchFunctions(unittest.TestCase):
-    """Test hybrid_search_functions method"""
+    """Test hybrid_search method"""
 
     def setUp(self):
         sys.modules["zvec"] = MockZvecModule()
@@ -122,7 +122,7 @@ class TestHybridSearchFunctions(unittest.TestCase):
         mock_doc.fields = {"func_name": "test"}
         self.engine.func_collection.query.return_value = [mock_doc]
 
-        results = self.engine.hybrid_search_functions(
+        results = self.engine.hybrid_search(
             dense_vector=[0.1] * 384,
             sparse_vector=None,
             top_k=5,
@@ -140,7 +140,7 @@ class TestHybridSearchFunctions(unittest.TestCase):
         self.engine.init_func_collection()
         self.engine.func_collection.query.return_value = []
 
-        results = self.engine.hybrid_search_functions(
+        results = self.engine.hybrid_search(
             dense_vector=[0.1] * 384,
             sparse_vector={"hello": 0.5, "world": 0.3},
             top_k=10,
@@ -157,7 +157,7 @@ class TestHybridSearchFunctions(unittest.TestCase):
         self.engine.init_func_collection()
         self.engine.func_collection.query.return_value = []
 
-        self.engine.hybrid_search_functions(
+        self.engine.hybrid_search(
             dense_vector=[0.1] * 384,
             top_k=5,
             filter_expr='language = "go"',
@@ -173,7 +173,7 @@ class TestHybridSearchFunctions(unittest.TestCase):
         self.engine.init_func_collection()
         self.engine.func_collection.query.return_value = []
 
-        self.engine.hybrid_search_functions(
+        self.engine.hybrid_search(
             dense_vector=[0.1] * 384,
             sparse_vector={"test": 1.0},
             top_k=5,
@@ -187,7 +187,7 @@ class TestHybridSearchFunctions(unittest.TestCase):
     def test_hybrid_search_without_init(self):
         """Test hybrid search before init raises error"""
         with self.assertRaises(RuntimeError):
-            self.engine.hybrid_search_functions([0.1] * 384)
+            self.engine.hybrid_search([0.1] * 384)
 
 
 class TestSparseVectorUpsert(unittest.TestCase):
@@ -376,7 +376,7 @@ class TestBridgeHybridSearch(unittest.TestCase):
         mock_doc.id = "func_1"
         mock_doc.score = 0.88
         mock_doc.fields = {"func_name": "test"}
-        bridge.engine.hybrid_search_functions = MagicMock(return_value=[mock_doc])
+        bridge.engine.hybrid_search = MagicMock(return_value=[mock_doc])
 
         resp = self._send_and_capture(bridge, "hybrid_search", {
             "dense_query": [0.1] * 384,
@@ -403,7 +403,7 @@ class TestBridgeHybridSearch(unittest.TestCase):
         })
         sys.stdout = old_stdout
 
-        bridge.engine.hybrid_search_functions = MagicMock(return_value=[])
+        bridge.engine.hybrid_search = MagicMock(return_value=[])
 
         resp = self._send_and_capture(bridge, "hybrid_search", {
             "dense_query": [0.1] * 384,
@@ -430,7 +430,7 @@ class TestBridgeHybridSearch(unittest.TestCase):
         })
         sys.stdout = old_stdout
 
-        bridge.engine.hybrid_search_functions = MagicMock(return_value=[])
+        bridge.engine.hybrid_search = MagicMock(return_value=[])
 
         resp = self._send_and_capture(bridge, "hybrid_search", {
             "dense_query": [0.1] * 384,
@@ -440,7 +440,7 @@ class TestBridgeHybridSearch(unittest.TestCase):
 
         self.assertEqual(resp["status"], "success")
         # Verify filter was passed through
-        call_args = bridge.engine.hybrid_search_functions.call_args
+        call_args = bridge.engine.hybrid_search.call_args
         self.assertEqual(call_args.kwargs["filter_expr"], 'language = "go"')
 
 

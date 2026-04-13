@@ -221,15 +221,24 @@ class ZvecEngine:
             func_id: Unique identifier (e.g. "func_42")
             embedding: Dense vector list (length should equal self.dimension)
             metadata: Scalar field dict (func_name, package, file_path, etc.)
-            sparse_embedding: Optional sparse vector dict {token_id: weight}
+            sparse_embedding: Optional sparse vector dict {token_id: weight}.
+                If None, auto-generates from description using BM25.
         """
         if self.func_collection is None:
             raise RuntimeError("函数 Collection 未初始化，请先调用 init_func_collection()")
 
         zvec = self._ensure_zvec()
         vectors = {"dense_embedding": embedding}
-        if sparse_embedding:
-            vectors["sparse_embedding"] = sparse_embedding
+
+        # Auto-generate BM25 sparse from description if not provided
+        if not sparse_embedding:
+            desc_text = metadata.get("description", "")
+            func_name = metadata.get("func_name", "")
+            if desc_text or func_name:
+                sparse_text = f"{func_name} {desc_text}".strip()
+                sparse_embedding = self._generate_bm25_sparse(sparse_text, encoding_type="document")
+
+        vectors["sparse_embedding"] = sparse_embedding if sparse_embedding else {}
 
         doc = zvec.Doc(
             id=func_id,
@@ -256,9 +265,16 @@ class ZvecEngine:
             metadata = item[2]
             sparse_emb = item[3] if len(item) > 3 else None
 
+            # Auto-generate BM25 sparse from description if not provided
+            if not sparse_emb:
+                desc_text = metadata.get("description", "")
+                func_name = metadata.get("func_name", "")
+                if desc_text or func_name:
+                    sparse_text = f"{func_name} {desc_text}".strip()
+                    sparse_emb = self._generate_bm25_sparse(sparse_text, encoding_type="document")
+
             vectors = {"dense_embedding": embedding}
-            if sparse_emb:
-                vectors["sparse_embedding"] = sparse_emb
+            vectors["sparse_embedding"] = sparse_emb if sparse_emb else {}
 
             docs.append(zvec.Doc(
                 id=func_id,
@@ -267,7 +283,7 @@ class ZvecEngine:
             ))
 
         self.func_collection.upsert(docs=docs)
-        logger.info("Batch upserted %d functions", len(docs))
+        logger.info("Batch upserted %d functions (with BM25 sparse)", len(docs))
 
     def upsert_module(self, module_id: str, embedding: list, metadata: dict):
         """新增或更新模块向量和元数据"""
@@ -313,11 +329,17 @@ class ZvecEngine:
         logger.info("Function search returned %d results", len(results))
         return results
 
-    def hybrid_search_functions(self, dense_vector: list, sparse_vector: dict = None,
-                                top_k: int = 10, filter_expr: str = None,
-                                use_rrf: bool = True, rrf_topn: int = None):
-        """Hybrid search with Dense + Sparse multi-vector query and RRF fusion
-        
+    def hybrid_search(self, dense_vector: list, sparse_vector: dict = None,
+                      top_k: int = 10, filter_expr: str = None,
+                      use_rrf: bool = True, rrf_topn: int = None,
+                      collection_type: str = "functions",
+                      query_text: str = None,
+                      enable_reranker: bool = False,
+                      reranker_type: str = "rrf",
+                      weighted_params: list = None,
+                      recall_multiplier: int = 5):
+        """Hybrid search with Dense + Sparse multi-vector query and RRF/Weighted fusion
+
         Args:
             dense_vector: Dense query vector
             sparse_vector: Sparse query vector dict {token_id: weight}
@@ -325,14 +347,25 @@ class ZvecEngine:
             filter_expr: Optional scalar filter expression
             use_rrf: Whether to use RRF fusion (when both vectors provided)
             rrf_topn: Top-N for RRF reranker (defaults to top_k)
-        
+            collection_type: "functions" or "modules"
+            query_text: Original query text for auto BM25 sparse generation and reranker
+            enable_reranker: Whether to use DefaultLocalReRanker cross-encoder
+            reranker_type: "rrf" (default) or "weighted" for multi-vector fusion
+            weighted_params: Weights list for WeightedReRanker, e.g. [0.7, 0.3]
+            recall_multiplier: Multiplier for recall stage when reranker is enabled (default 5)
+
         Returns:
             list of Doc: Search results with fused scores
         """
-        if self.func_collection is None:
-            raise RuntimeError("函数 Collection 未初始化")
+        collection = self.module_collection if collection_type == "modules" else self.func_collection
+        if collection is None:
+            raise RuntimeError(f"{collection_type} Collection 未初始化")
 
         zvec = self._ensure_zvec()
+
+        # Auto-generate BM25 sparse vector from query_text if no sparse_vector provided
+        if sparse_vector is None and query_text and collection_type == "functions":
+            sparse_vector = self._generate_bm25_sparse(query_text, encoding_type="query")
 
         # Build multi-vector query
         query_vectors = [
@@ -342,31 +375,45 @@ class ZvecEngine:
             query_vectors.append(
                 zvec.VectorQuery("sparse_embedding", vector=sparse_vector),
             )
-            logger.info("Hybrid search: Dense + Sparse, RRF=%s", use_rrf)
+            logger.info("Hybrid search: Dense + Sparse, reranker_type=%s", reranker_type)
         else:
             logger.info("Hybrid search: Dense only (no sparse vector)")
 
+        # Determine actual recall count (expand for cross-encoder reranking)
+        actual_topk = top_k * recall_multiplier if enable_reranker else top_k
+
         query_params = {
             "vectors": query_vectors,
-            "topk": top_k,
+            "topk": actual_topk,
         }
 
-        # Apply RRF reranker when using multiple vectors
-        if use_rrf and len(query_vectors) > 1:
-            try:
-                from zvec.extension import RrfReRanker
-                reranker = RrfReRanker(topn=rrf_topn or top_k)
-                query_params["reranker"] = reranker
-                logger.info("RRF reranker enabled, topn=%d", rrf_topn or top_k)
-            except ImportError:
-                logger.warning("RrfReRanker not available, fallback to default fusion")
+        # Apply fusion reranker for multi-vector queries
+        if len(query_vectors) > 1:
+            fusion_reranker = self._create_fusion_reranker(
+                reranker_type=reranker_type,
+                topn=rrf_topn or actual_topk,
+                use_rrf=use_rrf,
+                weighted_params=weighted_params,
+            )
+            if fusion_reranker:
+                query_params["reranker"] = fusion_reranker
 
         if filter_expr:
             query_params["filter"] = filter_expr
             logger.info("Hybrid search with filter: %s", filter_expr)
 
-        results = self.func_collection.query(**query_params)
-        logger.info("Hybrid search returned %d results", len(results))
+        results = collection.query(**query_params)
+        logger.info("Hybrid search recall: %d candidates (actual_topk=%d)", len(results), actual_topk)
+
+        # Stage 2: Cross-encoder reranking (if enabled)
+        if enable_reranker and query_text and len(results) > top_k:
+            results = self._apply_cross_encoder_reranker(
+                query_text=query_text,
+                results=results,
+                top_k=top_k,
+                rerank_field="description",
+            )
+
         return results
 
     def search_modules(self, query_vector: list, top_k: int = 10,
@@ -388,6 +435,131 @@ class ZvecEngine:
         results = self.module_collection.query(**query_params)
         logger.info("模块搜索返回 %d 条结果", len(results))
         return results
+
+    # --- AI Extension helper methods ---
+
+    def _generate_bm25_sparse(self, text: str, encoding_type: str = "document") -> dict:
+        """Generate BM25 sparse vector using zvec built-in BM25EmbeddingFunction.
+
+        Auto-initializes BM25 on first call. Falls back to empty dict on failure.
+        Caches failure state to avoid retrying and spamming logs.
+
+        Args:
+            text: Text content to generate sparse embedding for
+            encoding_type: "document" for indexing, "query" for searching
+
+        Returns:
+            dict: Sparse vector {dimension_index: weight}
+        """
+        if not hasattr(self, '_bm25_cache'):
+            self._bm25_cache = {}
+
+        cache_key = f"bm25_{encoding_type}"
+
+        # Check if we already failed for this encoding_type (sentinel: None)
+        if cache_key in self._bm25_cache and self._bm25_cache[cache_key] is None:
+            return {}
+
+        if cache_key not in self._bm25_cache:
+            try:
+                from zvec.extension import BM25EmbeddingFunction
+                self._bm25_cache[cache_key] = BM25EmbeddingFunction(
+                    language="zh", encoding_type=encoding_type,
+                )
+                logger.info("BM25 embedding initialized: encoding_type=%s", encoding_type)
+            except Exception as e:
+                # Cache failure state (sentinel=None) to avoid retrying on every call
+                self._bm25_cache[cache_key] = None
+                logger.warning(
+                    "BM25 sparse vectors disabled: %s: %s. "
+                    "Install missing deps: pip install dashtext jieba rank_bm25",
+                    type(e).__name__, e,
+                )
+                return {}
+
+        try:
+            sparse = self._bm25_cache[cache_key].embed(text)
+            logger.debug("BM25 sparse generated: %d non-zero dims", len(sparse) if sparse else 0)
+            return sparse or {}
+        except Exception as e:
+            logger.warning("BM25 embed failed: %s", e)
+            return {}
+
+    def _create_fusion_reranker(self, reranker_type: str = "rrf", topn: int = 10,
+                                use_rrf: bool = True, weighted_params: list = None):
+        """Create a fusion reranker for multi-vector queries.
+
+        Args:
+            reranker_type: "rrf" or "weighted"
+            topn: Top-N results for the reranker
+            use_rrf: Legacy flag, True means use RRF
+            weighted_params: Weight list for WeightedReRanker, e.g. [0.7, 0.3]
+
+        Returns:
+            Reranker instance or None if not available
+        """
+        try:
+            if reranker_type == "weighted" and weighted_params:
+                from zvec.extension import WeightedReRanker
+                reranker = WeightedReRanker(weights=weighted_params, topn=topn)
+                logger.info("WeightedReRanker enabled: weights=%s, topn=%d", weighted_params, topn)
+                return reranker
+            elif use_rrf or reranker_type == "rrf":
+                from zvec.extension import RrfReRanker
+                reranker = RrfReRanker(topn=topn)
+                logger.info("RRF reranker enabled, topn=%d", topn)
+                return reranker
+        except ImportError as e:
+            logger.warning("Fusion reranker not available: %s, fallback to default", e)
+        except Exception as e:
+            logger.warning("Fusion reranker creation failed: %s", e)
+        return None
+
+    def _apply_cross_encoder_reranker(self, query_text: str, results: list,
+                                       top_k: int, rerank_field: str = "description"):
+        """Apply DefaultLocalReRanker cross-encoder for precise re-ranking.
+
+        Stage 2 of two-stage retrieval. Uses cross-encoder model to compute
+        pairwise relevance between query and each candidate.
+
+        Args:
+            query_text: Original search query text
+            results: Candidate results from Stage 1 (recall)
+            top_k: Number of final results to return
+            rerank_field: Field in doc.fields to use for reranking
+
+        Returns:
+            list: Re-ranked and truncated results
+        """
+        try:
+            from zvec.extension import DefaultLocalReRanker
+
+            reranker = DefaultLocalReRanker(
+                query=query_text,
+                topn=top_k,
+                rerank_field=rerank_field,
+            )
+
+            # DefaultLocalReRanker expects {vector_name: [Doc, ...]} format
+            # Wrap all results under a single key
+            from zvec import Doc
+            doc_groups = {"recall": []}
+            for doc in results:
+                doc_groups["recall"].append(doc)
+
+            reranked = reranker.rerank(doc_groups)
+            logger.info(
+                "Cross-encoder reranker: %d candidates → %d results",
+                len(results), len(reranked),
+            )
+            return reranked[:top_k]
+
+        except ImportError:
+            logger.warning("DefaultLocalReRanker not available, skipping cross-encoder reranking")
+            return results[:top_k]
+        except Exception as e:
+            logger.error("Cross-encoder reranking failed: %s, returning recall results", e)
+            return results[:top_k]
 
     def delete_by_file(self, file_path: str):
         """按文件路径删除函数向量（用于增量更新）"""
@@ -426,12 +598,18 @@ class ZvecEngine:
         return stats
 
     def close(self):
-        """关闭所有 Collection"""
+        """Close all collections and flush pending data"""
         if self.func_collection:
-            self.func_collection.close()
+            try:
+                self.func_collection.flush()
+            except Exception as e:
+                logger.warning("Failed to flush func_collection: %s", e)
             self.func_collection = None
-            logger.info("函数 Collection 已关闭")
+            logger.info("Function collection closed")
         if self.module_collection:
-            self.module_collection.close()
+            try:
+                self.module_collection.flush()
+            except Exception as e:
+                logger.warning("Failed to flush module_collection: %s", e)
             self.module_collection = None
-            logger.info("模块 Collection 已关闭")
+            logger.info("Module collection closed")

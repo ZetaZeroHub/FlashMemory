@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flashmemory"
-version = "0.4.4"
+version = "0.4.5"
 description = "FlashMemory - Cross-language code analysis and semantic search system"
 readme = "README.md"
 license = {text = "MIT"}
@@ -37,10 +37,16 @@ dependencies = [
 zvec = [
     "zvec>=0.1.1",
     "sentence-transformers>=2.0.0",
+    "rank_bm25>=0.2.2",
+    "jieba>=0.42.1",
+    "dashtext",
 ]
 embedding = [
     "zvec>=0.1.1",
     "sentence-transformers>=2.0.0",
+    "rank_bm25>=0.2.2",
+    "jieba>=0.42.1",
+    "dashtext",
 ]
 cloud = [
     "openai",
@@ -49,9 +55,11 @@ cloud = [
 full = [
     "zvec>=0.1.1",
     "sentence-transformers>=2.0.0",
+    "rank_bm25>=0.2.2",
+    "jieba>=0.42.1",
+    "dashtext",
     "openai",
     "dashscope",
-    "dashtext",
 ]
 
 [project.urls]

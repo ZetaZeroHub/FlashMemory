@@ -147,6 +147,9 @@ class SearchPipeline:
         else:
             raw_results = self._recall_functions(
                 dense_vec, sparse_vec, recall_count, filter_expr, use_rrf,
+                query_text=query,
+                enable_reranker=should_rerank,
+                final_top_k=top_k,
             )
 
         logger.info("Stage 1 (Recall): %d candidates retrieved", len(raw_results))
@@ -154,10 +157,12 @@ class SearchPipeline:
         if not raw_results:
             return []
 
-        # ---- Stage 2: Rerank (optional) ----
+        # ---- Stage 2: Rerank ----
+        # If engine-level reranker was used (via hybrid_search), results are already reranked
         if should_rerank and self._reranker and len(raw_results) > top_k:
+            # Fallback: pipeline-level reranking if engine didn't handle it
             results = self._rerank(query, raw_results, top_k)
-            logger.info("Stage 2 (Rerank): %d results after reranking", len(results))
+            logger.info("Stage 2 (Rerank): %d results after pipeline reranking", len(results))
         else:
             results = raw_results[:top_k]
 
@@ -170,16 +175,36 @@ class SearchPipeline:
         recall_count: int,
         filter_expr: str,
         use_rrf: bool,
+        query_text: str = None,
+        enable_reranker: bool = False,
+        final_top_k: int = None,
     ) -> List[SearchResult]:
-        """Stage 1: Function-level recall using hybrid search."""
+        """Stage 1: Function-level recall using hybrid search.
+
+        When query_text is provided, the engine can auto-generate BM25 sparse vectors
+        and optionally apply cross-encoder reranking.
+        """
         if sparse_vec and self.emb.has_sparse:
             # Hybrid search: Dense + Sparse + RRF
-            raw_docs = self.engine.hybrid_search_functions(
+            raw_docs = self.engine.hybrid_search(
                 dense_vector=dense_vec,
                 sparse_vector=sparse_vec,
-                top_k=recall_count,
+                top_k=final_top_k or recall_count,
                 filter_expr=filter_expr,
                 use_rrf=use_rrf,
+                query_text=query_text,
+                enable_reranker=enable_reranker,
+            )
+        elif query_text:
+            # Dense + auto BM25 sparse from query_text
+            raw_docs = self.engine.hybrid_search(
+                dense_vector=dense_vec,
+                sparse_vector=None,  # Engine auto-generates from query_text
+                top_k=final_top_k or recall_count,
+                filter_expr=filter_expr,
+                use_rrf=use_rrf,
+                query_text=query_text,
+                enable_reranker=enable_reranker,
             )
         else:
             # Dense-only search

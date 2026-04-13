@@ -182,7 +182,7 @@ func CheckPythonEnvironment(faissType, faissServiceDir string) error {
 		log.Println("pip upgrade successful")
 	}
 
-	// 需要安装的基础库和Faiss库
+	// 需要安装的基础库和Faiss库 (这些库仅针对原生 FAISSService 启动器)
 	requiredLibs := []string{"flask", "numpy", "flask_cors", "psutil", "apscheduler"}
 
 	// 根据Python版本选择合适的faiss-cpu版本
@@ -296,10 +296,12 @@ func GetSourceFileDir() (string, error) {
 
 // 包名别名映射表，用于处理包名大小写和连字符差异
 var packageAliases = map[string][]string{
-	"flask_cors":  {"flask-cors", "Flask-Cors"},
-	"apscheduler": {"APScheduler"},
-	"faiss-cpu":   {"faiss"},
-	"faiss-gpu":   {"faiss"},
+	"flask_cors":            {"flask-cors", "Flask-Cors"},
+	"apscheduler":           {"APScheduler"},
+	"faiss-cpu":             {"faiss"},
+	"faiss-gpu":             {"faiss"},
+	"rank_bm25":             {"rank-bm25"},
+	"sentence_transformers": {"sentence-transformers"},
 }
 
 // isPackageInstalled 使用pip show命令精确检查包是否已安装

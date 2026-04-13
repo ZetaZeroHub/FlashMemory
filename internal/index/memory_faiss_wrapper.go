@@ -88,6 +88,20 @@ func (fw *MemoryFaissWrapper) AddVectorsBatch(funcIDs []int, vectors []float32) 
 
 // SearchVectors 查找与查询向量最接近的topK个向量
 func (fw *MemoryFaissWrapper) SearchVectors(query []float32, topK int) []int {
+	return fw.searchVectorsInternal(query, topK)
+}
+
+// AddModuleVector 为模块ID添加嵌入向量 (复用 AddVector)
+func (fw *MemoryFaissWrapper) AddModuleVector(modID int, vector []float32) error {
+	return fw.AddVector(modID, vector)
+}
+
+// SearchModuleVectors 查找与查询向量最接近的topK个模块向量 (复用 searchVectorsInternal)
+func (fw *MemoryFaissWrapper) SearchModuleVectors(query []float32, topK int) []int {
+	return fw.searchVectorsInternal(query, topK)
+}
+
+func (fw *MemoryFaissWrapper) searchVectorsInternal(query []float32, topK int) []int {
 	// 生成查询向量的缓存键
 	queryKey := fmt.Sprintf("query_%d", len(query))
 

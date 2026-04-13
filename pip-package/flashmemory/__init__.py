@@ -17,7 +17,7 @@ SDK:
   - MCP tools: AI agent integration (get_mcp_tools, handle_mcp_tool_call)
 """
 
-__version__ = "0.4.4"
+__version__ = "0.4.5"
 
 __all__ = [
     "FlashMemoryClient",

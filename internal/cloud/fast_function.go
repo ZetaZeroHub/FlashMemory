@@ -394,8 +394,8 @@ func GetEmbeddings(ctx context.Context, req api.EmbedRequest, config *config.Clo
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
-	// 打印请求体（json友好可读）
-	logs.Infof("httpReq: %v", string(bodyBytes))
+	// 打印请求体字节数
+	logs.Infof("httpReq size: %d bytes", len(bodyBytes))
 	// 3. 发送请求
 	httpResp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {

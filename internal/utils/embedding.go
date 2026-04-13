@@ -60,7 +60,7 @@ func EmbeddingsListOnlyOllama(queries []string, dim int) ([][]float32, error) {
 	if err != nil {
 		return nil, err
 	}
-	logs.Infof("EmbeddingsList: %s, %v", url, string(jsonPayload))
+	logs.Infof("EmbeddingsList: %s, %d", url, len(jsonPayload))
 
 	req, err := http.NewRequest("POST", url, strings.NewReader(string(jsonPayload)))
 	if err != nil {
@@ -70,39 +70,48 @@ func EmbeddingsListOnlyOllama(queries []string, dim int) ([][]float32, error) {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		logs.Errorf("Warn: [httpClient]no config file found or parse error, fallback to env or default. Err: %v", err)
+		logs.Errorf("Ollama embedding HTTP request failed: %v", err)
 		return nil, common.NewLLMResponseError(err.Error())
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		logs.Errorf("Warn: [ReadAll]no config file found or parse error, fallback to env or default. Err: %v", err)
+		logs.Errorf("Ollama embedding response read failed: %v", err)
 		return nil, common.NewLLMResponseError(err.Error())
 	}
 
+	// Log response body size and status for debugging
+	logs.Infof("Ollama embedding response: status=%d, body_size=%d bytes", resp.StatusCode, len(body))
+
 	var result map[string]interface{}
 	if err = json.Unmarshal(body, &result); err != nil {
-		logs.Errorf("Warn: [Unmarshal]no config file found or parse error, fallback to env or default. Err: %v", err)
+		logs.Errorf("Ollama embedding response JSON parse failed: %v, body=%s", err, string(body[:min(len(body), 200)]))
 		return nil, common.NewLLMResponseError(err.Error())
 	}
 
 	raw, ok := result["embeddings"]
 	if !ok {
-		logs.Errorf("Warn: [result[\"embeddings\"]]no config file found or parse error, fallback to env or default. Err: %v", err)
-		return nil, common.NewLLMResponseError(fmt.Errorf("no embeddings field in response").Error())
+		// Log actual response keys and truncated body for debugging
+		keys := make([]string, 0, len(result))
+		for k := range result {
+			keys = append(keys, k)
+		}
+		logs.Errorf("Ollama response missing 'embeddings' field. Available keys: %v, body_preview=%s",
+			keys, string(body[:min(len(body), 300)]))
+		return nil, common.NewLLMResponseError("no embeddings field in response")
 	}
 	rawList, ok := raw.([]interface{})
 	if !ok {
-		logs.Errorf("Warn: [raw.([]interface{})]no config file found or parse error, fallback to env or default. Err: %v", err)
-		return nil, common.NewLLMResponseError(fmt.Errorf("embeddings field is not a list").Error())
+		logs.Errorf("Ollama 'embeddings' field is not a list, actual type: %T", raw)
+		return nil, common.NewLLMResponseError("embeddings field is not a list")
 	}
 
 	embeddings := make([][]float32, len(rawList))
 	for i, item := range rawList {
 		sliceRaw, ok := item.([]interface{})
 		if !ok {
-			logs.Errorf("Warn: [sliceRaw, ok :=]no config file found or parse error, fallback to env or default. Err: %v", err)
+			logs.Errorf("Ollama embeddings[%d] is not a list, actual type: %T", i, item)
 			return nil, common.NewLLMResponseError(fmt.Errorf("embeddings[%d] is not a list", i).Error())
 		}
 		vec := make([]float32, 0, len(sliceRaw))

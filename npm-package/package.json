@@ -1,6 +1,6 @@
 {
   "name": "@zhouzhanghao001111/flashmemory",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "FlashMemory - Cross-language code analysis and semantic search system with hybrid vector search. Supports Go, Python, JavaScript, Java, C++ code indexing with LLM-powered analysis.",
   "keywords": [
     "code-analysis",

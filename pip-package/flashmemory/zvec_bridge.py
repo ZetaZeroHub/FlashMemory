@@ -39,8 +39,29 @@ class ZvecBridge:
     def __init__(self):
         self.engine = None
         self.embedding_provider = None
+        self.zvec_embedding_func = None  # P2-1: zvec built-in embedding
         self.running = True
-        logger.info("ZvecBridge 初始化")
+        logger.info("ZvecBridge initialized")
+
+    def _init_zvec_embedding(self, model_source: str = "huggingface"):
+        """P2-1: Initialize zvec built-in embedding function.
+
+        Args:
+            model_source: "huggingface" or "modelscope"
+        """
+        try:
+            from zvec.extension import DefaultLocalDenseEmbedding
+            self.zvec_embedding_func = DefaultLocalDenseEmbedding(
+                model_source=model_source,
+            )
+            logger.info(
+                "Zvec built-in embedding initialized: model_source=%s, dim=%d",
+                model_source, self.zvec_embedding_func.dimension,
+            )
+        except ImportError:
+            logger.warning("DefaultLocalDenseEmbedding not available, zvec embedding disabled")
+        except Exception as e:
+            logger.warning("Zvec embedding init failed: %s", e)
 
     def _respond(self, status: str, data: dict = None, message: str = ""):
         """向 stdout 写入一行 JSON 响应"""
@@ -60,17 +81,19 @@ class ZvecBridge:
         self._respond("error", data, message)
 
     def handle_init(self, params: dict):
-        """初始化 Zvec 引擎和 Collection
-        
+        """Initialize Zvec engine and Collection
+
         params:
-            collection_path: str - Collection 基础目录
-            dimension: int - 向量维度 (默认 384)
-            force_new: bool - 是否强制重建 (默认 false)
-            collection_type: str - "functions" | "modules" | "both" (默认 "both")
+            collection_path: str - Collection base directory
+            dimension: int - Vector dimension (default 384)
+            force_new: bool - Force recreate (default false)
+            collection_type: str - "functions" | "modules" | "both" (default "both")
+            use_zvec_embedding: bool - Use zvec built-in embedding (default false)
+            embedding_model_source: str - "huggingface" | "modelscope" (default "huggingface")
         """
         collection_path = params.get("collection_path", "")
         if not collection_path:
-            return self._respond_error("collection_path 不能为空")
+            return self._respond_error("collection_path cannot be empty")
 
         dimension = params.get("dimension", 384)
         force_new = params.get("force_new", False)
@@ -84,14 +107,21 @@ class ZvecBridge:
             if collection_type in ("modules", "both"):
                 self.engine.init_module_collection(force_new=force_new)
 
+            # P2-1: Optionally initialize zvec built-in embedding
+            use_zvec_embedding = params.get("use_zvec_embedding", False)
+            if use_zvec_embedding:
+                self._init_zvec_embedding(
+                    model_source=params.get("embedding_model_source", "huggingface"),
+                )
+
             stats = self.engine.get_stats()
             self._respond_ok(
                 data={"stats": stats, "dimension": dimension},
-                message="Zvec 引擎初始化成功",
+                message="Zvec engine initialized successfully",
             )
         except Exception as e:
-            logger.error("初始化失败: %s\n%s", e, traceback.format_exc())
-            self._respond_error(f"初始化失败: {e}")
+            logger.error("Init failed: %s\n%s", e, traceback.format_exc())
+            self._respond_error(f"Init failed: {e}")
 
     def handle_add_vector(self, params: dict):
         """添加单个函数向量
@@ -112,7 +142,18 @@ class ZvecBridge:
             return self._respond_error("func_id 和 vector 不能为空")
 
         try:
-            self.engine.upsert_function(func_id, vector, metadata)
+            safe_meta = {
+                "func_name": metadata.get("func_name", "unknown"),
+                "package": metadata.get("package", "unknown"),
+                "file_path": metadata.get("file_path", "unknown"),
+                "description": str(metadata.get("description", "")),
+                "func_type": metadata.get("func_type", "function"),
+                "language": metadata.get("language", "unknown"),
+                "start_line": int(metadata.get("start_line", 0)),
+                "end_line": int(metadata.get("end_line", 0)),
+                "importance_score": float(metadata.get("importance_score", 0.0)),
+            }
+            self.engine.upsert_function(func_id, vector, safe_meta)
             self._respond_ok(message=f"已添加函数向量: {func_id}")
         except Exception as e:
             logger.error("添加向量失败: %s", e)
@@ -134,10 +175,22 @@ class ZvecBridge:
         try:
             items = []
             for item in items_raw:
+                meta = item.get("metadata", {})
+                safe_meta = {
+                    "func_name": meta.get("func_name", "unknown"),
+                    "package": meta.get("package", "unknown"),
+                    "file_path": meta.get("file_path", "unknown"),
+                    "description": str(meta.get("description", "")),
+                    "func_type": meta.get("func_type", "function"),
+                    "language": meta.get("language", "unknown"),
+                    "start_line": int(meta.get("start_line", 0)),
+                    "end_line": int(meta.get("end_line", 0)),
+                    "importance_score": float(meta.get("importance_score", 0.0)),
+                }
                 items.append((
                     item["func_id"],
                     item["vector"],
-                    item.get("metadata", {}),
+                    safe_meta,
                 ))
             self.engine.upsert_functions_batch(items)
             self._respond_ok(
@@ -161,7 +214,14 @@ class ZvecBridge:
             return self._respond_error("module_id 和 vector 不能为空")
 
         try:
-            self.engine.upsert_module(module_id, vector, metadata)
+            safe_meta = {
+                "name": metadata.get("name", "unknown"),
+                "type": metadata.get("type", "unknown"),
+                "path": metadata.get("path", "unknown"),
+                "parent_path": metadata.get("parent_path", "unknown"),
+                "description": str(metadata.get("description", "")),
+            }
+            self.engine.upsert_module(module_id, vector, safe_meta)
             self._respond_ok(message=f"已添加模块向量: {module_id}")
         except Exception as e:
             logger.error("添加模块向量失败: %s", e)
@@ -278,8 +338,8 @@ class ZvecBridge:
         self._respond_ok(message="服务已关闭")
 
     def handle_hybrid_search(self, params: dict):
-        """Phase 2: Hybrid search with Dense + Sparse multi-vector query
-        
+        """Phase 2+: Hybrid search with Dense + Sparse + Reranker
+
         params:
             dense_query: list[float] - Dense query vector
             sparse_query: dict - Sparse query vector {token_id: weight} (optional)
@@ -287,9 +347,15 @@ class ZvecBridge:
             filter: str - Scalar filter expression (optional)
             use_rrf: bool - Use RRF fusion (default true)
             rrf_topn: int - RRF top-N (defaults to top_k)
+            collection_type: str - "functions" | "modules" (default "functions")
+            query_text: str - Original query text for auto BM25 + reranker (optional)
+            enable_reranker: bool - Enable cross-encoder reranking (default false)
+            reranker_type: str - "rrf" | "weighted" (default "rrf")
+            weighted_params: list[float] - Weights for WeightedReRanker (optional)
+            recall_multiplier: int - Recall stage multiplier (default 5)
         """
         if self.engine is None:
-            return self._respond_error("引擎未初始化")
+            return self._respond_error("Engine not initialized")
 
         dense_query = params.get("dense_query", [])
         sparse_query = params.get("sparse_query", None)
@@ -297,18 +363,31 @@ class ZvecBridge:
         filter_expr = params.get("filter", None)
         use_rrf = params.get("use_rrf", True)
         rrf_topn = params.get("rrf_topn", None)
+        query_text = params.get("query_text", None)
+        enable_reranker = params.get("enable_reranker", False)
+        reranker_type = params.get("reranker_type", "rrf")
+        weighted_params = params.get("weighted_params", None)
+        recall_multiplier = params.get("recall_multiplier", 5)
 
         if not dense_query:
-            return self._respond_error("dense_query 不能为空")
+            return self._respond_error("dense_query cannot be empty")
+
+        collection_type = params.get("collection_type", "functions")
 
         try:
-            results = self.engine.hybrid_search_functions(
+            results = self.engine.hybrid_search(
                 dense_vector=dense_query,
                 sparse_vector=sparse_query,
                 top_k=top_k,
                 filter_expr=filter_expr,
                 use_rrf=use_rrf,
                 rrf_topn=rrf_topn,
+                collection_type=collection_type,
+                query_text=query_text,
+                enable_reranker=enable_reranker,
+                reranker_type=reranker_type,
+                weighted_params=weighted_params,
+                recall_multiplier=recall_multiplier,
             )
 
             result_list = []
@@ -324,12 +403,12 @@ class ZvecBridge:
                 data={
                     "results": result_list,
                     "count": len(result_list),
-                    "search_type": "hybrid" if sparse_query else "dense_only",
+                    "search_type": "hybrid_reranked" if enable_reranker else ("hybrid" if sparse_query or query_text else "dense_only"),
                 },
             )
         except Exception as e:
             logger.error("Hybrid search failed: %s\n%s", e, traceback.format_exc())
-            self._respond_error(f"混合搜索失败: {e}")
+            self._respond_error(f"Hybrid search failed: {e}")
 
     def handle_init_embedding(self, params: dict):
         """Phase 3: Initialize embedding provider

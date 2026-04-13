@@ -196,6 +196,14 @@ func LoadConfig() (*Config, error) {
 				vp.AddConfigPath(filepath.Dir(exePath))
 			}
 			vp.AddConfigPath(".")
+			// Fallback to global user home config directory
+			if homeDir := DefaultConfigDir(); homeDir != "" {
+			    vp.AddConfigPath(homeDir)
+			    // Consider the global file might be named config.yaml instead of fm.yaml
+			    if _, err := os.Stat(filepath.Join(homeDir, "config.yaml")); err == nil {
+			        vp.SetConfigFile(filepath.Join(homeDir, "config.yaml"))
+			    }
+			}
 		}
 
 		// 读取配置文件（可选）

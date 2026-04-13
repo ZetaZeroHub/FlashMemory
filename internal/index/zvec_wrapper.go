@@ -390,8 +390,8 @@ func (zw *ZvecWrapper) readResponse() (*zvecResponse, error) {
 			return nil, scanErr
 		}
 		return &resp, nil
-	case <-time.After(60 * time.Second):
-		return nil, fmt.Errorf("读取响应超时 (60s)")
+	case <-time.After(600 * time.Second):
+		return nil, fmt.Errorf("读取响应超时 (600s)")
 	}
 }
 
@@ -401,7 +401,7 @@ func (zw *ZvecWrapper) initCollection(forceNew bool) error {
 		"collection_path": zw.CollectionPath,
 		"dimension":       zw.Dim,
 		"force_new":       forceNew,
-		"collection_type": "functions", // Phase 1 先只初始化函数级
+		"collection_type": "both", // 初始化函数级和模块级
 	})
 	if err != nil {
 		return err
@@ -429,6 +429,35 @@ func (zw *ZvecWrapper) GetScore(funcID int) float32 {
 	return score
 }
 
+// AddFunctionVector 添加带有完整元数据的单个向量到全量引擎索引中
+// Metadata必须包含 func_name 和 description 等字段供引擎建立 Sparse BM25 索引。
+func (zw *ZvecWrapper) AddFunctionVector(funcID int, vector []float32, metadata map[string]interface{}) error {
+	zw.dirtyFlag = true
+
+	// 截断或填充向量到正确维度
+	if len(vector) != zw.Dim {
+		resized := make([]float32, zw.Dim)
+		copy(resized, vector)
+		vector = resized
+	}
+
+	funcIdStr := fmt.Sprintf("func_%d", funcID)
+
+	resp, err := zw.sendRequest("add_vector", map[string]interface{}{
+		"func_id":  funcIdStr,
+		"vector":   vector,
+		"metadata": metadata,
+	})
+	if err != nil {
+		return fmt.Errorf("添加向量失败 (id=%d): %w", funcID, err)
+	}
+	if resp.Status != "success" {
+		return fmt.Errorf("添加向量失败: %s", resp.Message)
+	}
+
+	return nil
+}
+
 // AddVector 添加单个向量到索引
 func (zw *ZvecWrapper) AddVector(funcID int, vector []float32) error {
 	zw.dirtyFlag = true
@@ -452,6 +481,34 @@ func (zw *ZvecWrapper) AddVector(funcID int, vector []float32) error {
 	}
 	if resp.Status != "success" {
 		return fmt.Errorf("添加向量失败: %s", resp.Message)
+	}
+
+	return nil
+}
+
+// AddModuleVector 添加单个模块的向量到索引
+func (zw *ZvecWrapper) AddModuleVector(modID int, vector []float32) error {
+	zw.dirtyFlag = true
+
+	// 截断或填充向量到正确维度
+	if len(vector) != zw.Dim {
+		resized := make([]float32, zw.Dim)
+		copy(resized, vector)
+		vector = resized
+	}
+
+	modIdStr := fmt.Sprintf("mod_%d", modID)
+
+	resp, err := zw.sendRequest("add_module_vector", map[string]interface{}{
+		"module_id":  modIdStr,
+		"vector":   vector,
+		"metadata": map[string]interface{}{},
+	})
+	if err != nil {
+		return fmt.Errorf("添加模块向量失败 (id=%d): %w", modID, err)
+	}
+	if resp.Status != "success" {
+		return fmt.Errorf("添加模块向量失败: %s", resp.Message)
 	}
 
 	return nil
@@ -517,7 +574,7 @@ func (zw *ZvecWrapper) SearchVectors(query []float32, topK int) []int {
 		return []int{}
 	}
 
-	return zw.parseSearchResults(resp)
+	return zw.parseSearchResults(resp, "func_")
 }
 
 // SearchVectorsWithFilter performs vector search with scalar filter expression
@@ -552,12 +609,21 @@ func (zw *ZvecWrapper) SearchVectorsWithFilter(query []float32, topK int, filter
 		return []int{}
 	}
 
-	return zw.parseSearchResults(resp)
+	return zw.parseSearchResults(resp, "func_")
 }
 
-// HybridSearchVectors performs Dense + Sparse multi-vector search with RRF fusion
-// This is the Phase 2 core method that replaces hardcoded weight fusion in search.go
-func (zw *ZvecWrapper) HybridSearchVectors(denseQuery []float32, sparseQuery map[string]float64, topK int, filter string) []int {
+// SearchModuleVectors finds the topK module vectors closest to the query vector
+func (zw *ZvecWrapper) SearchModuleVectors(query []float32, topK int) []int {
+	return zw.hybridSearchVectorsInternal(query, nil, topK, "", "modules", "mod_", "", false)
+}
+
+// HybridSearchVectors performs Dense + Sparse multi-vector search with RRF fusion.
+// queryText is the original search text for auto BM25 sparse generation and reranker.
+func (zw *ZvecWrapper) HybridSearchVectors(denseQuery []float32, sparseQuery map[string]float64, topK int, filter string, queryText string, enableReranker bool) []int {
+	return zw.hybridSearchVectorsInternal(denseQuery, sparseQuery, topK, filter, "functions", "func_", queryText, enableReranker)
+}
+
+func (zw *ZvecWrapper) hybridSearchVectorsInternal(denseQuery []float32, sparseQuery map[string]float64, topK int, filter string, collectionType string, idPrefix string, queryText string, enableReranker bool) []int {
 	if len(denseQuery) != zw.Dim {
 		resized := make([]float32, zw.Dim)
 		copy(resized, denseQuery)
@@ -570,9 +636,15 @@ func (zw *ZvecWrapper) HybridSearchVectors(denseQuery []float32, sparseQuery map
 	}
 
 	params := map[string]interface{}{
-		"dense_query": denseF64,
-		"top_k":       topK,
-		"use_rrf":     true,
+		"dense_query":      denseF64,
+		"top_k":            topK,
+		"use_rrf":          true,
+		"collection_type":  collectionType,
+		"enable_reranker":  enableReranker,
+	}
+	// Pass original query text for auto BM25 sparse generation and cross-encoder reranking
+	if queryText != "" {
+		params["query_text"] = queryText
 	}
 	if sparseQuery != nil && len(sparseQuery) > 0 {
 		params["sparse_query"] = sparseQuery
@@ -593,14 +665,14 @@ func (zw *ZvecWrapper) HybridSearchVectors(denseQuery []float32, sparseQuery map
 
 	// Log search type for debugging
 	if searchType, ok := resp.Data["search_type"].(string); ok {
-		logs.Infof("Hybrid search completed, type=%s", searchType)
+		logs.Infof("Hybrid search completed, type=%s, collection=%s, reranker=%v", searchType, collectionType, enableReranker)
 	}
 
-	return zw.parseSearchResults(resp)
+	return zw.parseSearchResults(resp, idPrefix)
 }
 
-// parseSearchResults extracts func IDs from a zvec search response
-func (zw *ZvecWrapper) parseSearchResults(resp *zvecResponse) []int {
+// parseSearchResults extracts IDs from a zvec search response
+func (zw *ZvecWrapper) parseSearchResults(resp *zvecResponse, idPrefix string) []int {
 	resultsRaw, ok := resp.Data["results"].([]interface{})
 	if !ok {
 		logs.Errorf("Invalid search result format")
@@ -621,13 +693,12 @@ func (zw *ZvecWrapper) parseSearchResults(resp *zvecResponse) []int {
 
 		idStr, _ := itemMap["id"].(string)
 		score, _ := itemMap["score"].(float64)
+		var objID int
+		fmt.Sscanf(idStr, idPrefix+"%d", &objID)
 
-		var funcID int
-		fmt.Sscanf(idStr, "func_%d", &funcID)
-
-		if funcID > 0 {
-			zw.Scores[funcID] = float32(score)
-			pairs = append(pairs, idScorePair{id: funcID, score: float32(score)})
+		if objID > 0 {
+			zw.Scores[objID] = float32(score)
+			pairs = append(pairs, idScorePair{id: objID, score: float32(score)})
 		}
 	}
 

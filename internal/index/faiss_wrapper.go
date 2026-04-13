@@ -11,6 +11,12 @@ type FaissWrapper interface {
 	// SearchVectors 查找最接近查询向量的topK个向量
 	SearchVectors(query []float32, topK int) []int
 
+	// AddModuleVector 添加一个代码模块的向量到模块集合索引
+	AddModuleVector(modID int, vector []float32) error
+
+	// SearchModuleVectors 查找与查询向量最接近的topK个模块向量
+	SearchModuleVectors(query []float32, topK int) []int
+
 	// SaveToFile 将索引保存到文件
 	SaveToFile(path string) error
 

@@ -98,7 +98,9 @@
 | `query` | string | ✅ | - | 搜索关键词 |
 | `search_mode` | string | ❌ | `hybrid` | `semantic` / `keyword` / `hybrid` |
 | `limit` | int | ❌ | `5` | 结果数量限制 |
-| `faiss` | bool | ❌ | `false` | 是否使用 Faiss 远程索引 |
+| `engine` | string | ❌ | `"faiss"` | 指定底层向量引擎 (`"zvec"` / `"faiss"` / `"local"`) |
+| `enable_reranker` | bool | ❌ | `false` | 是否开启交叉编码器二次深度精排 (Reranker) |
+| `strict` | bool | ❌ | `false` | 严格模式 (过滤更多低质量结果) |
 
 **响应数据**: 包含 `func_res`（合并结果）、`tags`（关键词标签）、`funcs`（纯函数结果）、`modules`（模块结果），按 Score 降序排序。
 
@@ -163,7 +165,7 @@
 |------|------|------|--------|------|
 | `project_dir` | string | ✅ | - | 项目目录 |
 | `relative_dir` | string | ❌ | `""` (全量) | 子目录路径 |
-| `Faiss` | bool | ❌ | `false` | 使用 Faiss 远程索引 |
+| `engine` | string | ❌ | `"faiss"` | 指定底层向量引擎 (`"zvec"` / `"faiss"` / `"local"`) |
 | `exclude` | string[] | ❌ | `[]` | glob 排除模式 |
 
 **核心流程**:
@@ -259,7 +261,7 @@
 | ↳ | `back.indexCodeWithManager()` | **Git diff** 检测变更文件 → 仅处理变更 |
 | **数据层** | Git 操作获取变更文件列表 → 删除旧记录 → 重新索引 |
 
-**请求参数**: `project_dir` (必填), `branch`, `commit`, `faiss` (均可选)
+**请求参数**: `project_dir` (必填), `branch`, `commit`, `engine` (可选, 默认 `"faiss"`)
 
 **增量策略**: 
 1. 通过 `branch_index` 表获取上次索引的 commit

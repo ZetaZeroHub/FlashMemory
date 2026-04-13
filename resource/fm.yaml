@@ -13,6 +13,7 @@ ana_prompts:
     route: |
         该函数的所处路径和包名：
 api_base_url: http://127.0.0.1:11434
+api_token: ""
 # Language preference: en | zh (default: en)
 lang: en
 # Zvec vector engine config (use -engine zvec to enable)
@@ -38,7 +39,7 @@ default_cloud_model:
     max_prompts: 30000
     model: auto
     type: githave
-    url: https://api.githave.com/v1/
+    url: https://api.githave.com/api/v1
 default_format: json
 default_max_worker: 1
 default_model: qwen2.5-coder:1.5b
@@ -50,7 +51,7 @@ embedding_cloud_model:
     max_prompts: 30000
     model: BAAI/bge-large-zh-v1.5
     type: githave
-    url: https://api.githave.com/v1/
+    url: https://api.githave.com/api/v1
 embedding_max_batch: 30
 embedding_max_worker: 3
 embedding_model: quentinz/bge-large-zh-v1.5:latest
@@ -88,7 +89,7 @@ model_configs:
         model: auto
         temperature: 0.1
         type: githave
-        url: https://api.githave.com/v1/
+        url: https://api.githave.com/api/v1
       format: json
       max_tokens: 2048
       name: qwen2.5-coder:1.5b
@@ -105,7 +106,7 @@ model_configs:
         model: auto
         temperature: 0.1
         type: githave
-        url: https://api.githave.com/v1/
+        url: https://api.githave.com/api/v1
       format: json
       max_tokens: 5000
       name: qwen2.5-coder:3b
@@ -123,7 +124,7 @@ model_configs:
         model: auto
         temperature: 0.1
         type: githave
-        url: https://api.githave.com/v1/
+        url: https://api.githave.com/api/v1
       format: json
       max_tokens: 8000
       name: qwen2.5-coder:7b
@@ -141,7 +142,7 @@ model_configs:
         model: auto
         temperature: 0.1
         type: githave
-        url: https://api.githave.com/v1/
+        url: https://api.githave.com/api/v1
       format: json
       max_tokens: 18000
       name: qwen2.5-coder:7b
@@ -159,7 +160,7 @@ model_configs:
         model: auto
         temperature: 0.1
         type: githave
-        url: https://api.githave.com/v1/
+        url: https://api.githave.com/api/v1
       format: json
       max_tokens: 30000
       name: qwen2.5-coder:7b

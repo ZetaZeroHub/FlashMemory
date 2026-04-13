@@ -234,6 +234,20 @@ func (fw *HTTPFaissWrapper) AddVectorsBatch(funcIDs []int, vectors []float32) er
 
 // SearchVectors 查找最接近查询向量的topK个向量
 func (fw *HTTPFaissWrapper) SearchVectors(query []float32, topK int) []int {
+	return fw.searchVectorsInternal(query, topK)
+}
+
+// AddModuleVector 批量添加模块向量到索引 (复用 AddVector)
+func (fw *HTTPFaissWrapper) AddModuleVector(modID int, vector []float32) error {
+	return fw.AddVector(modID, vector)
+}
+
+// SearchModuleVectors 查找与查询向量最接近的topK个模块向量 (复用 searchVectorsInternal)
+func (fw *HTTPFaissWrapper) SearchModuleVectors(query []float32, topK int) []int {
+	return fw.searchVectorsInternal(query, topK)
+}
+
+func (fw *HTTPFaissWrapper) searchVectorsInternal(query []float32, topK int) []int {
 	queryKey := fmt.Sprintf("query_%d", len(query))
 
 	fw.cacheMutex.RLock()

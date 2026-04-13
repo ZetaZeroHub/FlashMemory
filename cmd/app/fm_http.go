@@ -86,7 +86,7 @@ func main() {
 
 	configPath := config.Init()
 	if configPath == "" {
-		logs.Fatalf("请设置配置文件路径")
+		logs.Warnf("Config file not explicitly provided via -c flag, automatically falling back to user home directory default config")
 	}
 
 	// 加载配置文件
@@ -130,18 +130,24 @@ func main() {
 	if os.Getenv("FAISS_SERVICE_PATH") == "" {
 		logs.Warnf("FAISS_SERVICE_PATH not set")
 	}
-	proc, serviceDir, err := back.InitFaiss()
-	if err != nil {
-		log.Fatalf("Faiss 初始化失败: %v", err)
-	}
-	// 程序退出时统一停止 Faiss 服务
-	defer utils.StopFaissService(proc)
+	
+	useZvec := cfg != nil && cfg.ZvecConfig.Engine == "zvec"
+	if useZvec {
+		logs.Infof("Zvec mode enabled: skipping traditional FAISS HTTP service startup")
+	} else {
+		proc, serviceDir, err := back.InitFaiss()
+		if err != nil {
+			log.Fatalf("Faiss 初始化失败: %v", err)
+		}
+		// 程序退出时统一停止 Faiss 服务
+		defer utils.StopFaissService(proc)
 
-	// 启动 Faiss 服务监控
-	faissMonitor := back.NewFaissMonitor(proc, serviceDir)
-	faissMonitor.SetCheckInterval(5 * time.Second) // 每5秒检查一次
-	faissMonitor.Start()
-	defer faissMonitor.Stop()
+		// 启动 Faiss 服务监控
+		faissMonitor := back.NewFaissMonitor(proc, serviceDir)
+		faissMonitor.SetCheckInterval(5 * time.Second) // 每5秒检查一次
+		faissMonitor.Start()
+		defer faissMonitor.Stop()
+	}
 
 	// Create Echo instance
 	e := echo.New()
@@ -286,11 +292,13 @@ func healthCheckHandler() echo.HandlerFunc {
 // searchHandler handles deep search with dynamic project path
 func searchHandler() echo.HandlerFunc {
 	type Req struct {
-		ProjectDir string `json:"project_dir"`
-		Query      string `json:"query"`
-		SearchMode string `json:"search_mode"` // semantic, keyword, hybrid
-		Limit      int    `json:"limit"`
-		Faiss      bool   `json:"faiss"`
+		ProjectDir     string `json:"project_dir"`
+		Query          string `json:"query"`
+		SearchMode     string `json:"search_mode"`      // semantic, keyword, hybrid
+		Limit          int    `json:"limit"`
+		Engine         string `json:"engine"`            // "zvec" | "faiss" | "local" (default: faiss)|Engine         string `json:"engine"`            // "zvec" | "faiss" | "local" (default: faiss)
+		EnableReranker bool   `json:"enable_reranker"`   // Enable cross-encoder reranking
+		Strict         bool   `json:"strict"`            // Strict mode (fewer results, higher quality)
 	}
 	type FuncRes struct {
 		Name        string  `json:"name"`
@@ -326,21 +334,24 @@ func searchHandler() echo.HandlerFunc {
 		if req.Limit == 0 {
 			req.Limit = 5
 		}
+		if req.Engine == "" {
+			req.Engine = "faiss"
+		}
+		logs.Infof("Search request: query=%s, mode=%s, engine=%s, reranker=%v, strict=%v",
+			req.Query, req.SearchMode, req.Engine, req.EnableReranker, req.Strict)
 
 		gitgoDir := filepath.Join(req.ProjectDir, ".gitgo")
 
 		// 索引文件路径
 		indexDBPath := filepath.Join(gitgoDir, "code_index.db")
 		faissIndexPath := filepath.Join(gitgoDir, "code_index.local")
-		if req.Faiss {
+		if req.Engine != "local" {
 			faissIndexPath = filepath.Join(gitgoDir, "code_index.faiss")
 		}
-		//var proc *os.Process
 		ext := ".local"
-		if req.Faiss {
-			logs.Infof("正在启动Faiss服务...")
+		if req.Engine != "local" {
+			logs.Infof("正在启动高级向量服务...")
 			ext = ".faiss"
-			//proc, _, _ = back.InitFaiss()
 		}
 
 		// 检查.gitgo目录和索引文件是否存在
@@ -364,16 +375,40 @@ func searchHandler() echo.HandlerFunc {
 			return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "索引文件不存在"})
 		}
 
+		cfg, _ := config.LoadConfig()
+		
+		dim := 128
+		if config.GetEngine() == "zvec" {
+			dim = 384
+			if cfg != nil && cfg.ZvecConfig.Dimension > 0 {
+				dim = cfg.ZvecConfig.Dimension
+			}
+		}
+		
+		// Determine if we need to auto-build vectors BEFORE creating the wrapper
+		// (wrapper creation may create empty zvec collection directories)
+		needBuildVectors := false
+		if config.GetEngine() == "zvec" {
+			zvecCollPath := filepath.Join(absGitgoDir, "zvec_collections", "functions")
+			if _, err := os.Stat(zvecCollPath); os.IsNotExist(err) {
+				needBuildVectors = true
+			}
+		} else if _, err := os.Stat(faissIndexPath); os.IsNotExist(err) {
+			needBuildVectors = true
+		}
+
 		// 创建FaissWrapper，传入存储路径选项
 		faissOptions := map[string]interface{}{
 			"storage_path": absGitgoDir,
 			"server_url":   index.DefaultFaissServerURL,
 			"index_id":     req.ProjectDir,
+			"python_path":  cfg.ZvecConfig.PythonPath,
 		}
-		idx := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapperByEngine(config.GetEngine(), 128, faissOptions)}
+		idx := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapperByEngine(req.Engine, dim, faissOptions)}
+		defer idx.FaissIndex.Free()
 
-		if _, err := os.Stat(faissIndexPath); os.IsNotExist(err) {
-			logs.Infof("正在初始化Faiss索引...")
+		if needBuildVectors {
+			logs.Infof("Auto-building vector index from existing DB data...")
 			err = embedding.EnsureEmbeddingsBatch(idx)
 			if common.IsLLMError(err) {
 				return c.JSON(http.StatusOK, Response{Code: 5, Message: err.Error()})
@@ -464,13 +499,23 @@ func searchHandler() echo.HandlerFunc {
 		keywords = append(keywords, engine.Keywords...)
 
 		faissModulePath := filepath.Join(gitgoDir, "module.faiss")
+
 		// 创建FaissWrapper，传入存储路径选项
 		faissModuleOptions := map[string]interface{}{
 			"storage_path": absGitgoDir,
 			"server_url":   index.DefaultFaissServerURL,
 			"index_id":     fmt.Sprintf("%s_module", req.ProjectDir),
+			"python_path":  cfg.ZvecConfig.PythonPath,
 		}
-		idxModule := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapperByEngine(config.GetEngine(), 128, faissModuleOptions)}
+		
+		var faissModuleIndex index.FaissWrapper
+		if config.GetEngine() == "zvec" {
+			faissModuleIndex = idx.FaissIndex
+		} else {
+			faissModuleIndex = index.NewFaissWrapperByEngine(req.Engine, dim, faissModuleOptions)
+			defer faissModuleIndex.Free()
+		}
+		idxModule := &index.Indexer{DB: db, FaissIndex: faissModuleIndex}
 
 		if _, err := os.Stat(faissModulePath); os.IsNotExist(err) {
 			logs.Infof("正在初始化模块描述向量...")
@@ -546,12 +591,7 @@ func searchHandler() echo.HandlerFunc {
 			Funcs,
 			Modules,
 		}
-		if req.Faiss {
-			//e := utils.StopFaissService(proc)
-			//if e != nil {
-			//	return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "Faiss服务停止失败"})
-			//}
-		}
+		
 		return c.JSON(http.StatusOK, Response{Code: 0, Message: "OK", Data: resData})
 	}
 }
@@ -629,7 +669,7 @@ func buildIndexHandler() echo.HandlerFunc {
 	type Req struct {
 		ProjectDir  string   `json:"project_dir"`
 		RelativeDir string   `json:"relative_dir,omitempty"`
-		Faiss       bool     `json:"Faiss,omitempty"`
+		Engine      string   `json:"engine,omitempty"`
 		Exclude     []string `json:"exclude,omitempty"`
 	}
 
@@ -663,7 +703,10 @@ func buildIndexHandler() echo.HandlerFunc {
 		if err != nil {
 			logs.Warnf("Error refreshing faiss: %v", err)
 		}
-		err = back.BuildIndex(req.ProjectDir, req.RelativeDir, full, req.Faiss)
+		if req.Engine == "" {
+			req.Engine = "faiss"
+		}
+		err = back.BuildIndex(req.ProjectDir, req.RelativeDir, full, req.Engine != "local")
 		if common.IsLLMError(err) {
 			return c.JSON(http.StatusOK, Response{Code: 5, Message: err.Error()})
 		}
@@ -775,7 +818,7 @@ func incrementalIndexHandler() echo.HandlerFunc {
 		ProjectDir string `json:"project_dir"`
 		Branch     string `json:"branch,omitempty"`
 		Commit     string `json:"commit,omitempty"`
-		Faiss      bool   `json:"faiss,omitempty"`
+		Engine     string `json:"engine,omitempty"`
 	}
 
 	return func(c echo.Context) error {
@@ -786,7 +829,10 @@ func incrementalIndexHandler() echo.HandlerFunc {
 		if req.ProjectDir == "" {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
 		}
-		err := back.IncrementalUpdate(req.ProjectDir, req.Branch, req.Commit, req.Faiss)
+		if req.Engine == "" {
+			req.Engine = "faiss"
+		}
+		err := back.IncrementalUpdate(req.ProjectDir, req.Branch, req.Commit, req.Engine != "local")
 		if common.IsLLMError(err) {
 			return c.JSON(http.StatusOK, Response{Code: 5, Message: err.Error()})
 		}
