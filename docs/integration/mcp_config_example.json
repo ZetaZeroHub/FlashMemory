@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "deepmemory": {
+      "command": "python",
+      "args": ["-m", "deepmemory.mcp_server"],
+      "env": {
+        "DEEPMEMORY_STORE": "./artifacts/memory.jsonl",
+        "DEEPMEMORY_DEBUG": ""
+      }
+    },
+    "flashmemory": {
+      "command": "python",
+      "args": ["-m", "flashmemory.mcp_server"],
+      "env": {
+        "FM_DEFAULT_PROJECT": "/path/to/your/project",
+        "FM_DEBUG": ""
+      }
+    }
+  }
+}

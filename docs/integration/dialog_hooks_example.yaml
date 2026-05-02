@@ -1,0 +1,47 @@
+# Dialog hooks configuration example
+#
+# Bind Skills to conversation lifecycle events.
+# Copy to your agent backend's hooks config directory.
+
+dialog_hooks:
+  # Before each AI reply: inject memory + code context
+  before_reply:
+    - skill: memory-augmented-reply
+      config:
+        recall_dimensions:
+          - "session:{session_id}"
+          - "user:{user_id}"
+        code_search_enabled: true
+        max_memories: 10
+        max_code_results: 5
+
+  # After each AI reply: extract symbols from the exchange
+  after_reply:
+    - skill: symbolism-extract
+      config:
+        extract_from: both       # "user", "ai", or "both"
+        min_confidence: 0.40     # skip weak signals
+        dedup_check: true        # recall before ingest to avoid duplication
+
+  # When user gives explicit feedback
+  on_user_feedback:
+    - skill: user-feedback-handler
+
+  # Periodic maintenance
+  scheduled:
+    - skill: memory-evolution-cycle
+      cron: "0 2 * * *"         # daily at 2am
+      config:
+        min_confidence: 0.35
+        stale_after_hours: 168   # 1 week
+        max_memories_per_object: 20
+
+  # On conflict detection (triggered by DeepMemory events)
+  on_memory_conflict:
+    - skill: game-theory-debate
+      config:
+        agents:
+          - analyst
+          - coder
+          - reviewer
+        max_rounds: 3
