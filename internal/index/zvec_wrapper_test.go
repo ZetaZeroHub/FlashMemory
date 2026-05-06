@@ -470,57 +470,70 @@ for line in sys.stdin:
 // TestNewFaissWrapperByEngine tests the unified engine factory
 func TestNewFaissWrapperByEngine(t *testing.T) {
 	t.Run("DefaultEngine", func(t *testing.T) {
-		// Default (faiss) should fallback to MemoryFaissWrapper when no HTTP server
-		wrapper := NewFaissWrapperByEngine("", 128)
-		if wrapper == nil {
-			t.Fatal("Expected non-nil wrapper")
-		}
-		if wrapper.Dimension() != 128 {
-			t.Errorf("Expected dimension 128, got %d", wrapper.Dimension())
+		// Default (faiss) should return error when no HTTP server is available
+		wrapper, err := NewFaissWrapperByEngine("", 128)
+		if err == nil {
+			// HTTP server is actually available - that's also fine
+			if wrapper == nil {
+				t.Fatal("Expected non-nil wrapper when no error")
+			}
+			if wrapper.Dimension() != 128 {
+				t.Errorf("Expected dimension 128, got %d", wrapper.Dimension())
+			}
+		} else {
+			// Expected: no HTTP server available in test env
+			t.Logf("Got expected error (no FAISS HTTP server): %v", err)
+			if wrapper != nil {
+				t.Fatal("Expected nil wrapper when error is returned")
+			}
 		}
 	})
 
 	t.Run("FaissEngine", func(t *testing.T) {
-		wrapper := NewFaissWrapperByEngine("faiss", 256)
-		if wrapper == nil {
-			t.Fatal("Expected non-nil wrapper")
-		}
-		// Will fallback to Memory when HTTP server is not available
-		if wrapper.Dimension() != 256 {
-			t.Errorf("Expected dimension 256, got %d", wrapper.Dimension())
+		wrapper, err := NewFaissWrapperByEngine("faiss", 256)
+		if err == nil {
+			if wrapper == nil {
+				t.Fatal("Expected non-nil wrapper when no error")
+			}
+			if wrapper.Dimension() != 256 {
+				t.Errorf("Expected dimension 256, got %d", wrapper.Dimension())
+			}
+		} else {
+			// Expected when HTTP server is not available
+			t.Logf("Got expected error (no FAISS HTTP server): %v", err)
 		}
 	})
 
 	// Note: "zvec" engine test requires Python environment
-	// It will fallback to MemoryFaissWrapper if zvec_bridge.py is not found
-	t.Run("ZvecEngineFallback", func(t *testing.T) {
-		wrapper := NewFaissWrapperByEngine("zvec", 384, map[string]interface{}{
+	t.Run("ZvecEngine", func(t *testing.T) {
+		wrapper, err := NewFaissWrapperByEngine("zvec", 384, map[string]interface{}{
 			"collection_path": "/tmp/nonexistent_zvec_test",
 		})
-		if wrapper == nil {
-			t.Fatal("Expected non-nil wrapper (should fallback)")
+		if err != nil {
+			// Expected when Python/zvec bridge is not available
+			t.Logf("Got expected error (no Zvec bridge): %v", err)
+		} else {
+			t.Logf("Wrapper type: %T, dimension: %d", wrapper, wrapper.Dimension())
 		}
-		// Should fallback to memory since zvec bridge likely won't start in test env
-		t.Logf("Wrapper type: %T, dimension: %d", wrapper, wrapper.Dimension())
 	})
 }
 
-// TestNewZvecFaissWrapperFallback tests zvec wrapper fallback behavior
-func TestNewZvecFaissWrapperFallback(t *testing.T) {
-	// Should fallback to MemoryFaissWrapper when bridge can't start
-	wrapper := NewZvecFaissWrapper(384, "/tmp/nonexistent_test_path", "nonexistent_python_binary")
-	if wrapper == nil {
-		t.Fatal("Expected non-nil wrapper")
-	}
-	// Verify it is a MemoryFaissWrapper (fallback)
-	_, isMemory := wrapper.(*MemoryFaissWrapper)
-	if !isMemory {
-		t.Logf("Wrapper type: %T (may or may not be MemoryFaissWrapper depending on env)", wrapper)
+// TestNewZvecFaissWrapperError tests zvec wrapper error behavior when bridge is unavailable
+func TestNewZvecFaissWrapperError(t *testing.T) {
+	// Should return error when bridge can't start (no in-memory fallback)
+	wrapper, err := NewZvecFaissWrapper(384, "/tmp/nonexistent_test_path", "nonexistent_python_binary")
+	if err == nil {
+		// Zvec bridge somehow started - fine
+		t.Logf("Wrapper created successfully: %T", wrapper)
+		if wrapper.Dimension() != 384 {
+			t.Errorf("Expected dimension 384, got %d", wrapper.Dimension())
+		}
 	} else {
-		t.Log("Correctly fell back to MemoryFaissWrapper")
-	}
-	if wrapper.Dimension() != 384 {
-		t.Errorf("Expected dimension 384, got %d", wrapper.Dimension())
+		// Expected: bridge can't start
+		t.Logf("Got expected error: %v", err)
+		if wrapper != nil {
+			t.Fatal("Expected nil wrapper when error is returned")
+		}
 	}
 }
 
@@ -547,7 +560,7 @@ func TestParseSearchResults(t *testing.T) {
 			},
 		}
 
-		ids := zw.parseSearchResults(resp)
+		ids := zw.parseSearchResults(resp, "func_")
 		if len(ids) != 3 {
 			t.Fatalf("Expected 3 results, got %d", len(ids))
 		}
@@ -576,7 +589,7 @@ func TestParseSearchResults(t *testing.T) {
 				"results": []interface{}{},
 			},
 		}
-		ids := zw.parseSearchResults(resp)
+		ids := zw.parseSearchResults(resp, "func_")
 		if len(ids) != 0 {
 			t.Errorf("Expected 0 results, got %d", len(ids))
 		}
@@ -587,7 +600,7 @@ func TestParseSearchResults(t *testing.T) {
 			Status: "success",
 			Data:   map[string]interface{}{},
 		}
-		ids := zw.parseSearchResults(resp)
+		ids := zw.parseSearchResults(resp, "func_")
 		if len(ids) != 0 {
 			t.Errorf("Expected 0 results for invalid format, got %d", len(ids))
 		}
@@ -840,4 +853,3 @@ for line in sys.stdin:
 	// Cleanup
 	sendReq("shutdown", map[string]interface{}{})
 }
-

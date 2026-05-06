@@ -7,7 +7,7 @@
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go&logoColor=white)](https://go.dev)
 [![Python](https://img.shields.io/badge/Python-3.8+-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-0.4.0-blue?style=flat)]()
+[![Version](https://img.shields.io/badge/Version-0.4.5-blue?style=flat)]()
 
 [中文文档](README_CN.md)
 
@@ -27,6 +27,7 @@ FlashMemory indexes your codebase using LLM-powered analysis and vector search, 
 - ⚡ **Incremental Index** — Git-aware updates, only re-index changed files
 - 🔌 **MCP Integration** — Expose search tools to AI agents via Model Context Protocol
 - 🏎️ **Zvec Engine** — In-process vector database, no external service required
+- 🛡️ **Self-healing Bridge** — 3-tier LOCK/corruption recovery + graceful shutdown ensures the Zvec subprocess never wedges your collection (see [Reliability](#reliability))
 
 ---
 
@@ -67,6 +68,13 @@ fm -dir /path/to/project
 
 # Index a specific directory
 fm -dir /path/to/project -file src/handlers/
+
+# Ingest documents into unified index (v0.2: md/markdown/txt/rst/pdf/pptx/docx)
+fm ingest docs/
+fm -dir /path/to/project -ingest docs/
+
+# Watch mode (polling)
+fm ingest docs/ --watch --watch-interval 5
 
 # Force full re-index
 fm -dir /path/to/project -force_full
@@ -156,18 +164,31 @@ result = handle_mcp_tool_call(
 
 ---
 
+## Reliability
+
+The Zvec engine relies on a Python subprocess (the **bridge**) holding fcntl LOCK files on RocksDB collections. Recent hardening makes the bridge crash-safe end-to-end:
+
+- **Lifecycle** — `BuildIndex` / `IncrementalUpdate` `defer fm.Free()`; `FaissManager` tracks every wrapper it ever owned (including `Reset()` swap-outs) and frees them all together. No more bridges left over after an index call holding the LOCK against the next search.
+- **3-tier auto-recovery on `zvec.open()`** — attempt 1 opens as-is, attempt 2 recursively purges nested LOCK files (RocksDB sub-locks at `idmap.0/LOCK`, `0/scalar.index.X.rocksdb/LOCK`), attempt 3 wipes and rebuilds the collection. attempt 3 is destructive but only fires on errors matching `lock` / `recovery` / `corrupt` / `manifest` / `segment` / `idmap` / `checksum` / `no such file` — exactly the unrecoverable states a crashed bridge can leave behind.
+- **Graceful shutdown** — `fm_http` registers a SIGINT/SIGTERM handler that calls `e.Shutdown(ctx, 30s)`, lets in-flight handler defers run (`fm.Free()` → bridge SIGTERM → atexit flush+close), then `index.FreeAllActiveWrappers()` mops up any wrappers held by background goroutines. RocksDB never sees a half-written segment from `os.Exit(0)`.
+
+The combined effect: even `kill -9` on `fm_http` is recoverable on the next start (attempt 3 rebuilds), and clean termination leaves zero orphan bridge processes.
+
+---
+
 ## CLI Reference
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-dir` | `.` | Project directory to index |
 | `-query` | `""` | Natural language search query |
-| `-engine` | `faiss` | Vector engine: `zvec` (recommended) or `faiss` |
+| `-engine` | _(falls back to `zvec_config.engine` in `fm.yaml`, default `zvec`)_ | Vector engine: `zvec` (recommended) or `faiss` |
 | `-search_mode` | `semantic` | `semantic`, `keyword`, or `hybrid` |
 | `-force_full` | `false` | Force full re-index |
 | `-branch` | `master` | Git branch name |
 | `-commit` | `""` | Specific commit hash |
 | `-file` | `""` | Index specific file or directory |
+| `-ingest` | `""` | Ingest documents (`.md` `.markdown` `.txt` `.rst` `.pdf` `.pptx` `.docx`) |
 | `-query_only` | `false` | Search only, skip indexing |
 
 ---
@@ -196,7 +217,7 @@ Key endpoints:
 | GET | `/c/config` | Get configuration |
 | PUT | `/c/config` | Update configuration |
 
-See [HTTP API Deep Analysis](docs/http_api_deep_analysis.md) for the full reference.
+See [HTTP API Deep Analysis](docs/interfaces/http_api_deep_analysis.md) for the full reference.
 
 ---
 
@@ -209,6 +230,11 @@ See [HTTP API Deep Analysis](docs/http_api_deep_analysis.md) for the full refere
 | JavaScript / TypeScript | Tree-sitter | `.js` `.ts` `.jsx` `.tsx` |
 | Java | Tree-sitter | `.java` |
 | C / C++ | Tree-sitter | `.c` `.cpp` `.h` `.hpp` |
+| Markdown | DocParser | `.md` `.markdown` |
+| Text / RST | DocParser | `.txt` `.rst` |
+| PDF | DocParser + `pdftotext` bridge | `.pdf` |
+| PowerPoint | DocParser (zip+xml extraction) | `.pptx` |
+| Word | DocParser (zip+xml extraction) | `.docx` |
 
 ---
 
@@ -256,9 +282,12 @@ flashmemory/
 │   └── client.py               # FlashMemoryClient + MCP tools
 ├── config/                     # Configuration management
 ├── docs/                       # Documentation
-│   ├── zvec_integration_guide.md      # Zvec Integration Guide (EN)
-│   ├── zvec_integration_guide_cn.md   # Zvec 集成指南（中文）
-│   └── http_api_deep_analysis.md      # HTTP API reference
+│   ├── guides/
+│   │   ├── zvec_integration_guide.md      # Zvec Integration Guide (EN)
+│   │   ├── zvec_integration_guide_cn.md   # Zvec 集成指南（中文）
+│   │   └── release_guide.md               # Build & release
+│   └── interfaces/
+│       └── http_api_deep_analysis.md      # HTTP API reference
 └── fm.yaml                     # Project configuration
 ```
 
@@ -268,10 +297,11 @@ flashmemory/
 
 | Document | Description |
 |----------|-------------|
-| [Zvec Integration Guide](docs/zvec_integration_guide.md) | Complete guide: engine, hybrid search, embedding, SDK, MCP |
-| [Zvec 集成指南（中文）](docs/zvec_integration_guide_cn.md) | Zvec 集成中文版完整指南 |
-| [HTTP API Deep Analysis](docs/http_api_deep_analysis.md) | Full HTTP API reference with call chain analysis |
-| [Release Guide](docs/release_guide.md) | Build and release instructions |
+| [Zvec Integration Guide](docs/guides/zvec_integration_guide.md) | Complete guide: engine, hybrid search, embedding, SDK, MCP |
+| [Zvec 集成指南（中文）](docs/guides/zvec_integration_guide_cn.md) | Zvec 集成中文版完整指南 |
+| [HTTP API Deep Analysis](docs/interfaces/http_api_deep_analysis.md) | Full HTTP API reference with call chain analysis |
+| [Release Guide](docs/guides/release_guide.md) | Build and release instructions |
+| [Docs Index](docs/INDEX.md) | Top-level navigation across all docs |
 
 ---
 

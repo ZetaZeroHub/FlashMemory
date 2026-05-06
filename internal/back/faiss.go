@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kinglegendzzh/flashmemory/config"
 	"github.com/kinglegendzzh/flashmemory/internal/index"
 	"github.com/kinglegendzzh/flashmemory/internal/utils"
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
@@ -21,6 +22,12 @@ type FaissManager struct {
 	gitgoDir   string
 	faissDir   string
 	faissState bool
+
+	// 所有曾经被这个 FaissManager 持有过的 wrapper（包含当前 Indexer.FaissIndex）。
+	// Reset() 会替换 Indexer.FaissIndex 但旧 wrapper（含 zvec_bridge 子进程）仍在，
+	// 必须等到 Free() 时一并释放，否则旧桥进程驻留持有 fcntl LOCK，
+	// 后续 search/check 永远拿不到锁。
+	allWrappers []index.FaissWrapper
 }
 
 var (
@@ -29,12 +36,12 @@ var (
 )
 
 // InitFaissManager 在程序启动时调用，完成 Faiss 服务进程与 Indexer 的单例初始化
-func InitFaissManager(projDir string, open bool) (fm *FaissManager, err error) {
+func InitFaissManager(projDir string, open bool, engine string) (fm *FaissManager, err error) {
 	// 1. 启动 Faiss 服务（借用原 InitFaiss 的查目录+启动逻辑，不在此展开）
 	var proc *os.Process
 	ext := ".local"
 	var faissState bool
-	if open {
+	if open && engine != "zvec" {
 		logs.Infof("Starting Faiss service...")
 		//proc, _, err = InitFaiss()
 		ext = ".faiss"
@@ -58,7 +65,20 @@ func InitFaissManager(projDir string, open bool) (fm *FaissManager, err error) {
 		"server_url":   index.DefaultFaissServerURL,
 		"index_id":     projDir,
 	}
-	fw := index.NewFaissWrapper(128, opts)
+	
+	cfg, _ := config.LoadConfig()
+	if engine == "zvec" {
+		opts["collection_path"] = filepath.Join(gitgo, "zvec_collections")
+		if cfg != nil {
+			opts["python_path"] = cfg.ZvecConfig.PythonPath
+		}
+	}
+
+	dim := config.ResolveVectorDim(engine, cfg)
+	fw, fwErr := index.NewFaissWrapperByEngine(engine, dim, opts)
+	if fwErr != nil {
+		return nil, fmt.Errorf("failed to initialize FAISS/Zvec wrapper: %w", fwErr)
+	}
 	idxFile := filepath.Join(gitgo, "code_index"+ext)
 	if _, statErr := os.Stat(idxFile); statErr == nil {
 		if loadErr := fw.LoadFromFile(idxFile); loadErr == nil {
@@ -75,12 +95,13 @@ func InitFaissManager(projDir string, open bool) (fm *FaissManager, err error) {
 
 	// 5. 构建单例
 	fm = &FaissManager{
-		process:    proc,
-		Indexer:    &index.Indexer{DB: db, FaissIndex: fw},
-		opts:       opts,
-		gitgoDir:   gitgo,
-		faissDir:   idxFile,
-		faissState: faissState,
+		process:     proc,
+		Indexer:     &index.Indexer{DB: db, FaissIndex: fw},
+		opts:        opts,
+		gitgoDir:    gitgo,
+		faissDir:    idxFile,
+		faissState:  faissState,
+		allWrappers: []index.FaissWrapper{fw},
 	}
 	return fm, err
 }
@@ -98,14 +119,63 @@ func (m *FaissManager) Stop() {
 	fmt.Println("► FaissManager has stopped")
 }
 
+// Free 释放索引资源，关闭 zvec_bridge 子进程并释放 collection LOCK。
+// 不调用此方法会导致桥进程长期驻留持有 fcntl LOCK，
+// 后续 search/check 路径 spawn 的新桥永远拿不到锁。
+//
+// 释放 allWrappers 中**所有**曾被持有的 wrapper（不只是当前 Indexer.FaissIndex），
+// 这样像 Reset() 那种偷偷换 wrapper 的路径残留下来的旧桥也会被一起干掉。
+// Free 必须幂等：多次调用不应崩溃。
+func (m *FaissManager) Free() {
+	if m == nil {
+		return
+	}
+	seen := make(map[index.FaissWrapper]bool, len(m.allWrappers))
+	for _, w := range m.allWrappers {
+		if w == nil || seen[w] {
+			continue
+		}
+		seen[w] = true
+		// 单个 wrapper 的 Free panic 不能拖垮其他释放
+		func(wr index.FaissWrapper) {
+			defer func() {
+				if r := recover(); r != nil {
+					logs.Warnf("FaissManager.Free: wrapper.Free panicked: %v", r)
+				}
+			}()
+			wr.Free()
+		}(w)
+	}
+	m.allWrappers = nil
+	if m.Indexer != nil {
+		m.Indexer.FaissIndex = nil
+	}
+	if m.faissState && m.process != nil {
+		if err := utils.StopFaissService(m.process); err != nil {
+			logs.Warnf("Failed to stop Faiss service: %v", err)
+		}
+	}
+}
+
 // Reset 清空内存中 Indexer 的 FaissWrapper，并删除磁盘上的 .faiss 文件
 func (m *FaissManager) Reset() error {
 	ext := ".local"
 	if m.faissState {
 		ext = ".faiss"
 	}
-	// 1. 新建一个空的 FaissWrapper
-	m.Indexer.FaissIndex = index.NewFaissWrapper(m.Indexer.FaissIndex.Dimension(), m.opts)
+	// 1. 新建一个空的 FaissWrapper —— 必须按当前 engine 选择（faiss/zvec/local），
+	//    旧实现写死 NewFaissWrapper 让 zvec 模式 reset 时强行连 5533 报错。
+	engine := config.GetEngine()
+	newFw, fwErr := index.NewFaissWrapperByEngine(engine, m.Indexer.FaissIndex.Dimension(), m.opts)
+	if fwErr != nil {
+		return fmt.Errorf("failed to create new FAISS wrapper during reset: %w", fwErr)
+	}
+	// 注意：这里不立即 Free 旧 wrapper，而是登记到 allWrappers，
+	// 等到 FaissManager.Free() 时统一释放。这样调用方能在 Reset 后继续
+	// 用 m.Indexer 访问任何引用过的 wrapper（理论上没必要，但保持现有语义），
+	// 同时杜绝旧桥进程在 Free 之前驻留持有 LOCK。
+	m.Indexer.FaissIndex = newFw
+	m.allWrappers = append(m.allWrappers, newFw)
 	// 2. 删除磁盘文件
 	idxFile := filepath.Join(m.gitgoDir, "code_index"+ext)
 	if err := os.Remove(idxFile); err != nil && !os.IsNotExist(err) {
@@ -119,6 +189,14 @@ func InitFaiss() (*os.Process, string, error) {
 	var faissServiceDir string
 
 	faissServiceDir = os.Getenv("FAISS_SERVICE_PATH")
+	if faissServiceDir != "" {
+		if _, err := os.Stat(faissServiceDir); os.IsNotExist(err) {
+			log.Printf("FAISS_SERVICE_PATH specifies %s but directory does not exist, falling back to auto-discovery", faissServiceDir)
+			faissServiceDir = ""
+		} else {
+			log.Printf("Using FAISSService directory from FAISS_SERVICE_PATH: %s", faissServiceDir)
+		}
+	}
 
 	// 如果方法4未找到，继续尝试其他方法
 	if faissServiceDir == "" {

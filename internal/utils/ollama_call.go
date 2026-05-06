@@ -13,6 +13,7 @@ import (
 	"github.com/kinglegendzzh/flashmemory/cmd/common"
 	"github.com/kinglegendzzh/flashmemory/config"
 	"github.com/kinglegendzzh/flashmemory/internal/cloud"
+	"github.com/kinglegendzzh/flashmemory/internal/llm"
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
@@ -80,21 +81,34 @@ func NormalizeResponseWithSmallModel(rawResponse string) (string, error) {
 }
 
 func DefaultModelCompletion(rawResponse string) (string, error) {
+	return DefaultModelCompletionWithModel(rawResponse, "")
+}
+
+func DefaultModelCompletionWithModel(rawResponse, preferredModel string) (string, error) {
 	cfg, err := config.LoadConfig()
 	if cfg == nil || err != nil {
 		logs.Errorf("Warn: no config file found or parse error, fallback to env or default. Err: %v", err)
 		return "", err
 	}
 	logs.Infof("Keyword search for query: %s", rawResponse)
-	if cfg.DefaultCloudModel.Enabled {
-		invoke, err := cloud.KeywordInvoke(&cfg.DefaultCloudModel, &cfg.KeywordPrompts, rawResponse)
+	selectedModel := strings.TrimSpace(preferredModel)
+	if selectedModel == "" {
+		selectedModel = cfg.DefaultModel
+	}
+	cloudCfg := cfg.DefaultCloudModel
+	if selectedModel != "" {
+		cloudCfg.Model = selectedModel
+	}
+
+	if cloudCfg.Enabled {
+		invoke, err := cloud.KeywordInvoke(&cloudCfg, &cfg.KeywordPrompts, rawResponse)
 		if err != nil {
 			logs.Errorf("Failed to invoke keyword model: %v", err)
 			return "", err
 		}
 		return FilterJSONContent(invoke), nil
 	} else {
-		logs.Infof("Using model: %s/%s", cfg.ApiBaseUrl+cfg.CompletionApi, cfg.DefaultModel)
+		logs.Infof("Using model: %s/%s", cfg.ApiBaseUrl+cfg.CompletionApi, selectedModel)
 		ctx := context.Background()
 		template := cloud.CreateTemplate(cfg.KeywordPrompts.System, cfg.KeywordPrompts.User)
 		m := map[string]any{}
@@ -105,7 +119,7 @@ func DefaultModelCompletion(rawResponse string) (string, error) {
 			logs.Errorf("format template failed: %v\n", err)
 			return "", err
 		}
-		cm, err := cloud.CreateOllamaModel(ctx, cfg.ApiBaseUrl, cfg.DefaultModel)
+		cm, err := cloud.CreateOllamaModel(ctx, cfg.ApiBaseUrl, selectedModel)
 		if err != nil {
 			logs.Errorf("create chat model failed: %v", err)
 			return "", err
@@ -120,6 +134,22 @@ func DefaultModelCompletion(rawResponse string) (string, error) {
 	}
 }
 
+func SelectCompletionModelConfig(cfg *config.Config, prompt, operation string) (*config.ModelConfig, llm.RouteDecision) {
+	return selectCompletionModelConfigByLength(cfg, len([]rune(prompt)), operation)
+}
+
+func selectCompletionModelConfigByLength(cfg *config.Config, promptLength int, operation string) (*config.ModelConfig, llm.RouteDecision) {
+	decision := llm.DecideForPrompt(cfg, llm.RouteInput{
+		Operation:    operation,
+		PromptLength: promptLength,
+	})
+	selected, ok := llm.SelectModelConfig(cfg, decision.Complexity)
+	if !ok {
+		return nil, decision
+	}
+	return &selected, decision
+}
+
 func Completion(prompt string) (string, error) {
 	cfg, err := config.LoadConfig()
 	if cfg == nil || err != nil {
@@ -132,11 +162,16 @@ func Completion(prompt string) (string, error) {
 		logs.Infof("The content of the prompt word is too long, the first %d characters are intercepted", cfg.PromptLimit)
 		prompt = prompt[:cfg.PromptLimit]
 	}
-	modelConfig := cloud.GetModelConfigByPromptLength(l)
+	modelConfig, routeDecision := selectCompletionModelConfigByLength(cfg, l, llm.OperationAnalysis)
 	if modelConfig == nil {
-		logs.Infof("No model configuration found for prompt length %d", l)
-		return "", nil
+		modelConfig = cloud.GetModelConfigByPromptLength(l)
+		if modelConfig == nil {
+			logs.Infof("No model configuration found for prompt length %d", l)
+			return "", nil
+		}
 	}
+	logs.Infof("LLM route: provider=%s, model=%s, reasoning=%s, budget=%d, complexity=%d, reason=%s",
+		routeDecision.Provider, routeDecision.ModelID, routeDecision.ReasoningMode, routeDecision.ContextBudget, routeDecision.Complexity, routeDecision.Reason)
 	if modelConfig.CloudModel.Enabled {
 		logs.Infof("Using cloud model: %s", modelConfig.CloudModel.Model)
 		return cloud.ANAInvoke(&modelConfig.CloudModel, prompt)

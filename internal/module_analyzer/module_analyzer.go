@@ -72,7 +72,7 @@ func RegisterTask(projectDir string) string {
 			count++
 		}
 	}
-	logs.Infof("Cleaned %d tasks of project %s, registered new tasks: %s", projectDir, count, taskID)
+	logs.Infof("Cleaned %d tasks of project %s, registered new tasks: %s", count, projectDir, taskID)
 	tasks[taskID] = task
 	tasksMutex.Unlock()
 
@@ -386,26 +386,66 @@ func (ma *ModuleAnalyzer) AnalyzeModules(results []analyzer.LLMAnalysisResult) e
 			return fmt.Errorf("Index file does not exist")
 		}
 
-		// 创建FaissWrapper，传入存储路径选项
-		faissOptions := map[string]interface{}{
-			"storage_path": absGitgoDir,
-			"server_url":   index.DefaultFaissServerURL,
-			"index_id":     fmt.Sprintf("%s_module", ma.projDir),
+		// 按配置选择向量引擎。v0.4.0 之前这里硬编码走 NewFaissWrapper（HTTP，
+		// 即 :5533），所以 zvec 模式下必然 connection refused。改成 ByEngine
+		// 之后，zvec 模式会走 zvec bridge 写入既有的 modules/ collection
+		// （bridge 启动时 init_collection(type="both") 已经把两个集合都打开了）。
+		engine := config.GetEngine()
+		dim := config.ResolveVectorDim(engine, ma.config)
+		zvecCollPath := ""
+		pythonPath := ""
+		if engine == "zvec" {
+			zvecCollPath = filepath.Join(absGitgoDir, "zvec_collections")
+			if ma.config != nil {
+				pythonPath = ma.config.ZvecConfig.PythonPath
+			}
 		}
-		idx := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapper(128, faissOptions)}
+		faissOptions := map[string]interface{}{
+			"storage_path":    absGitgoDir,
+			"server_url":      index.DefaultFaissServerURL,
+			"index_id":        fmt.Sprintf("%s_module", ma.projDir),
+			"collection_path": zvecCollPath,
+			"python_path":     pythonPath,
+		}
+		faissWrapper, fwErr := index.NewFaissWrapperByEngine(engine, dim, faissOptions)
+		if fwErr != nil {
+			logs.Warnf("Failed to create vector wrapper for module vectors (engine=%s): %v", engine, fwErr)
+			// Not fatal - module vector generation is optional
+		} else {
+			// zvec 模式下这里 spawn 了一个新桥（与索引主路径的桥不是同一个）。
+			// 即便 module_analyzer 在 BuildIndex 返回后异步运行，依然要在
+			// 自己结束时 Free，否则桥进程残留持锁，下次 search/index 拿不到锁。
+			defer faissWrapper.Free()
 
-		if _, err := os.Stat(faissModulePath); os.IsNotExist(err) {
-			logs.Infof("Initializing Faiss index...")
-			err = embedding.EnsureCodeDescEmbeddingsBatch(idx)
-			if common.IsLLMError(err) {
-				return err
+			idx := &index.Indexer{DB: db, FaissIndex: faissWrapper}
+
+			// 是否需要生成模块向量：
+			//  - faiss 模式：以 module.faiss 文件存在为准（沿用旧行为）
+			//  - zvec 模式：模块 collection 由桥负责持久化，没有单一文件可查；
+			//    交给 EnsureCodeDescEmbeddingsBatch 自己做 upsert（幂等）。
+			needBuild := engine == "zvec"
+			if !needBuild {
+				if _, err := os.Stat(faissModulePath); os.IsNotExist(err) {
+					needBuild = true
+				}
 			}
-			if err != nil {
-				return fmt.Errorf("Index file reset failed")
-			}
-			err = idx.FaissIndex.SaveToFile(absGitgoDir + "/module.faiss")
-			if err != nil {
-				return fmt.Errorf("Index file saving failed")
+
+			if needBuild {
+				logs.Infof("Initializing module vector index (engine=%s)...", engine)
+				err = embedding.EnsureCodeDescEmbeddingsBatch(idx)
+				if common.IsLLMError(err) {
+					return err
+				}
+				if err != nil {
+					return fmt.Errorf("Index file reset failed")
+				}
+				// faiss 模式才需要落 .faiss 文件；zvec 模式 SaveToFile 是 no-op，
+				// 调用也无害（但跳过避免在日志里产生 "Zvec 索引已优化并持久化" 噪音）。
+				if engine != "zvec" {
+					if err = idx.FaissIndex.SaveToFile(absGitgoDir + "/module.faiss"); err != nil {
+						return fmt.Errorf("Index file saving failed")
+					}
+				}
 			}
 		}
 	}
@@ -1580,6 +1620,24 @@ func (ma *ModuleAnalyzer) generateFileDescription(module *ModuleInfo) (string, e
 		return "", nil
 	}
 
+	// BUG-001 fix: 如果文件下的 FunctionInfo 主要为 llm_parser（文档段），
+	// 走文档专用 prompt + 内容沙箱化，避免把"函数/方法"等代码术语错误地灌
+	// 给 LLM 总结知识库内容，同时阻断 prompt 注入向量。
+	if len(module.Functions) > 0 {
+		selector := NewPromptSelector(ma.config)
+		switch selector.SelectFilePromptKind(module.Functions) {
+		case PromptKindDoc:
+			prompt := selector.FormatDocFilePrompt(module.Path, module.Functions)
+			logs.Infof("Doc-mode prompt selected for file %s", module.Path)
+			return ma.invokeFileLLM(module.Path, prompt)
+		case PromptKindMixed:
+			prompt := selector.FormatMixedFilePrompt(module.Path, module.Functions)
+			logs.Infof("Mixed-mode prompt selected for file %s", module.Path)
+			return ma.invokeFileLLM(module.Path, prompt)
+		}
+		// PromptKindCode 走原有路径
+	}
+
 	// 构建提示词
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("%s %s\n\n", ma.config.FileAnalyzerPrompts.Header, module.Path))
@@ -1656,6 +1714,20 @@ func (ma *ModuleAnalyzer) generateFileDescription(module *ModuleInfo) (string, e
 	}
 	logs.Tokenf("\nDescription of file %s: %s\n", module.Path, description)
 
+	return description, nil
+}
+
+// invokeFileLLM is a thin wrapper used by the BUG-001 doc/mixed prompt branches
+// in generateFileDescription so the doc path mirrors the same logging and
+// error semantics as the legacy code-only path.
+func (ma *ModuleAnalyzer) invokeFileLLM(path, prompt string) (string, error) {
+	logs.Infof("Prompt word for file %s: %s", path, prompt)
+	description, err := cloud.FastFunction(ma.config, prompt)
+	if err != nil {
+		logs.Errorf("Failed to generate description for file %s: %v", path, err)
+		return "", err
+	}
+	logs.Tokenf("\nDescription of file %s: %s\n", path, description)
 	return description, nil
 }
 

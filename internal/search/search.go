@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kinglegendzzh/flashmemory/internal/anchor"
 	"github.com/kinglegendzzh/flashmemory/internal/index"
 	"github.com/kinglegendzzh/flashmemory/internal/utils"
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
@@ -18,9 +19,13 @@ import (
 // SearchResult represents a single search result with metadata.
 type SearchResult struct {
 	ID          int     // Database ID
+	AnchorID    string  // Stable object anchor ID
 	Name        string  // Function name
 	Package     string  // Package name
 	File        string  // File path
+	Source      string  // Provenance source
+	Page        int     // Provenance page index
+	Slide       int     // Provenance slide index
 	Description string  // Function description
 	Score       float32 // Similarity score (综合得分)
 	CodeSnippet string  // 提取的代码片段（如果请求包含代码）
@@ -33,10 +38,11 @@ type SearchResult struct {
 
 // SearchOptions configures the search behavior.
 type SearchOptions struct {
-	Limit       int     // Maximum number of results to return
-	MinScore    float32 // Minimum similarity score threshold
-	IncludeCode bool    // Whether to include code snippets
-	SearchMode  string  // "semantic", "keyword", "hybrid"
+	Limit        int     // Maximum number of results to return
+	MinScore     float32 // Minimum similarity score threshold
+	IncludeCode  bool    // Whether to include code snippets
+	SearchMode   string  // "semantic", "keyword", "hybrid"
+	KeywordModel string  // Optional keyword model override
 }
 
 // SearchEngine ties together the SQLite DB and Faiss index for queries.
@@ -48,6 +54,8 @@ type SearchEngine struct {
 	Keywords     []string
 	Module       bool
 }
+
+var keywordCompletion = utils.DefaultModelCompletionWithModel
 
 // Searcher encapsulates different search implementations.
 type Searcher struct {
@@ -66,7 +74,7 @@ func (se *SearchEngine) Query(query string, opts SearchOptions) ([]SearchResult,
 	if opts.SearchMode != "semantic" {
 		logs.Infof("Keywords llm search for query: %s", query)
 		// 1. 调用大模型拿到 Keywords JSON 数组字符串
-		keywordJsonArray, err := utils.DefaultModelCompletion(query)
+		keywordJsonArray, err := keywordCompletion(query, opts.KeywordModel)
 		tokens := []string{"```", "json", "```json"}
 		for _, v := range tokens {
 			if strings.Contains(keywordJsonArray, v) {
@@ -201,7 +209,7 @@ func keywordSearch(se *SearchEngine, query string, opts SearchOptions) ([]Search
 
 	// 4. 动态拼接 SQL
 	sqlQuery := fmt.Sprintf(`
-        SELECT rowid, name, package, file, description, start_line, end_line
+        SELECT rowid, name, package, file, source, page, slide, description, start_line, end_line, function_type
         FROM functions
         WHERE %s
         LIMIT ?`,
@@ -219,13 +227,16 @@ func keywordSearch(se *SearchEngine, query string, opts SearchOptions) ([]Search
 	var results []SearchResult
 	for rows.Next() {
 		var r SearchResult
+		var functionType string
 		if err := rows.Scan(
 			&r.ID, &r.Name, &r.Package, &r.File,
-			&r.Description, &r.StartLine, &r.EndLine,
+			&r.Source, &r.Page, &r.Slide, &r.Description, &r.StartLine, &r.EndLine, &functionType,
 		); err != nil {
 			logs.Errorf("Row scan error: %v", err)
 			continue
 		}
+		r.Source = anchor.EffectiveSource(r.File, r.Source)
+		r.AnchorID = anchor.BuildID(r.Name, r.Package, functionType, r.File, r.Source, r.Page, r.Slide, r.StartLine, r.EndLine)
 
 		// 简单给一个固定分数，或者你也可以根据匹配次数累加
 		r.Score = 1
@@ -424,19 +435,27 @@ func dummyEmbedding(query string, dim int) []float32 {
 
 // fetchFunctionFromDB 根据rowid获取函数信息，并在需要时提取代码片段
 func fetchFunctionFromDB(db *sql.DB, id int, includeCode bool, projDir string) (SearchResult, error) {
-	var name, pkg, file, desc string
-	var startLine, endLine int
-	err := db.QueryRow("SELECT name, package, file, description, start_line, end_line FROM functions WHERE rowid = ?", id).
-		Scan(&name, &pkg, &file, &desc, &startLine, &endLine)
+	var name, pkg, file, source, desc, functionType string
+	var startLine, endLine, page, slide int
+	err := db.QueryRow("SELECT name, package, file, source, page, slide, description, start_line, end_line, function_type FROM functions WHERE rowid = ?", id).
+		Scan(&name, &pkg, &file, &source, &page, &slide, &desc, &startLine, &endLine, &functionType)
 	if err != nil {
 		return SearchResult{}, err
 	}
+	source = anchor.EffectiveSource(file, source)
+	anchorID := anchor.BuildID(name, pkg, functionType, file, source, page, slide, startLine, endLine)
 	res := SearchResult{
 		ID:          id,
+		AnchorID:    anchorID,
 		Name:        name,
 		Package:     pkg,
 		File:        file,
+		Source:      source,
+		Page:        page,
+		Slide:       slide,
 		Description: desc,
+		StartLine:   startLine,
+		EndLine:     endLine,
 	}
 	if includeCode {
 		logs.Tokenf("Retrieving code snippets: %s, %d, %d\n", file, startLine, endLine)

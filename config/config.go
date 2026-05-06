@@ -55,6 +55,7 @@ type CloudModel struct {
 	Api         string  `mapstructure:"api" json:"api" yaml:"api"`
 	Model       string  `mapstructure:"model" json:"model" yaml:"model"`
 	Url         string  `mapstructure:"url" json:"url" yaml:"url"`
+	OverrideURL string  `mapstructure:"override_url" json:"override_url,omitempty" yaml:"override_url,omitempty"`
 	Enabled     bool    `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
 	Type        string  `mapstructure:"type" json:"type" yaml:"type"`
 	MaxPrompts  int     `mapstructure:"max_prompts" json:"max_prompts" yaml:"max_prompts"`
@@ -114,6 +115,39 @@ type FileAnalyzerPrompts struct {
 	SubModuleHeader string `mapstructure:"sub_module_header" yaml:"sub_module_header" json:"sub_module_header,omitempty"`
 }
 
+// DocParserConfig surfaces the docs/* tunables to the YAML config so users can
+// opt into Pandoc-based fallback and KB-id extraction without code changes.
+// The struct mirrors docs.Config but lives here to keep the YAML schema
+// alongside the rest of the runtime configuration.
+type DocParserConfig struct {
+	PandocFallback  string `mapstructure:"pandoc_fallback" yaml:"pandoc_fallback" json:"pandoc_fallback,omitempty"`
+	PandocCacheDir  string `mapstructure:"pandoc_cache_dir" yaml:"pandoc_cache_dir" json:"pandoc_cache_dir,omitempty"`
+	PandocBin       string `mapstructure:"pandoc_bin" yaml:"pandoc_bin" json:"pandoc_bin,omitempty"`
+	DocChunkLines   int    `mapstructure:"doc_chunk_lines" yaml:"doc_chunk_lines" json:"doc_chunk_lines,omitempty"`
+	MaxSectionChars int    `mapstructure:"max_section_chars" yaml:"max_section_chars" json:"max_section_chars,omitempty"`
+	MinChunkChars   int    `mapstructure:"min_chunk_chars" yaml:"min_chunk_chars" json:"min_chunk_chars,omitempty"`
+	OCRLangs        string `mapstructure:"ocr_langs" yaml:"ocr_langs" json:"ocr_langs,omitempty"`
+	ExtractKBIDs    bool   `mapstructure:"extract_kb_ids" yaml:"extract_kb_ids" json:"extract_kb_ids,omitempty"`
+}
+
+// DocFileAnalyzerPrompts is the document-specific variant of FileAnalyzerPrompts.
+// Used when a file's parsed sections are predominantly document chunks
+// (FunctionType == "llm_parser") to avoid misleading the LLM with
+// code-oriented terminology.
+type DocFileAnalyzerPrompts struct {
+	Header          string `mapstructure:"header" yaml:"header" json:"header,omitempty"`
+	Footer          string `mapstructure:"footer" yaml:"footer" json:"footer,omitempty"`
+	SubModuleHeader string `mapstructure:"sub_module_header" yaml:"sub_module_header" json:"sub_module_header,omitempty"`
+}
+
+// DocModuleAnalyzerPrompts mirrors ModuleAnalyzerPrompts for directories that
+// are predominantly documentation rather than code.
+type DocModuleAnalyzerPrompts struct {
+	Header          string `mapstructure:"header" yaml:"header" json:"header,omitempty"`
+	Footer          string `mapstructure:"footer" yaml:"footer" json:"footer,omitempty"`
+	SubModuleHeader string `mapstructure:"sub_module_header" yaml:"sub_module_header" json:"sub_module_header,omitempty"`
+}
+
 type Config struct {
 	PipPath               string                `mapstructure:"pip_path" yaml:"pip_path" json:"pip_path,omitempty"`
 	LlmParserPrompts      string                `mapstructure:"llm_parser_prompts" yaml:"llm_parser_prompts" json:"llm_parser_prompts,omitempty"`
@@ -122,6 +156,9 @@ type Config struct {
 	ModuleAnalyzerPrompts ModuleAnalyzerPrompts `mapstructure:"module_analyzer_prompts" yaml:"module_analyzer_prompts" json:"module_analyzer_prompts,omitempty"`
 	RepoAnalyzerPrompts   RepoAnalyzerPrompts   `mapstructure:"repo_analyzer_prompts" yaml:"repo_analyzer_prompts" json:"repo_analyzer_prompts,omitempty"`
 	FileAnalyzerPrompts   FileAnalyzerPrompts   `mapstructure:"file_analyzer_prompts" yaml:"file_analyzer_prompts" json:"file_analyzer_prompts,omitempty"`
+	DocFileAnalyzerPrompts   DocFileAnalyzerPrompts   `mapstructure:"doc_file_analyzer_prompts" yaml:"doc_file_analyzer_prompts" json:"doc_file_analyzer_prompts,omitempty"`
+	DocModuleAnalyzerPrompts DocModuleAnalyzerPrompts `mapstructure:"doc_module_analyzer_prompts" yaml:"doc_module_analyzer_prompts" json:"doc_module_analyzer_prompts,omitempty"`
+	DocParser                DocParserConfig          `mapstructure:"doc_parser" yaml:"doc_parser" json:"doc_parser,omitempty"`
 	ApiBaseUrl            string                `mapstructure:"api_base_url" yaml:"api_base_url" json:"api_base_url,omitempty"`
 	CompletionApi         string                `mapstructure:"completion_api" yaml:"completion_api" json:"completion_api,omitempty"`
 	EmbeddingApi          string                `mapstructure:"embedding_api" yaml:"embedding_api" json:"embedding_api,omitempty"`
@@ -375,4 +412,25 @@ func GetEngine() string {
 		return GlobalOllamaConfig.ZvecConfig.Engine
 	}
 	return "zvec"
+}
+
+// ResolveVectorDim returns the embedding dimension to use, regardless of engine.
+//
+// Priority:
+//  1. cfg.ZvecConfig.Dimension if set (>0). The yaml key is `zvec_config.dimension`
+//     but it semantically governs the vector engine for both faiss and zvec — the
+//     legacy name is kept for backward compatibility.
+//  2. Engine-specific defaults: faiss → 128 (legacy), zvec → 384.
+//
+// Pre v0.5: faiss path hardcoded 128 ignoring cfg, which silently truncated
+// 1024-dim BGE embeddings and collapsed cosine similarity to ~0.6 across the
+// board. Always route through this helper so the yaml dimension actually wins.
+func ResolveVectorDim(engine string, cfg *Config) int {
+	if cfg != nil && cfg.ZvecConfig.Dimension > 0 {
+		return cfg.ZvecConfig.Dimension
+	}
+	if engine == "zvec" {
+		return 384
+	}
+	return 128
 }

@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/kinglegendzzh/flashmemory/internal/analyzer"
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
@@ -44,7 +45,10 @@ CREATE TABLE IF NOT EXISTS functions (
     description TEXT,
     start_line INTEGER,
     end_line INTEGER,
-    function_type TEXT
+    function_type TEXT,
+    source TEXT,
+    page INTEGER DEFAULT 0,
+    slide INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS calls (
     caller TEXT,
@@ -89,6 +93,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_code_desc_unique ON code_desc(path, type);
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureFunctionsProvenanceColumns(db); err != nil {
+		return nil, err
+	}
+	if err := ensureDocSchema(db); err != nil {
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -102,11 +112,15 @@ func (idx *Indexer) SaveAnalysisToDB(results []analyzer.LLMAnalysisResult) error
 	// 使用 INSERT OR IGNORE，遇到冲突时跳过
 	funcStmt, _ := tx.Prepare(`
 INSERT OR IGNORE INTO functions(
-    name, package, file, description, start_line, end_line, function_type
-) VALUES(?, ?, ?, ?, ?, ?, ?)`)
+    name, package, file, description, start_line, end_line, function_type, source, page, slide
+) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	callStmt, _ := tx.Prepare("INSERT INTO calls(caller, callee) VALUES(?, ?)")
 	extStmt, _ := tx.Prepare("INSERT INTO externals(function, external) VALUES(?, ?)")
 	for _, res := range results {
+		source := res.Func.Source
+		if source == "" {
+			source = res.Func.File
+		}
 		_, err = funcStmt.Exec(
 			res.Func.Name,
 			res.Func.Package,
@@ -115,6 +129,9 @@ INSERT OR IGNORE INTO functions(
 			res.Func.StartLine,
 			res.Func.EndLine,
 			res.Func.FunctionType,
+			source,
+			res.Func.Page,
+			res.Func.Slide,
 		)
 		if err != nil {
 			log.Printf("Insertion of functions failed (skipped?): %v", err)
@@ -144,12 +161,12 @@ func (idx *Indexer) SaveAnalysisToDBHttp(results []analyzer.LLMAnalysisResult, p
 	// 使用 INSERT OR IGNORE，遇到冲突时跳过
 	funcStmt, _ := tx.Prepare(`
 INSERT OR IGNORE INTO functions(
-    name, package, file, description, start_line, end_line, function_type
-) VALUES(?, ?, ?, ?, ?, ?, ?)`)
+    name, package, file, description, start_line, end_line, function_type, source, page, slide
+) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	callStmt, _ := tx.Prepare("INSERT INTO calls(caller, callee) VALUES(?, ?)")
 	extStmt, _ := tx.Prepare("INSERT INTO externals(function, external) VALUES(?, ?)")
 	for _, res := range results {
-		if res.Func.FunctionType == "llm_parser" {
+		if res.Func.FunctionType == "llm_parser" && res.Func.Source == "" && res.Func.Page == 0 && res.Func.Slide == 0 {
 			logs.Warnf("[WARN] Ignoring library entry %s for LLM_PARSER function", res.Func.Name)
 			continue
 		}
@@ -160,6 +177,26 @@ INSERT OR IGNORE INTO functions(
 			}
 			res.Func.File = filepath.ToSlash(res.Func.File)
 			logs.Infof("[DEBUG][DB] The storage file path is: %s", res.Func.File)
+
+			if res.Func.Source != "" {
+				sourcePath := res.Func.Source
+				sourceSuffix := ""
+				if strings.Contains(sourcePath, "::") {
+					parts := strings.SplitN(sourcePath, "::", 2)
+					sourcePath = parts[0]
+					sourceSuffix = "::" + parts[1]
+				}
+				if !filepath.IsAbs(sourcePath) {
+					sourcePath = filepath.Join(projDir, sourcePath)
+				}
+				if rel, relErr := filepath.Rel(projDir, sourcePath); relErr == nil {
+					res.Func.Source = filepath.ToSlash(rel) + sourceSuffix
+				}
+			}
+		}
+		source := res.Func.Source
+		if source == "" {
+			source = res.Func.File
 		}
 		_, err = funcStmt.Exec(
 			res.Func.Name,
@@ -169,6 +206,9 @@ INSERT OR IGNORE INTO functions(
 			res.Func.StartLine,
 			res.Func.EndLine,
 			res.Func.FunctionType,
+			source,
+			res.Func.Page,
+			res.Func.Slide,
 		)
 		if err != nil {
 			log.Printf("Insertion of functions failed (skipped?): %v", err)
@@ -189,62 +229,99 @@ INSERT OR IGNORE INTO functions(
 	return tx.Commit()
 }
 
+func ensureFunctionsProvenanceColumns(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(functions)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	existing := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			colType   string
+			notNull   int
+			defaultV  sql.NullString
+			primaryID int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultV, &primaryID); err != nil {
+			return err
+		}
+		existing[name] = true
+	}
+
+	needed := map[string]string{
+		"source": "TEXT",
+		"page":   "INTEGER DEFAULT 0",
+		"slide":  "INTEGER DEFAULT 0",
+	}
+
+	for col, ddl := range needed {
+		if existing[col] {
+			continue
+		}
+		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE functions ADD COLUMN %s %s", col, ddl)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // --- Vector indexing (Faiss) ---
 
-// NewFaissWrapper 创建一个新的 Faiss 索引实现
-// 优先尝试创建 HTTP 实现，如果失败则回退到内存实现
-// 可选参数 options 可以包含额外的配置选项
-func NewFaissWrapper(dimension int, options ...map[string]interface{}) FaissWrapper {
-	// 解析可选参数
+// NewFaissWrapper creates a new HTTP-based FAISS wrapper.
+// Returns error if the FAISS HTTP server is not reachable (no in-memory fallback).
+func NewFaissWrapper(dimension int, options ...map[string]interface{}) (FaissWrapper, error) {
+	// Parse optional arguments
 	var opts map[string]interface{}
 	if len(options) > 0 {
 		opts = options[0]
 	}
 
-	// 获取服务器URL，默认使用DefaultFaissServerURL
+	// Get server URL, default to DefaultFaissServerURL
 	serverURL := DefaultFaissServerURL
 	if url, ok := opts["server_url"].(string); ok && url != "" {
 		serverURL = url
 	}
 
-	// 获取索引ID，默认使用"default"
+	// Get index ID, default to "default"
 	indexID := "default"
 	if id, ok := opts["index_id"].(string); ok && id != "" {
 		indexID = id
 	}
 
-	// 尝试创建 HTTP 实现
+	// Create HTTP FAISS wrapper (no in-memory fallback)
 	httpWrapper, err := NewHTTPFaissWrapper(dimension, true, serverURL, indexID)
-	if err == nil {
-		// 如果提供了存储路径，设置到wrapper中
-		if path, ok := opts["storage_path"].(string); ok && path != "" {
-			// 设置存储路径到wrapper中
-			httpWrapper.storagePath = path
-			fmt.Printf("Faiss index will use storage path: %s\n", path)
-		}
-		return httpWrapper
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to FAISS HTTP server at %s: %w", serverURL, err)
 	}
 
-	// 如果 HTTP 实现创建失败，回退到内存实现
-	fmt.Printf("Warning: Failed to create HTTP Faiss index: %v, falling back to in-memory implementation\n", err)
-	return NewMemoryFaissWrapper(dimension)
+	// Set storage path if provided
+	if path, ok := opts["storage_path"].(string); ok && path != "" {
+		httpWrapper.storagePath = path
+		logs.Infof("Faiss index will use storage path: %s", path)
+	}
+	return httpWrapper, nil
 }
 
-// NewZvecFaissWrapper 创建基于 Zvec 的向量引擎封装
-// collectionPath 为 Collection 存储目录 (如 .gitgo/zvec_collections)
-// pythonPath 为 Python 可执行文件路径，空则使用默认 python3
-func NewZvecFaissWrapper(dimension int, collectionPath string, pythonPath string) FaissWrapper {
+// NewZvecFaissWrapper creates a Zvec-based vector engine wrapper.
+// collectionPath: Collection storage directory (e.g. .gitgo/zvec_collections)
+// pythonPath: Python executable path, empty uses default python3
+// Returns error if Zvec engine initialization fails (no in-memory fallback).
+func NewZvecFaissWrapper(dimension int, collectionPath string, pythonPath string) (FaissWrapper, error) {
 	wrapper, err := NewZvecWrapper(dimension, collectionPath, pythonPath)
 	if err != nil {
-		fmt.Printf("Warning: Failed to create Zvec engine: %v, falling back to in-memory implementation\n", err)
-		return NewMemoryFaissWrapper(dimension)
+		return nil, fmt.Errorf("failed to create Zvec engine: %w", err)
 	}
-	return wrapper
+	return wrapper, nil
 }
 
-// NewFaissWrapperByEngine 根据 engine 参数选择向量引擎
-// engine: "zvec" 使用 Zvec 引擎, "faiss" 或 "" 使用原有 FAISS/Memory 引擎
-func NewFaissWrapperByEngine(engine string, dimension int, options ...map[string]interface{}) FaissWrapper {
+// NewFaissWrapperByEngine selects vector engine by engine parameter.
+// engine: "zvec" uses Zvec engine, "faiss" or "" uses HTTP FAISS engine.
+// Returns (FaissWrapper, error) - no silent fallback to in-memory implementation.
+func NewFaissWrapperByEngine(engine string, dimension int, options ...map[string]interface{}) (FaissWrapper, error) {
 	var opts map[string]interface{}
 	if len(options) > 0 {
 		opts = options[0]
@@ -259,12 +336,12 @@ func NewFaissWrapperByEngine(engine string, dimension int, options ...map[string
 			collectionPath = filepath.Join(".gitgo", "zvec_collections")
 		}
 		pythonPath, _ := opts["python_path"].(string)
-		logs.Infof("使用 Zvec 引擎, collection_path=%s, dimension=%d", collectionPath, dimension)
+		logs.Infof("Using Zvec engine, collection_path=%s, dimension=%d", collectionPath, dimension)
 		return NewZvecFaissWrapper(dimension, collectionPath, pythonPath)
 
 	default:
-		// 使用原有的 FAISS/Memory 引擎
-		logs.Infof("使用 FAISS 引擎 (engine=%s), dimension=%d", engine, dimension)
+		// Default: use HTTP FAISS engine (no in-memory fallback)
+		logs.Infof("Using FAISS HTTP engine (engine=%s), dimension=%d", engine, dimension)
 		return NewFaissWrapper(dimension, opts)
 	}
 }

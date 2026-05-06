@@ -7,7 +7,7 @@
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go&logoColor=white)](https://go.dev)
 [![Python](https://img.shields.io/badge/Python-3.8+-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-0.4.0-blue?style=flat)]()
+[![Version](https://img.shields.io/badge/Version-0.4.5-blue?style=flat)]()
 
 [English README](README.md)
 
@@ -27,6 +27,7 @@ FlashMemory 通过 LLM 驱动的代码分析和向量搜索，为你的代码库
 - ⚡ **增量索引** — 基于 Git 的智能更新，仅重新索引变更文件
 - 🔌 **MCP 集成** — 通过 Model Context Protocol 向 AI Agent 暴露搜索工具
 - 🏎️ **Zvec 引擎** — 进程内向量数据库，无需外部服务
+- 🛡️ **桥进程自愈** — 三层 LOCK / corruption 恢复 + 优雅退出，子进程不再卡死整个 collection（详见 [可靠性](#%E5%8F%AF%E9%9D%A0%E6%80%A7)）
 
 ---
 
@@ -156,13 +157,25 @@ result = handle_mcp_tool_call(
 
 ---
 
+## 可靠性
+
+Zvec 引擎依赖一个 Python 子进程(**bridge**)持有 RocksDB collection 的 fcntl LOCK 文件。最近一轮硬化让桥进程从端到端都具备崩溃安全性:
+
+- **生命周期**:`BuildIndex` / `IncrementalUpdate` 入口 `defer fm.Free()`;`FaissManager` 维护一份 `allWrappers` 列表,跟踪所有曾经持有过的 wrapper(包括 `Reset()` 偷换路径换出的旧 wrapper),`Free()` 时一并释放。索引完成后不再残留持锁的桥进程拖死后续 search。
+- **`zvec.open()` 三层自愈**:attempt 1 直接打开 → attempt 2 递归清理嵌套 LOCK 文件(RocksDB 子目录的 `idmap.0/LOCK`、`0/scalar.index.X.rocksdb/LOCK` 等)→ attempt 3 销毁并重建整个 collection。attempt 3 是破坏性操作,但只在错误信息命中 `lock` / `recovery` / `corrupt` / `manifest` / `segment` / `idmap` / `checksum` / `no such file` 这八类典型不可恢复状态时才触发——正是桥进程崩溃后会留下的状态集合。
+- **优雅退出**:`fm_http` 注册 SIGINT/SIGTERM handler,先调 `e.Shutdown(ctx, 30s)` 让所有 in-flight handler 的 defer 跑完(`fm.Free()` → 桥 SIGTERM → atexit flush+close),再调 `index.FreeAllActiveWrappers()` 兜底清理后台 goroutine 持有的 wrapper。RocksDB 不会再因为 `os.Exit(0)` 看到写半截的 segment。
+
+合在一起:`kill -9` 杀掉 `fm_http` 后下次启动也能从 attempt 3 重建恢复;正常 SIGINT 退出后零孤儿桥进程。
+
+---
+
 ## 命令行参数
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `-dir` | `.` | 要索引的项目目录 |
 | `-query` | `""` | 自然语言查询（支持中英文） |
-| `-engine` | `faiss` | 向量引擎：`zvec`（推荐）或 `faiss` |
+| `-engine` | _(回退到 `fm.yaml` 中 `zvec_config.engine`，默认 `zvec`)_ | 向量引擎：`zvec`（推荐）或 `faiss` |
 | `-search_mode` | `semantic` | 搜索模式：`semantic` / `keyword` / `hybrid` |
 | `-force_full` | `false` | 强制全量索引，跳过增量检测 |
 | `-branch` | `master` | Git 分支名 |
@@ -196,7 +209,7 @@ fm serve --port 5532
 | GET | `/c/config` | 获取配置 |
 | PUT | `/c/config` | 更新配置 |
 
-完整 API 文档见 [HTTP API 深度分析](docs/http_api_deep_analysis.md)。
+完整 API 文档见 [HTTP API 深度分析](docs/interfaces/http_api_deep_analysis.md)。
 
 ---
 
@@ -256,9 +269,12 @@ flashmemory/
 │   └── client.py               # FlashMemoryClient + MCP 工具
 ├── config/                     # 配置管理
 ├── docs/                       # 文档目录
-│   ├── zvec_integration_guide_cn.md   # Zvec 集成指南（中文）
-│   ├── zvec_integration_guide.md      # Zvec Integration Guide (EN)
-│   └── http_api_deep_analysis.md      # HTTP API 深度分析
+│   ├── guides/
+│   │   ├── zvec_integration_guide_cn.md   # Zvec 集成指南（中文）
+│   │   ├── zvec_integration_guide.md      # Zvec Integration Guide (EN)
+│   │   └── release_guide.md               # 构建与发布指南
+│   └── interfaces/
+│       └── http_api_deep_analysis.md      # HTTP API 深度分析
 └── fm.yaml                     # 项目配置文件
 ```
 
@@ -268,10 +284,11 @@ flashmemory/
 
 | 文档 | 说明 |
 |------|------|
-| [Zvec 集成指南（中文）](docs/zvec_integration_guide_cn.md) | Zvec 引擎、混合搜索、Embedding、SDK、MCP 完整中文指南 |
-| [Zvec Integration Guide (EN)](docs/zvec_integration_guide.md) | English version of the Zvec integration guide |
-| [HTTP API 深度分析](docs/http_api_deep_analysis.md) | 完整 HTTP API 参考及调用链分析 |
-| [发布指南](docs/release_guide.md) | 构建和发布说明 |
+| [Zvec 集成指南（中文）](docs/guides/zvec_integration_guide_cn.md) | Zvec 引擎、混合搜索、Embedding、SDK、MCP 完整中文指南 |
+| [Zvec Integration Guide (EN)](docs/guides/zvec_integration_guide.md) | English version of the Zvec integration guide |
+| [HTTP API 深度分析](docs/interfaces/http_api_deep_analysis.md) | 完整 HTTP API 参考及调用链分析 |
+| [发布指南](docs/guides/release_guide.md) | 构建和发布说明 |
+| [文档总目录](docs/INDEX.md) | 跨所有 docs 子目录的导航入口 |
 
 ---
 

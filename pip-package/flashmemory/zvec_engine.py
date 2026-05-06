@@ -62,24 +62,155 @@ class ZvecEngine:
         """获取模块级 Collection 路径"""
         return os.path.join(self.collection_base_path, "modules")
 
+    def _purge_stale_locks(self, path: str) -> int:
+        """Recursively remove all LOCK files under a collection directory.
+
+        zvec/RocksDB layouts have nested LOCK files (e.g. ``functions/LOCK``,
+        ``functions/idmap.0/LOCK``, ``functions/0/scalar.index.X.rocksdb/LOCK``).
+        Removing only the top-level LOCK is not enough — when the second
+        ``zvec.open()`` attempt walks into a sub-directory it hits the nested
+        LOCK and surfaces a different error like "Can't open lock file".
+
+        Returns the count of LOCK files removed (for logging/diagnostics).
+        """
+        if not os.path.isdir(path):
+            return 0
+        removed = 0
+        for root, _dirs, files in os.walk(path):
+            for fname in files:
+                if fname == "LOCK":
+                    full = os.path.join(root, fname)
+                    try:
+                        os.remove(full)
+                        removed += 1
+                        logger.info("Removed stale LOCK file: %s", full)
+                    except FileNotFoundError:
+                        pass
+                    except OSError as rm_err:
+                        logger.warning("Failed to remove %s: %s", full, rm_err)
+        # Force fsync of the collection directory so subsequent open() sees a
+        # fully consistent state (some filesystems delay parent-dir mtime).
+        try:
+            dir_fd = os.open(path, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+        return removed
+
+    # Recoverable-error patterns that justify nuking & rebuilding the collection.
+    # Covers fcntl LOCK problems (left-over locks, RocksDB sub-LOCKs) AND
+    # internal-state corruption (incomplete WAL, missing LDB segments after
+    # a bridge crash). The user shouldn't be permanently locked out for either.
+    _RECOVERABLE_ERROR_FRAGMENTS = (
+        "lock",            # "Can't lock", "Can't open lock file"
+        "recovery",        # "recovery idmap failed", RocksDB recovery loop
+        "corrupt",         # generic corruption messages
+        "no such file",    # missing .ldb / WAL segment after crash
+        "checksum",        # SST file checksum mismatch
+        "manifest",        # broken MANIFEST file
+        "idmap",           # idmap subdirectory issues
+        "segment",         # "Segment open failed: segment path not found [.../N]"
+    )
+
+    @classmethod
+    def _is_recoverable_open_error(cls, msg: str) -> bool:
+        """Decide whether an open-time error warrants attempt 3 (rebuild)."""
+        if not msg:
+            return False
+        lower = msg.lower()
+        return any(frag in lower for frag in cls._RECOVERABLE_ERROR_FRAGMENTS)
+
+    def _try_open_collection(self, zvec_module, path: str, force_new: bool, create_func):
+        """Open or create a zvec collection with LOCK conflict auto-recovery.
+
+        Three-tier recovery:
+          attempt 1: open as-is
+          attempt 2: purge all nested LOCK files + retry open
+          attempt 3 (LAST RESORT): treat collection as corrupt, recreate from scratch
+
+        attempt 3 is destructive — the existing collection data is wiped. We only
+        reach it when attempts 1/2 fail with errors that belong to the
+        ``_RECOVERABLE_ERROR_FRAGMENTS`` set (LOCK contention, RocksDB internal
+        state corruption such as ``recovery idmap failed`` or missing LDB
+        segments). Without it, a user is permanently locked out of their
+        collection. The trade-off was made explicit at FM team request:
+        prefer recoverable-but-empty over forever-broken.
+
+        Exception types we catch:
+          - RuntimeError  — most RocksDB errors (Can't lock, recovery, ...)
+          - ValueError    — zvec 0.3.x wraps IOError as ValueError
+                            (e.g. "Failed to open local file '.../scalar.0.ipc'
+                            [errno 2] No such file or directory" after concurrent
+                            BuildIndex stomped the SST/IPC files)
+          - OSError       — defensive: low-level filesystem errors
+        Anything outside these classes (config error, dimension mismatch, etc.)
+        propagates up so we don't silently destroy data on unrelated bugs.
+        """
+        import time
+        import shutil
+        recoverable_excs = (RuntimeError, ValueError, OSError)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if os.path.exists(path) and not force_new:
+                    logger.info("Opening existing collection: %s (attempt %d)", path, attempt + 1)
+                    return zvec_module.open(path=path)
+                else:
+                    logger.info("Creating new collection: %s (attempt %d)", path, attempt + 1)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    return create_func()
+            except recoverable_excs as e:
+                msg = str(e)
+                recoverable = self._is_recoverable_open_error(msg)
+
+                if not recoverable or attempt >= max_retries - 1:
+                    # Either non-recoverable, or we already burned attempt 3.
+                    raise
+
+                if attempt == 0:
+                    # Tier 1 → Tier 2: purge all nested LOCK files.
+                    logger.warning(
+                        "Recoverable open error on %s (attempt 1): %s — purging all nested LOCK files",
+                        path, msg,
+                    )
+                    removed = self._purge_stale_locks(path)
+                    logger.info("Purged %d stale LOCK files under %s", removed, path)
+                    time.sleep(0.1)  # let APFS/ext4 flush dirent updates
+                    continue
+
+                # attempt == 1: tier 2 failed too. Could be LOCK still wedged
+                # OR internal RocksDB state corruption (recovery idmap, missing
+                # LDB, broken MANIFEST). Either way, the only path forward is
+                # to wipe and recreate; force_new will be honored on next loop.
+                logger.error(
+                    "Open still failing after LOCK purge (attempt 2): %s. "
+                    "Treating collection at %s as corrupt and rebuilding from scratch. "
+                    "EXISTING DATA IN THIS COLLECTION WILL BE LOST.",
+                    msg, path,
+                )
+                try:
+                    shutil.rmtree(path, ignore_errors=True)
+                except Exception as rm_err:
+                    logger.warning("Failed to rmtree %s: %s — recreate may still fail", path, rm_err)
+                force_new = True
+                time.sleep(0.1)
+                continue
+
     def init_func_collection(self, force_new: bool = False):
-        """创建或打开函数级 Collection
-        
+        """Create or open function-level Collection
+
         Schema:
-        - 向量: dense_embedding (FP32, HNSW+Cosine)
-        - 标量: func_name, package, file_path, description, func_type, 
+        - Vector: dense_embedding (FP32, HNSW+Cosine)
+        - Scalar: func_name, package, file_path, description, func_type,
                  language, start_line, end_line, importance_score
         """
         zvec = self._ensure_zvec()
         path = self._get_func_collection_path()
 
-        if os.path.exists(path) and not force_new:
-            logger.info("打开已有函数 Collection: %s", path)
-            self.func_collection = zvec.open(path=path)
-        else:
-            logger.info("创建新函数 Collection: %s", path)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-
+        def _create_func():
             schema = zvec.CollectionSchema(
                 name="flashmemory_functions",
                 fields=[
@@ -145,27 +276,23 @@ class ZvecEngine:
                 path=path,
                 schema=schema,
             )
+            return self.func_collection
 
-        logger.info("函数 Collection 就绪, stats=%s", self.func_collection.stats)
+        self.func_collection = self._try_open_collection(zvec, path, force_new, _create_func)
+        logger.info("Function collection ready, stats=%s", self.func_collection.stats)
         return self.func_collection
 
     def init_module_collection(self, force_new: bool = False):
-        """创建或打开模块级 Collection (code_desc)
-        
+        """Create or open module-level Collection (code_desc)
+
         Schema:
-        - 向量: dense_embedding (FP32, HNSW+Cosine)
-        - 标量: name, type, path, parent_path, description
+        - Vector: dense_embedding (FP32, HNSW+Cosine)
+        - Scalar: name, type, path, parent_path, description
         """
         zvec = self._ensure_zvec()
         path = self._get_module_collection_path()
 
-        if os.path.exists(path) and not force_new:
-            logger.info("打开已有模块 Collection: %s", path)
-            self.module_collection = zvec.open(path=path)
-        else:
-            logger.info("创建新模块 Collection: %s", path)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-
+        def _create_module():
             schema = zvec.CollectionSchema(
                 name="flashmemory_modules",
                 fields=[
@@ -209,8 +336,10 @@ class ZvecEngine:
                 path=path,
                 schema=schema,
             )
+            return self.module_collection
 
-        logger.info("模块 Collection 就绪, stats=%s", self.module_collection.stats)
+        self.module_collection = self._try_open_collection(zvec, path, force_new, _create_module)
+        logger.info("Module collection ready, stats=%s", self.module_collection.stats)
         return self.module_collection
 
     def upsert_function(self, func_id: str, embedding: list, metadata: dict,
@@ -299,20 +428,38 @@ class ZvecEngine:
         self.module_collection.upsert(docs=[doc])
         logger.debug("已 upsert 模块: %s", module_id)
 
+    def _is_collection_empty(self, collection) -> bool:
+        """Check if a zvec collection has zero documents"""
+        if collection is None:
+            return True
+        try:
+            stats = collection.stats
+            if hasattr(stats, 'doc_count') and stats.doc_count == 0:
+                return True
+            if isinstance(stats, dict) and stats.get('doc_count', 0) == 0:
+                return True
+        except Exception:
+            pass
+        return False
+
     def search_functions(self, query_vector: list, top_k: int = 10,
                          filter_expr: str = None):
-        """在函数 Collection 中进行向量相似度搜索
-        
+        """Search for similar function vectors
+
         Args:
-            query_vector: 查询向量
-            top_k: 返回结果数
-            filter_expr: 可选的标量过滤表达式，如 'language = "go"'
-        
+            query_vector: Query vector
+            top_k: Number of results to return
+            filter_expr: Optional scalar filter expression, e.g. 'language = "go"'
+
         Returns:
-            list of Doc: 搜索结果列表
+            list of Doc: Search results (empty list if collection is empty)
         """
         if self.func_collection is None:
-            raise RuntimeError("函数 Collection 未初始化")
+            raise RuntimeError("Function Collection not initialized")
+
+        if self._is_collection_empty(self.func_collection):
+            logger.info("Function collection is empty, returning no results")
+            return []
 
         zvec = self._ensure_zvec()
         query_params = {
@@ -359,7 +506,11 @@ class ZvecEngine:
         """
         collection = self.module_collection if collection_type == "modules" else self.func_collection
         if collection is None:
-            raise RuntimeError(f"{collection_type} Collection 未初始化")
+            raise RuntimeError(f"{collection_type} Collection not initialized")
+
+        if self._is_collection_empty(collection):
+            logger.info("%s collection is empty, returning no results", collection_type)
+            return []
 
         zvec = self._ensure_zvec()
 
@@ -418,9 +569,13 @@ class ZvecEngine:
 
     def search_modules(self, query_vector: list, top_k: int = 10,
                        filter_expr: str = None):
-        """在模块 Collection 中进行向量相似度搜索"""
+        """Search for similar module vectors"""
         if self.module_collection is None:
-            raise RuntimeError("模块 Collection 未初始化")
+            raise RuntimeError("Module Collection not initialized")
+
+        if self._is_collection_empty(self.module_collection):
+            logger.info("Module collection is empty, returning no results")
+            return []
 
         zvec = self._ensure_zvec()
         query_params = {
@@ -433,7 +588,7 @@ class ZvecEngine:
             query_params["filter"] = filter_expr
 
         results = self.module_collection.query(**query_params)
-        logger.info("模块搜索返回 %d 条结果", len(results))
+        logger.info("Module search returned %d results", len(results))
         return results
 
     # --- AI Extension helper methods ---
@@ -598,18 +753,23 @@ class ZvecEngine:
         return stats
 
     def close(self):
-        """Close all collections and flush pending data"""
-        if self.func_collection:
-            try:
-                self.func_collection.flush()
-            except Exception as e:
-                logger.warning("Failed to flush func_collection: %s", e)
-            self.func_collection = None
-            logger.info("Function collection closed")
-        if self.module_collection:
-            try:
-                self.module_collection.flush()
-            except Exception as e:
-                logger.warning("Failed to flush module_collection: %s", e)
-            self.module_collection = None
-            logger.info("Module collection closed")
+        """Close all collections, flush pending data, and release LOCK files"""
+        for name, attr_name in [("func_collection", "func_collection"), ("module_collection", "module_collection")]:
+            coll = getattr(self, attr_name, None)
+            if coll is not None:
+                try:
+                    coll.flush()
+                    coll.close()
+                    logger.info("%s flushed and closed (LOCK released)", name)
+                except AttributeError:
+                    # zvec < 0.3 may not have close(), flush is sufficient
+                    try:
+                        coll.flush()
+                        logger.info("%s flushed (close() not available, LOCK may persist)", name)
+                    except Exception as e:
+                        logger.warning("Failed to flush %s: %s", name, e)
+                except Exception as e:
+                    logger.warning("Failed to close %s: %s", name, e)
+                finally:
+                    setattr(self, attr_name, None)
+        logger.info("ZvecEngine closed, all LOCK files should be released")

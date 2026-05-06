@@ -19,7 +19,7 @@ var (
 func init() {
 	i18n := common.I18n
 
-	queryCmd.Flags().StringVar(&querySearchMode, "mode", "semantic", i18n("搜索模式: semantic, keyword, hybrid", "Search mode: semantic, keyword, hybrid"))
+	queryCmd.Flags().StringVar(&querySearchMode, "mode", "auto", i18n("搜索模式: auto, semantic, keyword, hybrid", "Search mode: auto, semantic, keyword, hybrid"))
 	queryCmd.Flags().IntVar(&queryLimit, "limit", 5, i18n("返回结果数量", "Number of results"))
 	queryCmd.Flags().BoolVar(&queryIncludeCode, "include-code", false, i18n("结果中包含代码片段", "Include code snippets"))
 	queryCmd.Flags().StringVar(&queryDir, "dir", ".", i18n("项目目录", "Project directory"))

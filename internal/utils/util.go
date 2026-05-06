@@ -414,7 +414,7 @@ func tryInstallWithMultipleMirrors(faissServiceDir, envPython, pipCmd, lib strin
 			continue // 跳过已经尝试过的镜像源
 		}
 
-		log.Printf("Trying to install %s using mirror source %d/%d: %s", i+1, len(mirrorSources), lib, mirror)
+		log.Printf("Trying to install %s using mirror source %d/%d: %s", lib, i+1, len(mirrorSources), mirror)
 		installArgs := []string{"-m", pipCmd, "install", "-i", mirror, lib}
 		out, err := runCmdContext(faissServiceDir, envPython, installArgs, timeout)
 		if err == nil {

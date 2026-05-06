@@ -1,17 +1,21 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,14 +24,19 @@ import (
 
 	"github.com/kinglegendzzh/flashmemory/cmd/common"
 	"github.com/kinglegendzzh/flashmemory/config"
+	"github.com/kinglegendzzh/flashmemory/internal/anchor"
 	"github.com/kinglegendzzh/flashmemory/internal/back"
 	"github.com/kinglegendzzh/flashmemory/internal/embedding"
 	"github.com/kinglegendzzh/flashmemory/internal/graph"
 	"github.com/kinglegendzzh/flashmemory/internal/index"
+	"github.com/kinglegendzzh/flashmemory/internal/llm"
 	"github.com/kinglegendzzh/flashmemory/internal/module_analyzer"
 	"github.com/kinglegendzzh/flashmemory/internal/parser"
 	"github.com/kinglegendzzh/flashmemory/internal/ranking"
+	"github.com/kinglegendzzh/flashmemory/internal/router"
 	"github.com/kinglegendzzh/flashmemory/internal/search"
+	"github.com/kinglegendzzh/flashmemory/internal/telemetry"
+	"github.com/kinglegendzzh/flashmemory/internal/tool"
 	"github.com/kinglegendzzh/flashmemory/internal/utils"
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 
@@ -51,6 +60,11 @@ var bearerToken = os.Getenv("API_TOKEN")
 // API URL and Model loaded from environment
 var apiURL = os.Getenv("API_URL")
 var apiModel = os.Getenv("API_MODEL")
+
+var (
+	toolRegistryOnce sync.Once
+	toolRegistryInst *tool.Registry
+)
 
 func main() {
 	// 提前嗅探 lang 参数，以便在定义 flag 时能判断语言
@@ -130,7 +144,7 @@ func main() {
 	if os.Getenv("FAISS_SERVICE_PATH") == "" {
 		logs.Warnf("FAISS_SERVICE_PATH not set")
 	}
-	
+
 	useZvec := cfg != nil && cfg.ZvecConfig.Engine == "zvec"
 	if useZvec {
 		logs.Infof("Zvec mode enabled: skipping traditional FAISS HTTP service startup")
@@ -246,6 +260,18 @@ func main() {
 	api.POST("/module-graphs/status", moduleGraphsStatusHandler())
 	api.POST("/module-graphs/delete", deleteModuleDescHandler())
 	api.POST("/module-graphs/reset", resetModuleDescHandler())
+	api.POST("/tools/list", toolsListHandler())
+	api.POST("/tools/invoke", toolsInvokeHandler())
+	api.GET("/tools/mcp", toolsMCPHandler())
+	api.POST("/events/query", eventsQueryHandler())
+	api.POST("/substrate/object/resolve", substrateObjectResolveHandler())
+	api.POST("/substrate/graph/neighbors", substrateNeighborsHandler())
+	api.POST("/substrate/changes", substrateChangesHandler())
+	api.POST("/substrate/project/meta", substrateProjectMetaHandler())
+	api.POST("/substrate/tool-records", substrateToolRecordsHandler())
+	api.POST("/substrate/doc/tree", substrateDocTreeHandler())
+	api.POST("/substrate/doc/neighbors", substrateDocNeighborsHandler())
+	api.POST("/substrate/doc/parse-artifacts", substrateDocParseArtifactsHandler())
 	api.GET("/health", healthCheckHandler())
 
 	c := e.Group("/c", auth)
@@ -267,20 +293,53 @@ func main() {
 		port = "5532"
 	}
 	address := fmt.Sprintf(":%s", port)
+
+	// Graceful shutdown 路径，必须在 e.Start 之前注册——
+	// e.Start 会阻塞直到服务退出，原代码把 signal.Notify 放在 e.Start 之后是死代码。
+	//
+	// 流程：
+	//   1) SIGINT/SIGTERM 到达
+	//   2) e.Shutdown(ctx) 等待所有 in-flight handler 跑完 defer（含 fm.Free → bridge SIGTERM）
+	//      30s 超时兜底，避免无限等
+	//   3) 不论 Shutdown 是否超时，再调 index.FreeAllActiveWrappers 强清残留 zvec_bridge，
+	//      杜绝 RocksDB 写半截 segment/MANIFEST 的源头
+	//   4) main 函数返回，进程正常退出
+	shutdownDone := make(chan struct{})
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		sig := <-sigCh
+		logs.Infof("Received signal %s, initiating graceful shutdown (30s budget)...", sig)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := e.Shutdown(ctx); err != nil {
+			logs.Warnf("Graceful shutdown ended with error (some handlers may have been interrupted): %v", err)
+		} else {
+			logs.Infof("All in-flight handlers drained")
+		}
+
+		// Defense-in-depth: 即便 e.Shutdown 完全成功，仍可能存在
+		// 后台 goroutine（如 module_analyzer）持有的 wrapper，或某条 handler
+		// 因为 panic 跳过了 defer 的情况。统一在这里收尾。
+		if n := index.FreeAllActiveWrappers(); n > 0 {
+			logs.Infof("Forcefully freed %d residual Zvec wrapper(s) after shutdown", n)
+		}
+
+		close(shutdownDone)
+	}()
+
 	log.Printf("Starting server on %s...", address)
 	if err := e.Start(address); err != nil && err != http.ErrServerClosed {
+		// 启动失败（端口占用等）：仍然清理一遍，防 wrapper 提前注册的极端情况
+		index.FreeAllActiveWrappers()
 		log.Fatalf("Server error: %v", err)
-		panic(err)
 	}
 
-	// 捕获系统信号来优雅关闭服务
-	go func() {
-		c := make(chan os.Signal, 1)
-		signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
-		sig := <-c
-		logs.Infof("Received signal %s, shutting down server...", sig)
-		os.Exit(0)
-	}()
+	// e.Start 因为 Shutdown 调用而返回，等清理 goroutine 跑完
+	<-shutdownDone
+	logs.Infof("FM HTTP server stopped cleanly")
 }
 
 func healthCheckHandler() echo.HandlerFunc {
@@ -289,21 +348,1208 @@ func healthCheckHandler() echo.HandlerFunc {
 	}
 }
 
+func getToolRegistry() *tool.Registry {
+	toolRegistryOnce.Do(func() {
+		reg := tool.NewRegistry()
+		reg.RegisterOrReplace(tool.ToolSpec{
+			Name:        "fm.health.check",
+			Title:       "Health Check",
+			Description: "检查 FlashMemory HTTP 服务健康状态。",
+			Version:     "v1",
+			Category:    "system",
+		}, func(ctx context.Context, req tool.InvokeRequest) (interface{}, error) {
+			return map[string]interface{}{"code": 0, "message": "OK"}, nil
+		})
+
+		reg.RegisterOrReplace(tool.ToolSpec{
+			Name:        "fm.intent.route",
+			Title:       "Intent Router",
+			Description: "对 query 进行意图路由，输出 intent 与 search_mode。",
+			Version:     "v1",
+			Category:    "routing",
+			InputSchema: []tool.SchemaField{
+				{Name: "query", Type: "string", Required: true, Description: "用户查询"},
+				{Name: "search_mode", Type: "string", Required: false, Description: "auto/semantic/keyword/hybrid"},
+			},
+		}, func(ctx context.Context, req tool.InvokeRequest) (interface{}, error) {
+			query := inputString(req.Input, "query")
+			if strings.TrimSpace(query) == "" {
+				return nil, fmt.Errorf("query is required")
+			}
+			searchMode := strings.TrimSpace(inputString(req.Input, "search_mode"))
+			if searchMode == "" || strings.EqualFold(searchMode, router.SearchModeAuto) {
+				decision := router.RouteQuery(query)
+				return decision, nil
+			}
+			return router.IntentDecision{
+				Intent:     "manual_override",
+				SearchMode: searchMode,
+				Confidence: 1.0,
+				Signals:    []string{"manual_search_mode"},
+				Reason:     "search_mode provided by tool caller",
+			}, nil
+		})
+
+		reg.RegisterOrReplace(tool.ToolSpec{
+			Name:        "fm.llm.route",
+			Title:       "LLM Router",
+			Description: "基于查询复杂度与信号进行模型路由决策。",
+			Version:     "v1",
+			Category:    "routing",
+			InputSchema: []tool.SchemaField{
+				{Name: "query", Type: "string", Required: true, Description: "用户查询"},
+				{Name: "intent", Type: "string", Required: false, Description: "路由意图"},
+				{Name: "search_mode", Type: "string", Required: false, Description: "semantic/keyword/hybrid/auto"},
+				{Name: "strict", Type: "bool", Required: false, Description: "是否严格模式"},
+				{Name: "enable_reranker", Type: "bool", Required: false, Description: "是否启用重排"},
+				{Name: "limit", Type: "int", Required: false, Description: "结果条数"},
+			},
+		}, func(ctx context.Context, req tool.InvokeRequest) (interface{}, error) {
+			query := inputString(req.Input, "query")
+			if strings.TrimSpace(query) == "" {
+				return nil, fmt.Errorf("query is required")
+			}
+			intent := inputString(req.Input, "intent")
+			searchMode := inputString(req.Input, "search_mode")
+			if strings.TrimSpace(intent) == "" || strings.TrimSpace(searchMode) == "" || strings.EqualFold(searchMode, router.SearchModeAuto) {
+				route := router.RouteQuery(query)
+				if strings.TrimSpace(intent) == "" {
+					intent = route.Intent
+				}
+				if strings.TrimSpace(searchMode) == "" || strings.EqualFold(searchMode, router.SearchModeAuto) {
+					searchMode = route.SearchMode
+				}
+			}
+			cfg, _ := config.LoadConfig()
+			decision := llm.DecideForSearch(cfg, llm.RouteInput{
+				Query:          query,
+				Intent:         intent,
+				SearchMode:     searchMode,
+				Strict:         inputBool(req.Input, "strict"),
+				EnableReranker: inputBool(req.Input, "enable_reranker"),
+				Limit:          inputInt(req.Input, "limit", 5),
+			})
+			return decision, nil
+		})
+
+		reg.RegisterOrReplace(tool.ToolSpec{
+			Name:        "fm.search.plan",
+			Title:       "Search Planner",
+			Description: "返回 intent 路由 + LLM 路由组合决策，用于编排搜索调用链。",
+			Version:     "v1",
+			Category:    "planning",
+			InputSchema: []tool.SchemaField{
+				{Name: "query", Type: "string", Required: true, Description: "用户查询"},
+				{Name: "search_mode", Type: "string", Required: false, Description: "auto/semantic/keyword/hybrid"},
+				{Name: "strict", Type: "bool", Required: false, Description: "是否严格模式"},
+				{Name: "enable_reranker", Type: "bool", Required: false, Description: "是否启用重排"},
+				{Name: "limit", Type: "int", Required: false, Description: "结果条数"},
+			},
+		}, func(ctx context.Context, req tool.InvokeRequest) (interface{}, error) {
+			query := inputString(req.Input, "query")
+			if strings.TrimSpace(query) == "" {
+				return nil, fmt.Errorf("query is required")
+			}
+			mode := inputString(req.Input, "search_mode")
+			if strings.TrimSpace(mode) == "" || strings.EqualFold(mode, router.SearchModeAuto) {
+				mode = router.RouteQuery(query).SearchMode
+			}
+			routeDecision := router.RouteQuery(query)
+			if !strings.EqualFold(inputString(req.Input, "search_mode"), "") && !strings.EqualFold(inputString(req.Input, "search_mode"), router.SearchModeAuto) {
+				routeDecision = router.IntentDecision{
+					Intent:     "manual_override",
+					SearchMode: mode,
+					Confidence: 1.0,
+					Signals:    []string{"manual_search_mode"},
+					Reason:     "search_mode provided by tool caller",
+				}
+			}
+			cfg, _ := config.LoadConfig()
+			llmDecision := llm.DecideForSearch(cfg, llm.RouteInput{
+				Query:          query,
+				Intent:         routeDecision.Intent,
+				SearchMode:     mode,
+				Strict:         inputBool(req.Input, "strict"),
+				EnableReranker: inputBool(req.Input, "enable_reranker"),
+				Limit:          inputInt(req.Input, "limit", 5),
+			})
+			return map[string]interface{}{
+				"route":     routeDecision,
+				"llm_route": llmDecision,
+			}, nil
+		})
+
+		toolRegistryInst = reg
+	})
+	return toolRegistryInst
+}
+
+func inputString(input map[string]interface{}, key string) string {
+	if input == nil {
+		return ""
+	}
+	v, ok := input[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	default:
+		return fmt.Sprintf("%v", val)
+	}
+}
+
+func inputBool(input map[string]interface{}, key string) bool {
+	if input == nil {
+		return false
+	}
+	v, ok := input[key]
+	if !ok || v == nil {
+		return false
+	}
+	switch val := v.(type) {
+	case bool:
+		return val
+	case string:
+		return strings.EqualFold(strings.TrimSpace(val), "true")
+	default:
+		return false
+	}
+}
+
+func inputInt(input map[string]interface{}, key string, fallback int) int {
+	if input == nil {
+		return fallback
+	}
+	v, ok := input[key]
+	if !ok || v == nil {
+		return fallback
+	}
+	switch val := v.(type) {
+	case float64:
+		return int(val)
+	case int:
+		return val
+	case int32:
+		return int(val)
+	case int64:
+		return int(val)
+	default:
+		return fallback
+	}
+}
+
+func toolsListHandler() echo.HandlerFunc {
+	type Req struct {
+		Category string `json:"category"`
+	}
+	return func(c echo.Context) error {
+		var req Req
+		_ = json.NewDecoder(c.Request().Body).Decode(&req)
+		tools := getToolRegistry().List()
+		if strings.TrimSpace(req.Category) == "" {
+			return c.JSON(http.StatusOK, Response{Code: 0, Message: "OK", Data: tools})
+		}
+		filtered := make([]tool.ToolSpec, 0, len(tools))
+		for _, t := range tools {
+			if strings.EqualFold(t.Category, req.Category) {
+				filtered = append(filtered, t)
+			}
+		}
+		return c.JSON(http.StatusOK, Response{Code: 0, Message: "OK", Data: filtered})
+	}
+}
+
+func toolsInvokeHandler() echo.HandlerFunc {
+	type Req struct {
+		ProjectDir string                 `json:"project_dir"`
+		RequestID  string                 `json:"request_id"`
+		TraceID    string                 `json:"trace_id"`
+		Tool       string                 `json:"tool"`
+		Input      map[string]interface{} `json:"input"`
+	}
+	return func(c echo.Context) error {
+		var req Req
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
+		}
+		if strings.TrimSpace(req.Tool) == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "tool is required"})
+		}
+
+		invokeRes := getToolRegistry().Invoke(c.Request().Context(), tool.InvokeRequest{
+			Name:       req.Tool,
+			ProjectDir: req.ProjectDir,
+			RequestID:  req.RequestID,
+			Input:      req.Input,
+		})
+		status := "success"
+		msg := "OK"
+		code := 0
+		if !invokeRes.Success {
+			status = "failed"
+			msg = invokeRes.Error
+			code = 1
+		}
+		if req.ProjectDir != "" {
+			if err := telemetry.RecordToolEventWithMeta(req.ProjectDir, telemetry.EventMeta{
+				RequestID: req.RequestID,
+				TraceID:   req.TraceID,
+			}, status, req.Tool, msg, telemetry.ToolEventData{
+				Tool:       req.Tool,
+				DurationMs: invokeRes.DurationMs,
+				Success:    invokeRes.Success,
+				Error:      invokeRes.Error,
+				Input:      req.Input,
+				Output:     invokeRes.Output,
+			}); err != nil {
+				logs.Warnf("append tool event failed: %v", err)
+			}
+		}
+		return c.JSON(http.StatusOK, Response{Code: code, Message: msg, Data: invokeRes})
+	}
+}
+
+func eventsQueryHandler() echo.HandlerFunc {
+	type Req struct {
+		ProjectDir string `json:"project_dir"`
+		Limit      int    `json:"limit"`
+		EventType  string `json:"event_type"`
+		RequestID  string `json:"request_id"`
+		TraceID    string `json:"trace_id"`
+	}
+	type ResData struct {
+		Count  int               `json:"count"`
+		Events []telemetry.Event `json:"events"`
+	}
+	return func(c echo.Context) error {
+		var req Req
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
+		}
+		if strings.TrimSpace(req.ProjectDir) == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
+		}
+		if req.Limit == 0 {
+			req.Limit = 50
+		}
+		events, err := telemetry.ReadProjectEventsWithQuery(req.ProjectDir, telemetry.EventQuery{
+			Limit:     req.Limit,
+			EventType: req.EventType,
+			RequestID: req.RequestID,
+			TraceID:   req.TraceID,
+		})
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "读取事件失败: " + err.Error()})
+		}
+		return c.JSON(http.StatusOK, Response{
+			Code:    0,
+			Message: "OK",
+			Data: ResData{
+				Count:  len(events),
+				Events: events,
+			},
+		})
+	}
+}
+
+type substrateObject struct {
+	ObjectID      string `json:"object_id"`
+	ObjectType    string `json:"object_type"`
+	AnchorKind    string `json:"anchor_kind"`
+	AnchorLocator string `json:"anchor_locator"`
+	Name          string `json:"name,omitempty"`
+	Package       string `json:"package,omitempty"`
+	File          string `json:"file,omitempty"`
+	Source        string `json:"source,omitempty"`
+	Page          int    `json:"page,omitempty"`
+	Slide         int    `json:"slide,omitempty"`
+	StartLine     int    `json:"start_line,omitempty"`
+	EndLine       int    `json:"end_line,omitempty"`
+}
+
+type substrateNeighbor struct {
+	Relation string          `json:"relation"`
+	Object   substrateObject `json:"object"`
+}
+
+type substrateChangeSignal struct {
+	FilePath   string `json:"file_path"`
+	ChangeType string `json:"change_type"`
+	Revision   string `json:"revision"`
+	ObservedAt string `json:"observed_at"`
+}
+
+func substrateObjectResolveHandler() echo.HandlerFunc {
+	type Req struct {
+		ProjectDir string `json:"project_dir"`
+		Locator    string `json:"locator"`
+	}
+	return func(c echo.Context) error {
+		var req Req
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
+		}
+		if strings.TrimSpace(req.ProjectDir) == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
+		}
+		if strings.TrimSpace(req.Locator) == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "locator is required"})
+		}
+
+		kg, err := loadKnowledgeGraph(req.ProjectDir)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "读取 graph.json 失败: " + err.Error()})
+		}
+
+		obj, _, ok := resolveSubstrateObject(kg, req.Locator)
+		if !ok {
+			return c.JSON(http.StatusOK, Response{Code: 1, Message: "object not found"})
+		}
+		return c.JSON(http.StatusOK, Response{Code: 0, Message: "OK", Data: obj})
+	}
+}
+
+func substrateNeighborsHandler() echo.HandlerFunc {
+	type Req struct {
+		ProjectDir string `json:"project_dir"`
+		ObjectID   string `json:"object_id"`
+		Locator    string `json:"locator"`
+		Direction  string `json:"direction"`
+		Limit      int    `json:"limit"`
+	}
+	type ResData struct {
+		Target    substrateObject     `json:"target"`
+		Neighbors []substrateNeighbor `json:"neighbors"`
+	}
+	return func(c echo.Context) error {
+		var req Req
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
+		}
+		if strings.TrimSpace(req.ProjectDir) == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
+		}
+		if req.Limit <= 0 {
+			req.Limit = 20
+		}
+		direction := strings.ToLower(strings.TrimSpace(req.Direction))
+		if direction == "" {
+			direction = "both"
+		}
+
+		kg, err := loadKnowledgeGraph(req.ProjectDir)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "读取 graph.json 失败: " + err.Error()})
+		}
+
+		targetLocator := strings.TrimSpace(req.Locator)
+		if targetLocator == "" {
+			targetLocator = strings.TrimSpace(req.ObjectID)
+		}
+		target, targetKey, ok := resolveSubstrateObject(kg, targetLocator)
+		if !ok {
+			return c.JSON(http.StatusOK, Response{Code: 1, Message: "object not found"})
+		}
+
+		neighbors := make([]substrateNeighbor, 0, req.Limit)
+		appendByNames := func(relation string, names []string) {
+			for _, name := range names {
+				if len(neighbors) >= req.Limit {
+					return
+				}
+				obj, found := findSubstrateObjectByFunctionKey(kg, strings.TrimSpace(name))
+				if !found {
+					continue
+				}
+				neighbors = append(neighbors, substrateNeighbor{
+					Relation: relation,
+					Object:   obj,
+				})
+			}
+		}
+
+		if direction == "out" || direction == "both" {
+			appendByNames("calls", kg.Calls[targetKey])
+		}
+		if direction == "in" || direction == "both" {
+			appendByNames("called_by", kg.CalledBy[targetKey])
+		}
+
+		return c.JSON(http.StatusOK, Response{
+			Code:    0,
+			Message: "OK",
+			Data: ResData{
+				Target:    target,
+				Neighbors: neighbors,
+			},
+		})
+	}
+}
+
+func substrateChangesHandler() echo.HandlerFunc {
+	type Req struct {
+		ProjectDir string `json:"project_dir"`
+		Since      string `json:"since"`
+	}
+	type ResData struct {
+		Changes  []substrateChangeSignal `json:"changes"`
+		Degraded bool                    `json:"degraded,omitempty"`
+		Reason   string                  `json:"reason,omitempty"`
+	}
+	return func(c echo.Context) error {
+		var req Req
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
+		}
+		if strings.TrimSpace(req.ProjectDir) == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
+		}
+		observedAt := time.Now().Format(time.RFC3339Nano)
+
+		if strings.TrimSpace(req.Since) != "" {
+			out, err := runGitCommand(req.ProjectDir, "diff", "--name-status", fmt.Sprintf("%s...HEAD", req.Since))
+			if err != nil {
+				return c.JSON(http.StatusOK, Response{
+					Code:    0,
+					Message: "OK",
+					Data: ResData{
+						Changes:  []substrateChangeSignal{},
+						Degraded: true,
+						Reason:   "git diff unavailable",
+					},
+				})
+			}
+			return c.JSON(http.StatusOK, Response{
+				Code:    0,
+				Message: "OK",
+				Data: ResData{
+					Changes: parseGitNameStatus(out, req.Since, observedAt),
+				},
+			})
+		}
+
+		out, err := runGitCommand(req.ProjectDir, "status", "--porcelain")
+		if err != nil {
+			return c.JSON(http.StatusOK, Response{
+				Code:    0,
+				Message: "OK",
+				Data: ResData{
+					Changes:  []substrateChangeSignal{},
+					Degraded: true,
+					Reason:   "git status unavailable",
+				},
+			})
+		}
+		return c.JSON(http.StatusOK, Response{
+			Code:    0,
+			Message: "OK",
+			Data: ResData{
+				Changes: parseGitPorcelain(out, observedAt),
+			},
+		})
+	}
+}
+
+func substrateProjectMetaHandler() echo.HandlerFunc {
+	type Req struct {
+		ProjectDir string `json:"project_dir"`
+	}
+	type ResData struct {
+		ProjectDir    string `json:"project_dir"`
+		GitgoReady    bool   `json:"gitgo_ready"`
+		IndexReady    bool   `json:"index_ready"`
+		GraphReady    bool   `json:"graph_ready"`
+		EventsReady   bool   `json:"events_ready"`
+		GitRevision   string `json:"git_revision,omitempty"`
+		GeneratedAt   string `json:"generated_at"`
+		SchemaVersion string `json:"schema_version"`
+	}
+	return func(c echo.Context) error {
+		var req Req
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
+		}
+		if strings.TrimSpace(req.ProjectDir) == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
+		}
+		absProjectDir, _ := filepath.Abs(req.ProjectDir)
+		gitgoDir := filepath.Join(req.ProjectDir, ".gitgo")
+		indexDB := filepath.Join(gitgoDir, "code_index.db")
+		graphPath := filepath.Join(gitgoDir, "graph.json")
+		eventsPath := filepath.Join(gitgoDir, "events.jsonl")
+
+		revision := ""
+		if out, err := runGitCommand(req.ProjectDir, "rev-parse", "--short", "HEAD"); err == nil {
+			revision = strings.TrimSpace(out)
+		}
+		return c.JSON(http.StatusOK, Response{
+			Code:    0,
+			Message: "OK",
+			Data: ResData{
+				ProjectDir:    absProjectDir,
+				GitgoReady:    pathExists(gitgoDir),
+				IndexReady:    pathExists(indexDB),
+				GraphReady:    pathExists(graphPath),
+				EventsReady:   pathExists(eventsPath),
+				GitRevision:   revision,
+				GeneratedAt:   time.Now().Format(time.RFC3339Nano),
+				SchemaVersion: telemetry.EventSchemaVersion,
+			},
+		})
+	}
+}
+
+func substrateToolRecordsHandler() echo.HandlerFunc {
+	type Req struct {
+		ProjectDir string `json:"project_dir"`
+		Limit      int    `json:"limit"`
+		RequestID  string `json:"request_id"`
+		TraceID    string `json:"trace_id"`
+		Status     string `json:"status"`
+	}
+	type ResData struct {
+		Count  int               `json:"count"`
+		Events []telemetry.Event `json:"events"`
+	}
+	return func(c echo.Context) error {
+		var req Req
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
+		}
+		if strings.TrimSpace(req.ProjectDir) == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
+		}
+		if req.Limit <= 0 {
+			req.Limit = 50
+		}
+		events, err := telemetry.ReadProjectEventsWithQuery(req.ProjectDir, telemetry.EventQuery{
+			Limit:     req.Limit,
+			EventType: telemetry.EventTypeToolInvoke,
+			RequestID: req.RequestID,
+			TraceID:   req.TraceID,
+		})
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "读取事件失败: " + err.Error()})
+		}
+		if strings.TrimSpace(req.Status) != "" {
+			filtered := make([]telemetry.Event, 0, len(events))
+			for _, ev := range events {
+				if strings.EqualFold(ev.Status, req.Status) {
+					filtered = append(filtered, ev)
+				}
+			}
+			events = filtered
+		}
+		return c.JSON(http.StatusOK, Response{
+			Code:    0,
+			Message: "OK",
+			Data: ResData{
+				Count:  len(events),
+				Events: events,
+			},
+		})
+	}
+}
+
+func substrateDocTreeHandler() echo.HandlerFunc {
+	type Req struct {
+		ProjectDir string `json:"project_dir"`
+		DocID      string `json:"doc_id"`
+		Source     string `json:"source"`
+	}
+	type Node struct {
+		NodeID    string  `json:"node_id"`
+		ParentID  string  `json:"parent_id,omitempty"`
+		NodeType  string  `json:"node_type"`
+		Level     int     `json:"level"`
+		Title     string  `json:"title,omitempty"`
+		Source    string  `json:"source"`
+		Page      int     `json:"page,omitempty"`
+		Slide     int     `json:"slide,omitempty"`
+		StartLine int     `json:"start_line,omitempty"`
+		EndLine   int     `json:"end_line,omitempty"`
+		Quality   float64 `json:"parse_quality,omitempty"`
+	}
+	type Edge struct {
+		EdgeID   string  `json:"edge_id"`
+		From     string  `json:"from_node_id"`
+		To       string  `json:"to_node_id"`
+		EdgeType string  `json:"edge_type"`
+		Weight   float64 `json:"weight"`
+	}
+	type ResData struct {
+		DocID string `json:"doc_id"`
+		Nodes []Node `json:"nodes"`
+		Edges []Edge `json:"edges"`
+	}
+	return func(c echo.Context) error {
+		var req Req
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
+		}
+		if strings.TrimSpace(req.ProjectDir) == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
+		}
+		db, err := index.EnsureIndexDB(req.ProjectDir)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "open index db failed: " + err.Error()})
+		}
+		defer db.Close()
+
+		docID := strings.TrimSpace(req.DocID)
+		if docID == "" {
+			source := strings.TrimSpace(req.Source)
+			if source == "" {
+				return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "doc_id or source is required"})
+			}
+			docID, err = index.ResolveDocIDBySource(db, req.ProjectDir, source)
+			if err != nil {
+				return c.JSON(http.StatusOK, Response{Code: 1, Message: "document tree not found"})
+			}
+		}
+
+		rows, err := db.Query(`
+SELECT node_id, parent_id, node_type, level, title, source, page, slide, start_line, end_line, parse_quality
+FROM doc_nodes
+WHERE project_dir = ? AND doc_id = ?
+ORDER BY level ASC, start_line ASC, page ASC, slide ASC`, req.ProjectDir, docID)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "query doc nodes failed: " + err.Error()})
+		}
+		defer rows.Close()
+		nodes := make([]Node, 0, 64)
+		for rows.Next() {
+			var n Node
+			var parentID sql.NullString
+			if err := rows.Scan(&n.NodeID, &parentID, &n.NodeType, &n.Level, &n.Title, &n.Source, &n.Page, &n.Slide, &n.StartLine, &n.EndLine, &n.Quality); err != nil {
+				return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "scan doc nodes failed: " + err.Error()})
+			}
+			if parentID.Valid {
+				n.ParentID = parentID.String
+			}
+			nodes = append(nodes, n)
+		}
+
+		edgeRows, err := db.Query(`
+SELECT edge_id, from_node_id, to_node_id, edge_type, weight
+FROM doc_edges
+WHERE project_dir = ? AND doc_id = ?
+ORDER BY created_at ASC`, req.ProjectDir, docID)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "query doc edges failed: " + err.Error()})
+		}
+		defer edgeRows.Close()
+		edges := make([]Edge, 0, 64)
+		for edgeRows.Next() {
+			var e Edge
+			if err := edgeRows.Scan(&e.EdgeID, &e.From, &e.To, &e.EdgeType, &e.Weight); err != nil {
+				return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "scan doc edges failed: " + err.Error()})
+			}
+			edges = append(edges, e)
+		}
+
+		return c.JSON(http.StatusOK, Response{
+			Code:    0,
+			Message: "OK",
+			Data: ResData{
+				DocID: docID,
+				Nodes: nodes,
+				Edges: edges,
+			},
+		})
+	}
+}
+
+func substrateDocNeighborsHandler() echo.HandlerFunc {
+	type Req struct {
+		ProjectDir string `json:"project_dir"`
+		NodeID     string `json:"node_id"`
+		Direction  string `json:"direction"` // out|in|both
+		EdgeType   string `json:"edge_type"` // contains|follows|references|...
+		Limit      int    `json:"limit"`
+	}
+	type Neighbor struct {
+		EdgeID     string  `json:"edge_id"`
+		EdgeType   string  `json:"edge_type"`
+		FromNodeID string  `json:"from_node_id"`
+		ToNodeID   string  `json:"to_node_id"`
+		Weight     float64 `json:"weight"`
+		Evidence   string  `json:"evidence,omitempty"`
+		NeighborID string  `json:"neighbor_node_id"`
+		Direction  string  `json:"direction"`
+	}
+	type ResData struct {
+		NodeID    string     `json:"node_id"`
+		Count     int        `json:"count"`
+		Neighbors []Neighbor `json:"neighbors"`
+	}
+	return func(c echo.Context) error {
+		var req Req
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
+		}
+		if strings.TrimSpace(req.ProjectDir) == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
+		}
+		if strings.TrimSpace(req.NodeID) == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "node_id is required"})
+		}
+		if req.Limit <= 0 {
+			req.Limit = 50
+		}
+		direction := strings.ToLower(strings.TrimSpace(req.Direction))
+		if direction == "" {
+			direction = "both"
+		}
+
+		db, err := index.EnsureIndexDB(req.ProjectDir)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "open index db failed: " + err.Error()})
+		}
+		defer db.Close()
+
+		out := make([]Neighbor, 0, req.Limit)
+		addRows := func(query string, args ...interface{}) error {
+			rows, err := db.Query(query, args...)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				if len(out) >= req.Limit {
+					break
+				}
+				var n Neighbor
+				var evidence sql.NullString
+				if err := rows.Scan(&n.EdgeID, &n.EdgeType, &n.FromNodeID, &n.ToNodeID, &n.Weight, &evidence); err != nil {
+					return err
+				}
+				if evidence.Valid {
+					n.Evidence = evidence.String
+				}
+				out = append(out, n)
+			}
+			return nil
+		}
+
+		edgeTypeFilter := strings.TrimSpace(req.EdgeType)
+		if direction == "out" || direction == "both" {
+			query := `
+SELECT edge_id, edge_type, from_node_id, to_node_id, weight, evidence
+FROM doc_edges
+WHERE project_dir = ? AND from_node_id = ?`
+			args := []interface{}{req.ProjectDir, req.NodeID}
+			if edgeTypeFilter != "" {
+				query += " AND edge_type = ?"
+				args = append(args, edgeTypeFilter)
+			}
+			query += " ORDER BY created_at DESC LIMIT ?"
+			args = append(args, req.Limit)
+			if err := addRows(query, args...); err != nil {
+				return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "query doc_edges(out) failed: " + err.Error()})
+			}
+			for i := range out {
+				if out[i].Direction == "" {
+					out[i].Direction = "out"
+					out[i].NeighborID = out[i].ToNodeID
+				}
+			}
+		}
+		if (direction == "in" || direction == "both") && len(out) < req.Limit {
+			remain := req.Limit - len(out)
+			query := `
+SELECT edge_id, edge_type, from_node_id, to_node_id, weight, evidence
+FROM doc_edges
+WHERE project_dir = ? AND to_node_id = ?`
+			args := []interface{}{req.ProjectDir, req.NodeID}
+			if edgeTypeFilter != "" {
+				query += " AND edge_type = ?"
+				args = append(args, edgeTypeFilter)
+			}
+			query += " ORDER BY created_at DESC LIMIT ?"
+			args = append(args, remain)
+
+			before := len(out)
+			if err := addRows(query, args...); err != nil {
+				return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "query doc_edges(in) failed: " + err.Error()})
+			}
+			for i := before; i < len(out); i++ {
+				out[i].Direction = "in"
+				out[i].NeighborID = out[i].FromNodeID
+			}
+		}
+
+		return c.JSON(http.StatusOK, Response{
+			Code:    0,
+			Message: "OK",
+			Data: ResData{
+				NodeID:    req.NodeID,
+				Count:     len(out),
+				Neighbors: out,
+			},
+		})
+	}
+}
+
+func substrateDocParseArtifactsHandler() echo.HandlerFunc {
+	type Req struct {
+		ProjectDir string `json:"project_dir"`
+		Source     string `json:"source"`
+		Status     string `json:"status"`
+		Limit      int    `json:"limit"`
+	}
+	type Artifact struct {
+		ArtifactID   string `json:"artifact_id"`
+		Source       string `json:"source"`
+		MimeType     string `json:"mime_type,omitempty"`
+		Status       string `json:"status"`
+		ErrorCode    string `json:"error_code,omitempty"`
+		ErrorMessage string `json:"error_message,omitempty"`
+		FallbackMode string `json:"fallback_mode,omitempty"`
+		QualityJSON  string `json:"quality_json,omitempty"`
+		CreatedAt    string `json:"created_at"`
+	}
+	type ResData struct {
+		Count     int        `json:"count"`
+		Artifacts []Artifact `json:"artifacts"`
+	}
+	return func(c echo.Context) error {
+		var req Req
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "Invalid request body"})
+		}
+		if strings.TrimSpace(req.ProjectDir) == "" {
+			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
+		}
+		if req.Limit <= 0 {
+			req.Limit = 50
+		}
+
+		db, err := index.EnsureIndexDB(req.ProjectDir)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "open index db failed: " + err.Error()})
+		}
+		defer db.Close()
+
+		query := `
+SELECT artifact_id, source, mime_type, status, error_code, error_message, fallback_mode, quality_json, created_at
+FROM parse_artifacts
+WHERE project_dir = ?`
+		args := []interface{}{req.ProjectDir}
+		if strings.TrimSpace(req.Source) != "" {
+			query += " AND source = ?"
+			args = append(args, req.Source)
+		}
+		if strings.TrimSpace(req.Status) != "" {
+			query += " AND status = ?"
+			args = append(args, req.Status)
+		}
+		query += " ORDER BY created_at DESC LIMIT ?"
+		args = append(args, req.Limit)
+
+		rows, err := db.Query(query, args...)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "query parse_artifacts failed: " + err.Error()})
+		}
+		defer rows.Close()
+
+		list := make([]Artifact, 0, req.Limit)
+		for rows.Next() {
+			var a Artifact
+			var mimeType sql.NullString
+			var errorCode sql.NullString
+			var errorMessage sql.NullString
+			var fallbackMode sql.NullString
+			var qualityJSON sql.NullString
+			if err := rows.Scan(&a.ArtifactID, &a.Source, &mimeType, &a.Status, &errorCode, &errorMessage, &fallbackMode, &qualityJSON, &a.CreatedAt); err != nil {
+				return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: "scan parse_artifacts failed: " + err.Error()})
+			}
+			if mimeType.Valid {
+				a.MimeType = mimeType.String
+			}
+			if errorCode.Valid {
+				a.ErrorCode = errorCode.String
+			}
+			if errorMessage.Valid {
+				a.ErrorMessage = errorMessage.String
+			}
+			if fallbackMode.Valid {
+				a.FallbackMode = fallbackMode.String
+			}
+			if qualityJSON.Valid {
+				a.QualityJSON = qualityJSON.String
+			}
+			list = append(list, a)
+		}
+
+		return c.JSON(http.StatusOK, Response{
+			Code:    0,
+			Message: "OK",
+			Data: ResData{
+				Count:     len(list),
+				Artifacts: list,
+			},
+		})
+	}
+}
+
+func loadKnowledgeGraph(projectDir string) (graph.KnowledgeGraph, error) {
+	var kg graph.KnowledgeGraph
+	graphPath := filepath.Join(projectDir, ".gitgo", "graph.json")
+	data, err := os.ReadFile(graphPath)
+	if err != nil {
+		return kg, err
+	}
+	if err := json.Unmarshal(data, &kg); err != nil {
+		return kg, err
+	}
+	if kg.Anchors == nil {
+		kg.Anchors = map[string]anchor.Locator{}
+	}
+	if kg.Calls == nil {
+		kg.Calls = map[string][]string{}
+	}
+	if kg.CalledBy == nil {
+		kg.CalledBy = map[string][]string{}
+	}
+	return kg, nil
+}
+
+func fullFunctionName(pkg, name string) string {
+	if strings.TrimSpace(pkg) == "" {
+		return strings.TrimSpace(name)
+	}
+	return strings.TrimSpace(pkg) + "." + strings.TrimSpace(name)
+}
+
+func resolveSubstrateObject(kg graph.KnowledgeGraph, locator string) (substrateObject, string, bool) {
+	locator = strings.TrimSpace(locator)
+	if locator == "" {
+		return substrateObject{}, "", false
+	}
+	if loc, ok := kg.Anchors[locator]; ok {
+		return substrateObject{
+			ObjectID:      loc.ID,
+			ObjectType:    "function",
+			AnchorKind:    "flashmemory_anchor",
+			AnchorLocator: loc.Source,
+			Name:          loc.Name,
+			Package:       loc.Package,
+			File:          loc.File,
+			Source:        loc.Source,
+			Page:          loc.Page,
+			Slide:         loc.Slide,
+			StartLine:     loc.StartLine,
+			EndLine:       loc.EndLine,
+		}, fullFunctionName(loc.Package, loc.Name), true
+	}
+	for _, item := range kg.Functions {
+		fn := item.Func
+		key := fullFunctionName(fn.Package, fn.Name)
+		if locator == key || locator == fn.Name || strings.EqualFold(locator, fn.File) || strings.HasSuffix(fn.File, locator) {
+			return toSubstrateObject(kg, fn), key, true
+		}
+	}
+	return substrateObject{}, "", false
+}
+
+func findSubstrateObjectByFunctionKey(kg graph.KnowledgeGraph, key string) (substrateObject, bool) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return substrateObject{}, false
+	}
+	for _, item := range kg.Functions {
+		fn := item.Func
+		current := fullFunctionName(fn.Package, fn.Name)
+		if key == current || key == fn.Name || strings.HasSuffix(current, "."+key) {
+			return toSubstrateObject(kg, fn), true
+		}
+	}
+	if loc, ok := kg.Anchors[key]; ok {
+		obj, _, found := resolveSubstrateObject(kg, loc.ID)
+		return obj, found
+	}
+	return substrateObject{}, false
+}
+
+func toSubstrateObject(kg graph.KnowledgeGraph, fn parser.FunctionInfo) substrateObject {
+	key := fullFunctionName(fn.Package, fn.Name)
+	anchorID := ""
+	for id, loc := range kg.Anchors {
+		if fullFunctionName(loc.Package, loc.Name) != key {
+			continue
+		}
+		if strings.TrimSpace(loc.File) != "" && strings.TrimSpace(fn.File) != "" && loc.File != fn.File {
+			continue
+		}
+		anchorID = id
+		break
+	}
+	if anchorID == "" {
+		anchorID = key
+	}
+	source := fn.Source
+	if strings.TrimSpace(source) == "" {
+		source = fn.File
+	}
+	return substrateObject{
+		ObjectID:      anchorID,
+		ObjectType:    "function",
+		AnchorKind:    "flashmemory_anchor",
+		AnchorLocator: source,
+		Name:          fn.Name,
+		Package:       fn.Package,
+		File:          fn.File,
+		Source:        source,
+		Page:          fn.Page,
+		Slide:         fn.Slide,
+		StartLine:     fn.StartLine,
+		EndLine:       fn.EndLine,
+	}
+}
+
+func parseGitNameStatus(output, revision, observedAt string) []substrateChangeSignal {
+	signals := make([]substrateChangeSignal, 0, 32)
+	lines := strings.Split(output, "\n")
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 {
+			continue
+		}
+		statusToken := strings.TrimSpace(parts[0])
+		filePath := strings.TrimSpace(parts[len(parts)-1])
+		if filePath == "" {
+			continue
+		}
+		signals = append(signals, substrateChangeSignal{
+			FilePath:   filePath,
+			ChangeType: mapGitStatusToken(statusToken),
+			Revision:   revision,
+			ObservedAt: observedAt,
+		})
+	}
+	return signals
+}
+
+func parseGitPorcelain(output, observedAt string) []substrateChangeSignal {
+	signals := make([]substrateChangeSignal, 0, 32)
+	lines := strings.Split(output, "\n")
+	for _, raw := range lines {
+		if len(raw) < 4 {
+			continue
+		}
+		statusToken := strings.TrimSpace(raw[0:2])
+		filePath := strings.TrimSpace(raw[3:])
+		if filePath == "" {
+			continue
+		}
+		signals = append(signals, substrateChangeSignal{
+			FilePath:   filePath,
+			ChangeType: mapGitStatusToken(statusToken),
+			Revision:   "WORKTREE",
+			ObservedAt: observedAt,
+		})
+	}
+	return signals
+}
+
+func mapGitStatusToken(token string) string {
+	first := "M"
+	if strings.TrimSpace(token) != "" {
+		first = strings.ToUpper(strings.TrimSpace(token[:1]))
+	}
+	switch first {
+	case "A":
+		return "added"
+	case "M":
+		return "modified"
+	case "D":
+		return "deleted"
+	case "R":
+		return "renamed"
+	case "C":
+		return "copied"
+	case "U":
+		return "conflicted"
+	case "?":
+		return "untracked"
+	default:
+		return "modified"
+	}
+}
+
+func runGitCommand(projectDir string, args ...string) (string, error) {
+	allArgs := append([]string{"-C", projectDir}, args...)
+	cmd := exec.Command("git", allArgs...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func toolsMCPHandler() echo.HandlerFunc {
+	return func(c echo.Context) error {
+		specs := getToolRegistry().List()
+		tools := make([]map[string]interface{}, 0, len(specs))
+		for _, s := range specs {
+			props := make(map[string]interface{})
+			required := make([]string, 0, len(s.InputSchema))
+			for _, field := range s.InputSchema {
+				props[field.Name] = map[string]interface{}{
+					"type":        field.Type,
+					"description": field.Description,
+				}
+				if field.Required {
+					required = append(required, field.Name)
+				}
+			}
+			tools = append(tools, map[string]interface{}{
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":        s.Name,
+					"description": s.Description,
+					"parameters": map[string]interface{}{
+						"type":       "object",
+						"properties": props,
+						"required":   required,
+					},
+				},
+			})
+		}
+		return c.JSON(http.StatusOK, Response{Code: 0, Message: "OK", Data: map[string]interface{}{"tools": tools}})
+	}
+}
+
 // searchHandler handles deep search with dynamic project path
 func searchHandler() echo.HandlerFunc {
 	type Req struct {
 		ProjectDir     string `json:"project_dir"`
+		RequestID      string `json:"request_id"`
+		TraceID        string `json:"trace_id"`
 		Query          string `json:"query"`
-		SearchMode     string `json:"search_mode"`      // semantic, keyword, hybrid
+		SearchMode     string `json:"search_mode"` // semantic, keyword, hybrid, auto
 		Limit          int    `json:"limit"`
-		Engine         string `json:"engine"`            // "zvec" | "faiss" | "local" (default: faiss)|Engine         string `json:"engine"`            // "zvec" | "faiss" | "local" (default: faiss)
-		EnableReranker bool   `json:"enable_reranker"`   // Enable cross-encoder reranking
-		Strict         bool   `json:"strict"`            // Strict mode (fewer results, higher quality)
+		Engine         string `json:"engine"`          // "zvec" | "faiss" (default: faiss, HTTP-based)
+		EnableReranker bool   `json:"enable_reranker"` // Enable cross-encoder reranking
+		Strict         bool   `json:"strict"`          // Strict mode (fewer results, higher quality)
 	}
 	type FuncRes struct {
+		AnchorID    string  `json:"anchor_id,omitempty"`
 		Name        string  `json:"name"`
 		Package     string  `json:"package"`
 		File        string  `json:"file"`
+		Source      string  `json:"source,omitempty"`
+		Page        int     `json:"page,omitempty"`
+		Slide       int     `json:"slide,omitempty"`
 		Score       float32 `json:"score"`
 		Description string  `json:"description"`
 		CodeSnippet string  `json:"code_snippet"`
@@ -312,10 +1558,12 @@ func searchHandler() echo.HandlerFunc {
 		ParentPath  string  `json:"parent_path"`
 	}
 	type ResData struct {
-		FuncRes []FuncRes `json:"func_res"`
-		Tags    []string  `json:"tags"`
-		Funcs   []FuncRes `json:"funcs"`
-		Modules []FuncRes `json:"modules"`
+		FuncRes  []FuncRes             `json:"func_res"`
+		Tags     []string              `json:"tags"`
+		Funcs    []FuncRes             `json:"funcs"`
+		Modules  []FuncRes             `json:"modules"`
+		Route    router.IntentDecision `json:"route,omitempty"`
+		LLMRoute llm.RouteDecision     `json:"llm_route,omitempty"`
 	}
 
 	return func(c echo.Context) error {
@@ -329,16 +1577,31 @@ func searchHandler() echo.HandlerFunc {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
 		}
 		if req.SearchMode == "" {
-			req.SearchMode = "hybrid"
+			req.SearchMode = router.SearchModeAuto
 		}
 		if req.Limit == 0 {
 			req.Limit = 5
 		}
 		if req.Engine == "" {
-			req.Engine = "faiss"
+			req.Engine = config.GetEngine()
 		}
-		logs.Infof("Search request: query=%s, mode=%s, engine=%s, reranker=%v, strict=%v",
-			req.Query, req.SearchMode, req.Engine, req.EnableReranker, req.Strict)
+		resolvedMode := req.SearchMode
+		routeDecision := router.IntentDecision{
+			Intent:     "manual_override",
+			SearchMode: req.SearchMode,
+			Confidence: 1.0,
+			Signals:    []string{"manual_search_mode"},
+			Reason:     "search_mode provided by client",
+		}
+		if strings.EqualFold(req.SearchMode, router.SearchModeAuto) {
+			routeDecision = router.RouteQuery(req.Query)
+			resolvedMode = routeDecision.SearchMode
+		}
+		if resolvedMode == "" {
+			resolvedMode = router.SearchModeSemantic
+		}
+		logs.Infof("Search request: query=%s, mode=%s, intent=%s, engine=%s, reranker=%v, strict=%v",
+			req.Query, resolvedMode, routeDecision.Intent, req.Engine, req.EnableReranker, req.Strict)
 
 		gitgoDir := filepath.Join(req.ProjectDir, ".gitgo")
 
@@ -376,35 +1639,56 @@ func searchHandler() echo.HandlerFunc {
 		}
 
 		cfg, _ := config.LoadConfig()
-		
-		dim := 128
-		if config.GetEngine() == "zvec" {
-			dim = 384
-			if cfg != nil && cfg.ZvecConfig.Dimension > 0 {
-				dim = cfg.ZvecConfig.Dimension
-			}
-		}
-		
+		llmDecision := llm.DecideForSearch(cfg, llm.RouteInput{
+			Query:          req.Query,
+			Intent:         routeDecision.Intent,
+			SearchMode:     resolvedMode,
+			Strict:         req.Strict,
+			EnableReranker: req.EnableReranker,
+			Limit:          req.Limit,
+		})
+		logs.Infof("LLM route: provider=%s, model=%s, reasoning=%s, budget=%d, complexity=%d",
+			llmDecision.Provider, llmDecision.ModelID, llmDecision.ReasoningMode, llmDecision.ContextBudget, llmDecision.Complexity)
+
+		// 维度统一从 cfg.ZvecConfig.Dimension 读取，faiss 和 zvec 都生效。
+		// 旧实现里 faiss 硬编码 128，导致 1024 维 BGE 向量被截断，召回质量崩塌。
+		dim := config.ResolveVectorDim(config.GetEngine(), cfg)
+
 		// Determine if we need to auto-build vectors BEFORE creating the wrapper
-		// (wrapper creation may create empty zvec collection directories)
+		// (wrapper creation via initCollection(type="both") creates empty zvec collection directories,
+		// so these checks MUST happen before NewFaissWrapperByEngine)
 		needBuildVectors := false
-		if config.GetEngine() == "zvec" {
-			zvecCollPath := filepath.Join(absGitgoDir, "zvec_collections", "functions")
-			if _, err := os.Stat(zvecCollPath); os.IsNotExist(err) {
+		needBuildModuleVectors := false
+		if config.GetEngine() == "zvec" || req.Engine == "zvec" {
+			zvecFuncPath := filepath.Join(absGitgoDir, "zvec_collections", "functions")
+			if _, err := os.Stat(zvecFuncPath); os.IsNotExist(err) {
 				needBuildVectors = true
 			}
-		} else if _, err := os.Stat(faissIndexPath); os.IsNotExist(err) {
-			needBuildVectors = true
+			zvecModulePath := filepath.Join(absGitgoDir, "zvec_collections", "modules")
+			if _, err := os.Stat(zvecModulePath); os.IsNotExist(err) {
+				needBuildModuleVectors = true
+			}
+		} else {
+			if _, err := os.Stat(faissIndexPath); os.IsNotExist(err) {
+				needBuildVectors = true
+			}
 		}
 
+		zvecCollPath := filepath.Join(absGitgoDir, "zvec_collections")
 		// 创建FaissWrapper，传入存储路径选项
 		faissOptions := map[string]interface{}{
-			"storage_path": absGitgoDir,
-			"server_url":   index.DefaultFaissServerURL,
-			"index_id":     req.ProjectDir,
-			"python_path":  cfg.ZvecConfig.PythonPath,
+			"storage_path":    absGitgoDir,
+			"collection_path": zvecCollPath,
+			"server_url":      index.DefaultFaissServerURL,
+			"index_id":        req.ProjectDir,
+			"python_path":     cfg.ZvecConfig.PythonPath,
 		}
-		idx := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapperByEngine(req.Engine, dim, faissOptions)}
+		faissWrapper, err := index.NewFaissWrapperByEngine(req.Engine, dim, faissOptions)
+		if err != nil {
+			logs.Errorf("Failed to initialize vector engine: %v", err)
+			return c.JSON(http.StatusInternalServerError, Response{Code: 1, Message: fmt.Sprintf("Vector engine init failed: %v", err)})
+		}
+		idx := &index.Indexer{DB: db, FaissIndex: faissWrapper}
 		defer idx.FaissIndex.Free()
 
 		if needBuildVectors {
@@ -455,12 +1739,18 @@ func searchHandler() echo.HandlerFunc {
 			}
 		}
 
+		minScore := float32(0.1)
+		if config.GetEngine() == "zvec" || req.Engine == "zvec" {
+			minScore = 0.0 // RRF scores can be very small, disable MinScore filtering for Zvec hybrids
+		}
+
 		// 构造搜索选项
 		opts := search.SearchOptions{
-			Limit:       req.Limit,
-			MinScore:    0.1,
-			IncludeCode: true,
-			SearchMode:  req.SearchMode,
+			Limit:        req.Limit,
+			MinScore:     minScore,
+			IncludeCode:  true,
+			SearchMode:   resolvedMode,
+			KeywordModel: llmDecision.ModelID,
 		}
 
 		// SearchEngine，传入索引器
@@ -470,7 +1760,7 @@ func searchHandler() echo.HandlerFunc {
 			ProjDir:      req.ProjectDir,
 		}
 
-		fmt.Printf("查找函数: %s (模式: %s)\n", req.Query, opts.SearchMode)
+		fmt.Printf("查找函数: %s (模式: %s, 意图: %s)\n", req.Query, opts.SearchMode, routeDecision.Intent)
 		results, err := engine.Query(req.Query, opts)
 		if common.IsLLMError(err) {
 			return c.JSON(http.StatusOK, Response{Code: 5, Message: err.Error()})
@@ -479,18 +1769,29 @@ func searchHandler() echo.HandlerFunc {
 			return c.JSON(http.StatusOK, Response{Code: 1, Message: "搜索失败"})
 		}
 
+		// Top-K-per-file rebalance: 防止 chunk 数极不均衡的项目里某一份文档（如 53 chunk
+		// 的 spec.md）按 score 排序后垄断 top-K，让每个文件都至少有露脸机会。
+		// 策略：先按原 score 顺序，每个文件先取前 maxPerFile（=3）条进 head；超出的进
+		// tail，最终 head + tail 拼接（tail 仍按原 score 排）。
+		const maxPerFile = 3
+		results = rebalanceTopKPerFile(results, maxPerFile)
+
 		var data []FuncRes
 		for _, r := range results {
 			funcRes := FuncRes{
-				r.Name,
-				r.Package,
-				r.File,
-				r.Score,
-				r.Description,
-				r.CodeSnippet,
-				r.Type,
-				r.Path,
-				r.ParentPath,
+				AnchorID:    r.AnchorID,
+				Name:        r.Name,
+				Package:     r.Package,
+				File:        r.File,
+				Source:      r.Source,
+				Page:        r.Page,
+				Slide:       r.Slide,
+				Score:       r.Score,
+				Description: r.Description,
+				CodeSnippet: r.CodeSnippet,
+				Type:        r.Type,
+				Path:        r.Path,
+				ParentPath:  r.ParentPath,
 			}
 			data = append(data, funcRes)
 			Funcs = append(Funcs, funcRes)
@@ -507,78 +1808,117 @@ func searchHandler() echo.HandlerFunc {
 			"index_id":     fmt.Sprintf("%s_module", req.ProjectDir),
 			"python_path":  cfg.ZvecConfig.PythonPath,
 		}
-		
+
 		var faissModuleIndex index.FaissWrapper
 		if config.GetEngine() == "zvec" {
 			faissModuleIndex = idx.FaissIndex
 		} else {
-			faissModuleIndex = index.NewFaissWrapperByEngine(req.Engine, dim, faissModuleOptions)
-			defer faissModuleIndex.Free()
-		}
-		idxModule := &index.Indexer{DB: db, FaissIndex: faissModuleIndex}
-
-		if _, err := os.Stat(faissModulePath); os.IsNotExist(err) {
-			logs.Infof("正在初始化模块描述向量...")
-			err = embedding.EnsureCodeDescEmbeddingsBatch(idxModule)
-			if common.IsLLMError(err) {
-				return c.JSON(http.StatusOK, Response{Code: 5, Message: err.Error()})
-			}
-			if err != nil {
-				return c.JSON(http.StatusOK, Response{Code: 1, Message: "索引文件重置失败"})
-			}
-			err = idxModule.FaissIndex.SaveToFile(absGitgoDir + "/module.faiss")
-			if err != nil {
-				return c.JSON(http.StatusOK, Response{Code: 1, Message: "索引文件保存失败"})
+			var moduleErr error
+			faissModuleIndex, moduleErr = index.NewFaissWrapperByEngine(req.Engine, dim, faissModuleOptions)
+			if moduleErr != nil {
+				logs.Warnf("Failed to initialize module vector engine: %v", moduleErr)
+				// Continue without module search - not fatal
+				faissModuleIndex = nil
+			} else {
+				defer faissModuleIndex.Free()
 			}
 		}
 
-		// 加载现有索引
-		err = idxModule.FaissIndex.LoadFromFile(faissModulePath)
-		if common.IsLLMError(err) {
-			logs.Warnf("加载模块描述向量失败: %v", err)
-		}
-		if err != nil {
-			logs.Warnf("加载模块描述向量失败: %v", err)
-		} else {
-			logs.Infof("成功加载现有模块描述向量")
-			opts = search.SearchOptions{
-				Limit:       req.Limit,
-				MinScore:    0.1,
-				IncludeCode: true,
-				SearchMode:  req.SearchMode,
-			}
-			// SearchEngine，传入索引器
-			engine = &search.SearchEngine{
-				Indexer:      idxModule,
-				Descriptions: make(map[int]string),
-				ProjDir:      req.ProjectDir,
-				Module:       true,
-			}
-			fmt.Printf("查找模块: %s (模式: %s)\n", req.Query, opts.SearchMode)
-			results, err = engine.Query(req.Query, opts)
-			if common.IsLLMError(err) {
-				return c.JSON(http.StatusOK, Response{Code: 5, Message: err.Error()})
-			}
-			if err != nil {
-				return c.JSON(http.StatusOK, Response{Code: 1, Message: "搜索失败"})
-			}
-			for _, r := range results {
-				funcRes := FuncRes{
-					r.Name,
-					r.Package,
-					r.File,
-					r.Score,
-					r.Description,
-					r.CodeSnippet,
-					r.Type,
-					r.Path,
-					r.ParentPath,
+		// Module search: only proceed if module engine initialized successfully
+		if faissModuleIndex != nil {
+			idxModule := &index.Indexer{DB: db, FaissIndex: faissModuleIndex}
+
+			// needBuildModuleVectors was pre-computed before wrapper creation (see above)
+			// For Zvec engines, also check if DB has code_desc rows but collection is empty
+			// (directory exists but was created empty by initCollection)
+			if !needBuildModuleVectors && (config.GetEngine() == "zvec" || req.Engine == "zvec") {
+				var codeDescCount int
+				err := db.QueryRow("SELECT COUNT(*) FROM code_desc").Scan(&codeDescCount)
+				if err == nil && codeDescCount > 0 {
+					// DB has module data - check if Zvec collection actually has vectors
+					// by doing a probe search with a zero vector
+					zeroVec := make([]float32, dim)
+					probeResults := faissModuleIndex.SearchModuleVectors(zeroVec, 1)
+					if len(probeResults) == 0 {
+						logs.Infof("Zvec module collection is empty but DB has %d code_desc records, triggering rebuild", codeDescCount)
+						needBuildModuleVectors = true
+					}
 				}
-				data = append(data, funcRes)
-				Modules = append(Modules, funcRes)
+			} else if !needBuildModuleVectors && config.GetEngine() != "zvec" && req.Engine != "zvec" {
+				// For non-zvec engines, check faiss module file existence here
+				if _, err := os.Stat(faissModulePath); os.IsNotExist(err) {
+					needBuildModuleVectors = true
+				}
 			}
-			keywords = append(keywords, engine.Keywords...)
-		}
+
+			if needBuildModuleVectors {
+				logs.Infof("正在初始化模块描述向量...")
+				err = embedding.EnsureCodeDescEmbeddingsBatch(idxModule)
+				if common.IsLLMError(err) {
+					return c.JSON(http.StatusOK, Response{Code: 5, Message: err.Error()})
+				}
+				if err != nil {
+					return c.JSON(http.StatusOK, Response{Code: 1, Message: "索引文件重置失败"})
+				}
+				err = idxModule.FaissIndex.SaveToFile(absGitgoDir + "/module.faiss")
+				if err != nil {
+					return c.JSON(http.StatusOK, Response{Code: 1, Message: "索引文件保存失败"})
+				}
+			}
+
+			// 加载现有索引
+			err = idxModule.FaissIndex.LoadFromFile(faissModulePath)
+			if common.IsLLMError(err) {
+				logs.Warnf("加载模块描述向量失败: %v", err)
+			}
+			if err != nil {
+				logs.Warnf("加载模块描述向量失败: %v", err)
+			} else {
+				logs.Infof("成功加载现有模块描述向量")
+				opts = search.SearchOptions{
+					Limit:        req.Limit,
+					MinScore:     0.1,
+					IncludeCode:  true,
+					SearchMode:   resolvedMode,
+					KeywordModel: llmDecision.ModelID,
+				}
+				// SearchEngine，传入索引器
+				engine = &search.SearchEngine{
+					Indexer:      idxModule,
+					Descriptions: make(map[int]string),
+					ProjDir:      req.ProjectDir,
+					Module:       true,
+				}
+				fmt.Printf("查找模块: %s (模式: %s, 意图: %s)\n", req.Query, opts.SearchMode, routeDecision.Intent)
+				results, err = engine.Query(req.Query, opts)
+				if common.IsLLMError(err) {
+					return c.JSON(http.StatusOK, Response{Code: 5, Message: err.Error()})
+				}
+				if err != nil {
+					return c.JSON(http.StatusOK, Response{Code: 1, Message: "搜索失败"})
+				}
+				for _, r := range results {
+					funcRes := FuncRes{
+						AnchorID:    r.AnchorID,
+						Name:        r.Name,
+						Package:     r.Package,
+						File:        r.File,
+						Source:      r.Source,
+						Page:        r.Page,
+						Slide:       r.Slide,
+						Score:       r.Score,
+						Description: r.Description,
+						CodeSnippet: r.CodeSnippet,
+						Type:        r.Type,
+						Path:        r.Path,
+						ParentPath:  r.ParentPath,
+					}
+					data = append(data, funcRes)
+					Modules = append(Modules, funcRes)
+				}
+				keywords = append(keywords, engine.Keywords...)
+			}
+		} // end if faissModuleIndex != nil
 
 		// 对data基于Score得分排序
 		sort.Slice(data, func(i, j int) bool {
@@ -590,8 +1930,28 @@ func searchHandler() echo.HandlerFunc {
 			keywords,
 			Funcs,
 			Modules,
+			routeDecision,
+			llmDecision,
 		}
-		
+		if strings.TrimSpace(req.ProjectDir) != "" {
+			if err := telemetry.RecordSearchEventWithMeta(req.ProjectDir, telemetry.EventMeta{
+				RequestID: req.RequestID,
+				TraceID:   req.TraceID,
+				Cost: &telemetry.EventCost{
+					Hint:            llmDecision.CostHint,
+					EstimatedTokens: llmDecision.ContextBudget,
+				},
+			}, "success", "search completed", telemetry.SearchEventData{
+				Query:       req.Query,
+				SearchMode:  resolvedMode,
+				Route:       routeDecision,
+				LLMRoute:    llmDecision,
+				ResultCount: len(data),
+			}); err != nil {
+				logs.Warnf("append search event failed: %v", err)
+			}
+		}
+
 		return c.JSON(http.StatusOK, Response{Code: 0, Message: "OK", Data: resData})
 	}
 }
@@ -704,11 +2064,17 @@ func buildIndexHandler() echo.HandlerFunc {
 			logs.Warnf("Error refreshing faiss: %v", err)
 		}
 		if req.Engine == "" {
-			req.Engine = "faiss"
+			req.Engine = config.GetEngine()
 		}
-		err = back.BuildIndex(req.ProjectDir, req.RelativeDir, full, req.Engine != "local")
+		err = back.BuildIndex(req.ProjectDir, req.RelativeDir, full, req.Engine != "local", req.Engine)
 		if common.IsLLMError(err) {
 			return c.JSON(http.StatusOK, Response{Code: 5, Message: err.Error()})
+		}
+		// 并发拒绝走单独的 code=409，便于 gateway 区分"暂时性、应等待重试"
+		// 与"业务/系统错误、不应继续重试"。配合 acquireIndexLock 可消除
+		// gateway retry 风暴并发踩坏 zvec collection 的根因。
+		if errors.Is(err, back.ErrIndexInProgress) {
+			return c.JSON(http.StatusOK, Response{Code: 409, Message: err.Error()})
 		}
 		if err != nil {
 			return c.JSON(http.StatusOK, Response{Code: 2, Message: err.Error()})
@@ -830,9 +2196,9 @@ func incrementalIndexHandler() echo.HandlerFunc {
 			return c.JSON(http.StatusBadRequest, Response{Code: 1, Message: "project_dir is required"})
 		}
 		if req.Engine == "" {
-			req.Engine = "faiss"
+			req.Engine = config.GetEngine()
 		}
-		err := back.IncrementalUpdate(req.ProjectDir, req.Branch, req.Commit, req.Engine != "local")
+		err := back.IncrementalUpdate(req.ProjectDir, req.Branch, req.Commit, req.Engine != "local", req.Engine)
 		if common.IsLLMError(err) {
 			return c.JSON(http.StatusOK, Response{Code: 5, Message: err.Error()})
 		}
@@ -853,6 +2219,9 @@ func checkIndexHandler() echo.HandlerFunc {
 		Name        string `json:"name"`
 		Package     string `json:"package"`
 		File        string `json:"file"`
+		Source      string `json:"source,omitempty"`
+		Page        int    `json:"page,omitempty"`
+		Slide       int    `json:"slide,omitempty"`
 		StartLine   int    `json:"start_line"`
 		EndLine     int    `json:"end_line"`
 		Description string `json:"description,omitempty"`
@@ -941,8 +2310,8 @@ func checkIndexHandler() echo.HandlerFunc {
 			logs.Errorf("索引文件不存在: %s", indexDBPath)
 		}
 
-		// 打开数据库连接
-		db, err := sql.Open("sqlite", indexDBPath)
+		// 打开数据库连接并执行 schema/migration 对齐
+		db, err := index.EnsureIndexDB(req.ProjectDir)
 		if err != nil {
 			logs.Errorf("打开数据库连接失败: %v", err)
 		}
@@ -957,7 +2326,7 @@ func checkIndexHandler() echo.HandlerFunc {
 		var args []interface{}
 		if req.RelativeDir != "" {
 			// 查询特定子路径，使用LIKE模糊匹配以支持目录查询
-			query = "SELECT name, package, file, start_line, end_line, description FROM functions WHERE file LIKE ? ORDER BY file, start_line"
+			query = "SELECT name, package, file, source, page, slide, start_line, end_line, description FROM functions WHERE file LIKE ? ORDER BY file, start_line"
 			// 确保路径以/结尾用于目录匹配，或精确匹配文件
 			subPathPattern := strings.TrimPrefix(req.RelativeDir, "/")
 			if !strings.HasSuffix(subPathPattern, "/") && !strings.Contains(subPathPattern, ".") {
@@ -975,7 +2344,7 @@ func checkIndexHandler() echo.HandlerFunc {
 			args = append(args, subPathPattern)
 		} else {
 			// 查询所有函数
-			query = "SELECT name, package, file, start_line, end_line, description FROM functions ORDER BY file, start_line"
+			query = "SELECT name, package, file, source, page, slide, start_line, end_line, description FROM functions ORDER BY file, start_line"
 		}
 
 		// 处理查询结果
@@ -991,9 +2360,12 @@ func checkIndexHandler() echo.HandlerFunc {
 			for rows.Next() {
 				var fn FunctionDetail
 				var packageName sql.NullString
+				var source sql.NullString
+				var page sql.NullInt64
+				var slide sql.NullInt64
 				var description sql.NullString
 
-				err := rows.Scan(&fn.Name, &packageName, &fn.File, &fn.StartLine, &fn.EndLine, &description)
+				err := rows.Scan(&fn.Name, &packageName, &fn.File, &source, &page, &slide, &fn.StartLine, &fn.EndLine, &description)
 				if err != nil {
 					return c.JSON(http.StatusOK, Response{Code: 1, Message: "数据解析失败: " + err.Error()})
 				}
@@ -1003,6 +2375,15 @@ func checkIndexHandler() echo.HandlerFunc {
 				}
 				if description.Valid {
 					fn.Description = description.String
+				}
+				if source.Valid {
+					fn.Source = source.String
+				}
+				if page.Valid {
+					fn.Page = int(page.Int64)
+				}
+				if slide.Valid {
+					fn.Slide = int(slide.Int64)
 				}
 
 				// 按文件分组
@@ -1880,4 +3261,42 @@ func functionRankingHandler() echo.HandlerFunc {
 			},
 		})
 	}
+}
+
+// rebalanceTopKPerFile reorders search results so that no single file occupies
+// more than maxPerFile slots in the head of the list. Files with overflow have
+// their extra chunks pushed to the tail (preserving relative order). This is a
+// purely cosmetic post-process; final ordering remains stable with respect to
+// the underlying score ranking when the input already has balanced files.
+//
+// Why this exists: in dev_files projects it is common for a single oversized
+// markdown spec to produce 50+ chunks while sibling docx files produce 1-2.
+// Without rebalance, the spec's chunks dominate every search and other files
+// are functionally invisible. maxPerFile = 3 keeps the spec's most relevant
+// pieces visible while reserving slots for cross-file diversity.
+func rebalanceTopKPerFile(results []search.SearchResult, maxPerFile int) []search.SearchResult {
+	if maxPerFile <= 0 || len(results) == 0 {
+		return results
+	}
+	fileCount := make(map[string]int, 8)
+	head := make([]search.SearchResult, 0, len(results))
+	tail := make([]search.SearchResult, 0)
+	for _, r := range results {
+		key := r.File
+		if key == "" {
+			// Module-level results have empty File; treat each as its own bucket.
+			head = append(head, r)
+			continue
+		}
+		if fileCount[key] < maxPerFile {
+			head = append(head, r)
+			fileCount[key]++
+		} else {
+			tail = append(tail, r)
+		}
+	}
+	if len(tail) == 0 {
+		return head
+	}
+	return append(head, tail...)
 }

@@ -1,0 +1,217 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{setspace}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=[RGB]{18,77,102},
+  citecolor=[RGB]{18,77,102},
+  urlcolor=[RGB]{18,77,102},
+  pdftitle={Toward a Semiotic Memory Architecture for Evolving AI Systems},
+  pdfauthor={Anonymous},
+  pdfsubject={AI memory, semiotics, collective memory, FlashMemory},
+  pdfkeywords={semiotic memory, AI agents, memory architecture, semiosphere, self-play harness, FlashMemory, semantic drift, collective memory}
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.6em}
+\setlist[itemize]{leftmargin=1.4em}
+\setlist[enumerate]{leftmargin=1.6em}
+
+\newcommand{\paperkeywords}[1]{%
+  \vspace{0.5em}
+  \noindent\textbf{Keywords:} #1
+}
+
+\newcommand{\figureplaceholder}[4]{%
+  \begin{figure}[t]
+    \centering
+    \fbox{%
+      \parbox[c][2.35in][c]{0.92\linewidth}{%
+        \centering
+        \textbf{#1}\par
+        \vspace{0.6em}
+        \small #2
+      }%
+    }
+    \caption{#3}
+    \label{#4}
+  \end{figure}
+}
+
+\title{\textbf{Toward a Semiotic Memory Architecture for Evolving AI Systems}}
+\author{Anonymous}
+\date{April 23, 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Large language model agents have made rapid progress in retrieval, planning, and tool use, yet most current memory architectures still treat memory as a storage-and-retrieval problem rather than a problem of meaning formation, semantic drift, and collective stabilization. This paper consolidates eight chapters of a broader research program into an arXiv-style survey-position manuscript centered on semiotics. The main claim is that evolving AI memory should be modeled as a semiotic order rather than a text cache: a memory item is not merely a chunk of content, but a dynamically maintained relation among sign, object, and interpretant. Building on this claim, the paper uses cognitive psychology to specify internal layering, game theory to explain competition and update, social diffusion theory to explain propagation and institutionalization, and computational linguistics to operationalize semantic drift. The resulting framework spans five levels, from semiotic memory units and cognitive layers to self-play harnesses, semiospheric collective memory, propagation-aware auditing, and FlashMemory as a substrate for object anchoring and temporal provenance. The paper argues that future AI memory research should shift from maximizing recall toward optimizing semiotic stability, interpretive divergence management, symbol grounding strength, canon quality, and repair efficiency. Rather than merely summarizing the eight chapters, the manuscript reorganizes them into a preprint-ready problem statement, architecture, and evaluation agenda for evolving memory systems.
+\end{abstract}
+
+\paperkeywords{semiotic memory, AI agents, memory architecture, semiosphere, self-play harness, FlashMemory, semantic drift, collective memory}
+
+\figureplaceholder
+  {Figure 1 Placeholder}
+  {Panoramic teaser from sign--object--interpretant to individual memory, self-play harness, semiosphere, and FlashMemory substrate. Replace this box with the final teaser figure derived from FIG-1 in the companion author notes.}
+  {Teaser overview of the proposed semiotic memory architecture.}
+  {fig:teaser}
+
+\section{Introduction}
+
+The dominant paradigm for AI memory is still too narrow. In most existing systems, memory is treated as an auxiliary buffer that stores observations, summaries, or vectorized chunks for later retrieval. This paradigm has produced useful engineering gains, but it does not explain why long-horizon agents routinely suffer from semantic drift, sloganized summaries, unstable norms, and conflicting interpretations across agents and modalities. The deeper bottleneck is not simply that systems forget. It is that they fail to preserve the operational meaning of what they remember.
+
+This paper argues that AI memory should be reframed as a semiotic problem. A useful memory is not merely a stored text span; it is a structured relation between a sign, the object to which the sign refers, and an interpretant that renders the relation actionable. Once memory is understood in this way, phenomena that are peripheral in standard retrieval systems become central research questions: how signs drift across summaries, how competing interpretations are selected or rejected, how local experiences are promoted into group norms, and how multiple agents preserve object-level coherence while operating in partially different symbolic regimes \cite{short2021peirce, lotman2005semiosphere}.
+
+This reframing also reorganizes the role of adjacent disciplines. In the framework developed here, semiotics is the conceptual center; cognitive psychology explains how memory should be layered internally \cite{atkinson1968human, baddeley1974working, tulving1972episodic, nelson1990metamemory}; game theory explains why memory update is competitive rather than neutral; social diffusion explains how repeated exposure and clustered reinforcement turn local claims into shared conventions \cite{centola2010spread}; and computational linguistics provides measurable indicators of semantic drift, alias explosion, and interpretive divergence over time \cite{hamilton2016diachronic}. Together, these disciplines transform memory from a passive repository into an evolving order of meaning.
+
+\subsection{Contributions}
+
+The main contributions of this paper are as follows:
+
+\begin{enumerate}
+  \item It reframes AI memory as a semiotic problem centered on sign-object-interpretant stability rather than as an enlarged retrieval buffer.
+  \item It reorganizes eight chapters of a broader research program into one coherent architecture spanning semiotic memory units, cognitive layers, self-play evolution, collective semiospheres, and propagation-aware auditing.
+  \item It positions FlashMemory as an object-aware research substrate for memory evolution rather than as a monolithic end-user agent platform.
+  \item It derives an evaluation agenda centered on semiotic stability, interpretive divergence, symbol grounding strength, canon quality, and repair efficiency.
+\end{enumerate}
+
+\subsection{Paper Organization}
+
+The rest of the paper follows a standard preprint arc. Section~\ref{sec:related} reviews the most relevant work and clarifies the conceptual gap that motivates a semiotic reframing. Section~\ref{sec:problem} formalizes the problem statement and derives design requirements for evolving memory systems. Section~\ref{sec:architecture} synthesizes the eight chapters into a unified semiotic memory architecture. Section~\ref{sec:substrate} discusses FlashMemory as the substrate that makes the architecture empirically tractable. Section~\ref{sec:evaluation} presents an evaluation agenda and research roadmap. Section~\ref{sec:discussion} discusses limitations and open questions, and Section~\ref{sec:conclusion} concludes.
+
+\section{Preliminaries and Related Work}
+\label{sec:related}
+
+\subsection{Memory in Agent Systems}
+
+Recent work on agent memory has already shown that memory is more than short-term retrieval, but the field still lacks a unified account of meaning stability. Generative Agents introduced an architecture in which agents store experiences, retrieve relevant traces, and synthesize higher-level reflections that shape future behavior \cite{park2023generative}. Reflexion showed that language-based self-feedback can function as a lightweight learning loop through an episodic memory buffer \cite{shinn2023reflexion}. CAMEL demonstrated that multi-agent role-play exposes emergent cooperation patterns and differentiated communicative regimes \cite{li2023camel}. MemGPT proposed a hierarchical memory scheme inspired by operating systems, making long contexts manageable through tiered paging \cite{packer2024memgpt}. Collectively, these systems establish that memory, reflection, and interaction matter. However, they still tend to treat memory primarily as stored text or context management rather than as a semiotic structure.
+
+\subsection{Cognitive Psychology and Internal Layering}
+
+Classical cognitive psychology offers a more principled account of internal memory organization. Atkinson and Shiffrin's control-process model decomposes memory stores and routing functions \cite{atkinson1968human}. Baddeley and Hitch show that working memory is not a passive buffer but an active workspace for manipulation \cite{baddeley1974working}. Tulving's distinction between episodic and semantic memory remains crucial: a system should differentiate between remembered events and stabilized knowledge claims \cite{tulving1972episodic}. Nelson and Narens add a meta-level perspective in which a system monitors its own uncertainty, freshness, and reliability \cite{nelson1990metamemory}. These traditions suggest that a viable agent memory architecture must support stratified storage, controlled consolidation, and explicit self-monitoring.
+
+\subsection{Semiotics and Collective Meaning}
+
+Semiotics provides the conceptual center that current agent memory literature lacks. Peirce's sign-object-interpretant triad makes explicit that meaning is not reducible to symbol and referent alone; interpretation is constitutive rather than secondary \cite{short2021peirce}. Lotman's semiosphere extends this insight from individual interpretation to collective symbolic organization, emphasizing boundary, translation, core-periphery structure, and heterogeneous co-existence \cite{lotman2005semiosphere, noth2015topography}. This perspective is decisive for AI memory because multi-agent systems do not share one homogeneous language. Coding agents, reviewers, architects, documents, diagrams, and human operators each inhabit partially distinct symbolic regions. Many so-called memory failures are therefore better understood as failures of translation, alignment, or canonization rather than failures of storage.
+
+\subsection{Social Diffusion and Computational Linguistics}
+
+Two additional fields make the semiotic reframing operational. Social diffusion theory explains how repeated and clustered transmission converts local claims into shared conventions. Centola's work is especially relevant because it shows that adoption often depends on reinforcement through network structure rather than on a single successful exposure \cite{centola2010spread}. Computational linguistics provides complementary tools for measuring how meaning changes over time. Hamilton et al. show that semantic drift can be studied quantitatively through diachronic representation change \cite{hamilton2016diachronic}. Together, these lines of work suggest that the right successor to current memory buffers is not simply a larger context window, but a propagation-aware architecture that tracks how signs move, compress, and drift across time and across agents.
+
+\section{Problem Statement and Design Requirements}
+\label{sec:problem}
+
+The eight-chapter research package synthesized here starts from a stronger problem statement than most existing memory work. The central problem is not how to store more observations, but how to preserve operational meaning under repeated summarization, translation, contestation, and institutional reuse. A memory system fails when a sign remains available but no longer points to the same object, no longer supports a compatible interpretant, or has silently become detached from its original provenance. In long-horizon agent systems, these failures accumulate into brittle plans, sloganized norms, and collective misalignment.
+
+This problem statement yields five design requirements. First, \textbf{object anchoring} must be explicit: every durable claim should be tied to inspectable objects such as code entities, documents, incidents, or decisions. Second, \textbf{interpretive plurality} must be representable: competing explanations should coexist as first-class objects rather than be collapsed into one overwritten summary. Third, \textbf{temporal provenance} must be preserved so that the system can trace when, where, and why a claim entered memory. Fourth, \textbf{staged consolidation} must separate transient observations from stabilized knowledge and institutional canon. Fifth, \textbf{contestability and repair} must be built into the system so that memory quality is judged through use, challenge, and revision rather than by write-time heuristics alone.
+
+These requirements also clarify scope. The proposed framework is not a general theory of human meaning, nor a claim that every agent pipeline must explicitly implement every semiotic concept. Instead, it is a research program for engineering memory systems that remain interpretable, auditable, and updatable under evolution. The practical aim is to build memory architectures that can survive long horizons, heterogeneous roles, and repeated retellings without losing their object-level grounding.
+
+\section{A Semiotic Memory Architecture}
+\label{sec:architecture}
+
+\subsection{Memory as a Semiotic Order}
+
+The first chapter of the underlying research program establishes the thesis that memory should be treated as an evolving semiotic order rather than an information store. This shift changes the design target from maximizing recall to maintaining operational meaning across time, task, and communication context. Once meaning stability becomes central, a memory architecture must explicitly model how claims are produced, circulated, contested, and stabilized. Object anchoring, provenance, and controlled promotion are no longer optional implementation details; they become constitutive parts of the memory design.
+
+The practical consequence is that memory can no longer be modeled as a flat cache. Durable memory must reserve space for ambiguity, conflicting interpretations, and revision histories. A system that stores only paraphrased text will gradually accumulate self-referential summaries and unstable slogans. A system that stores sign-object-interpretant relations, in contrast, can distinguish between lexical variation and genuine semantic change. This thesis provides the theoretical hinge for the remaining architectural components.
+
+\subsection{Semiotic Memory Units}
+
+The second chapter contributes the minimal research object for the architecture: the \textbf{semiotic memory unit (SMU)}. An SMU is not a generic chunk, note, or message. It is a claim-level structure containing at least seven fields: \texttt{sign}, \texttt{object}, \texttt{interpretant}, \texttt{context}, \texttt{provenance}, \texttt{confidence}, and \texttt{social\_status}. This design operationalizes Peirce's triad and extends it with the minimum controls needed for engineering and experimentation. The \texttt{sign} captures surface expression, the \texttt{object} anchors the claim to inspectable entities, and the \texttt{interpretant} records the actionable understanding. \texttt{Context} localizes use conditions, \texttt{provenance} makes the claim auditable, \texttt{confidence} calibrates trust, and \texttt{social\_status} indicates whether the claim is a private cue, local hypothesis, contested interpretation, provisional consensus, or institutional canon.
+
+The key advantage of the SMU abstraction is that it separates object identity from interpretive plurality. Competing explanations are stored as distinct units connected by relations such as \texttt{supports}, \texttt{contests}, or \texttt{supersedes}, rather than being merged into one fuzzy summary. This makes interpretation a manipulable research object instead of an accidental side effect of prompt phrasing. It also gives the architecture an operational atom that can be indexed, promoted, challenged, deprecated, and measured over time.
+
+\figureplaceholder
+  {Figure 2 Placeholder}
+  {SMU schema with a central Semiotic Memory Unit node connected to sign, object, interpretant, context, provenance, confidence, social status, relations, metrics, and timestamps. Replace with the final figure derived from FIG-2 in the companion author notes.}
+  {Schema of the proposed semiotic memory unit.}
+  {fig:smu}
+
+\subsection{Cognitive Layers and Memory Physiology}
+
+The third chapter imports cognitive psychology to specify how SMUs should be processed inside an agent. The proposal is a five-layer physiology consisting of perceptual buffer, working memory, episodic memory, semantic memory, and metamemory. This layering matters because the same unit should not play every role simultaneously. Raw observations belong in a transient buffer; task-relevant interpretations belong in working memory; event traces belong in episodic memory; stabilized claims belong in semantic memory; and freshness, uncertainty, conflict, and retrieval diagnostics belong in metamemory \cite{atkinson1968human, baddeley1974working, tulving1972episodic, nelson1990metamemory}.
+
+This layered perspective guards against two recurring pathologies. The first is context sprawl, in which every observation is treated as equally durable and the system becomes noisy and brittle. The second is premature canonization, in which a single event is generalized too early and becomes an overconfident norm. By distinguishing where an SMU lives and how it moves, the architecture turns memory management into a principled theory of routing, consolidation, and forgetting.
+
+\subsection{Self-Play Harness as an Evolution Engine}
+
+The fourth chapter argues that memory quality cannot be determined at write time alone. A claim proves itself only when it is retrieved, acted on, challenged, and either reinforced or repaired. The \texttt{self-play harness} is therefore defined not as a benchmark runner but as a memory evolution environment. It generates tasks, assigns heterogeneous roles, stages reflection or debate, judges downstream outcomes, and updates memory state accordingly. In this setting, self-play is not merely agent-versus-agent competition; it is a systematic mechanism for exposing unstable interpretations, overconfident abstractions, and brittle conventions \cite{shinn2023reflexion, li2023camel, madaan2023selfrefine, yao2023react}.
+
+From a semiotic perspective, the harness is where interpretants compete. From a game-theoretic perspective, it is where claims acquire or lose strategic value under repeated use. The harness supplies the selection mechanism that a semiotic memory theory requires. Without it, memory remains archival. With it, memory becomes evolutionary, because the system can reward grounded, reusable interpretations and demote misleading or weakly anchored ones.
+
+\subsection{Semiosphere, Propagation, and Collective Memory}
+
+The fifth and sixth chapters scale the problem from individual agents to collective symbolic ecologies. Following Lotman, the architecture treats a multi-agent or human-agent environment as a \textbf{semiosphere} composed of partially overlapping symbolic regions \cite{lotman2005semiosphere, noth2015topography}. Code review discourse, incident discourse, product discourse, architectural discourse, and tacit human discourse are not interchangeable channels; they are structured regions with different translation costs and different risks of distortion. Translation across these regions is both a source of innovation and a source of error.
+
+Propagation further complicates the picture. Memory does not simply persist; it is retold, compressed, translated, and redistributed. During this process, signs may drift away from objects, aliases may proliferate, and local explanations may harden into misleading slogans. Computational linguistics makes this process measurable through drift signals, anchor retention, and alias growth \cite{hamilton2016diachronic}. Social diffusion theory explains why some claims become norms only after repeated and clustered reinforcement \cite{centola2010spread}. Collective memory is therefore not reducible to many individual memories in parallel; it is a structured symbolic field in motion.
+
+\figureplaceholder
+  {Figure 3 Placeholder}
+  {Collective semiosphere with Code, Design, Incident, Product, and Human Tacit regions surrounding a shared object graph, with translation edges and a propagation pipeline. Replace with the final figure derived from FIG-3 in the companion author notes.}
+  {Collective memory as a semiosphere with translation and propagation dynamics.}
+  {fig:semiosphere}
+
+\subsection{FlashMemory as the Substrate Layer}
+
+The seventh chapter grounds the architecture in FlashMemory. Rather than positioning FlashMemory as a fully fledged agent product, the chapter interprets it as the substrate responsible for object anchoring, multimodal sign indexing, temporal provenance, graph relations, and research traceability. This is a strategic narrowing. A semiotic architecture needs a stable object layer more than it needs another monolithic orchestration stack. FlashMemory is promising because it already sits close to inspectable objects: code entities, documents, graph relations, and cross-artifact links.
+
+This substrate view also clarifies division of labor. FlashMemory should provide object graph management, multimodal sign indexing, temporal provenance, and retrieval/assembly primitives for working memory. The harness should consume those primitives to run trials, debates, conflict-resolution episodes, and policy updates. Agents should inhabit the system as role-bearing interpreters rather than as the owners of memory itself. This separation makes the full program more modular, more auditable, and more scientifically tractable.
+
+\section{FlashMemory as a Semiotic Research Substrate}
+\label{sec:substrate}
+
+The architecture above implies a strategic claim about infrastructure. If semiotic memory requires object anchoring, provenance, temporal traceability, and multimodal symbolic alignment, then the substrate must be optimized for those functions before any end-to-end memory product is judged. FlashMemory is especially valuable because it allows researchers to bind symbolic claims to inspectable artifacts. This makes it possible to replay memory evolution, inspect contested claims, trace canonization events, and compare propagation regimes across time rather than relying on anecdotal agent transcripts.
+
+This substrate framing also matters methodologically. A large share of current agent-memory research is difficult to reproduce because memory is hidden inside prompts, opaque summaries, or ad hoc JSON blobs. By contrast, a FlashMemory-centered substrate can expose object anchors, temporal lineage, relation graphs, and promotion histories as inspectable research objects. In that sense, the substrate is not merely infrastructure. It is part of the epistemic method required to turn semiotic memory from an attractive metaphor into a falsifiable systems program.
+
+\section{Evaluation Agenda and Research Roadmap}
+\label{sec:evaluation}
+
+For the eight-chapter program to become an empirical research agenda, the evaluation story must be as clear as the architectural story. The first family of metrics concerns \textbf{semiotic stability}: after a claim is summarized, translated, debated, or propagated across agents, does it still point to the same object and sustain a compatible interpretant? The second concerns \textbf{interpretive divergence}: when multiple agents face the same object, how much do their interpretants disagree, and is the disagreement explicit or latent? The third is \textbf{symbol grounding strength}: are the signs in a claim still anchored to inspectable objects, or have they drifted into free-floating slogans?
+
+The next family concerns norm formation and repair. \textbf{Canon quality} asks whether the claims promoted into shared norms are in fact reusable, precise, and low-risk. \textbf{Repair efficiency} asks how quickly the system recovers once a weak interpretation is established. These metrics matter because the most expensive failures in long-lived memory systems may come not from isolated retrieval misses, but from bad norms that are repeatedly and confidently reused. Evaluating evolving memory therefore requires institutional metrics in addition to individual correctness metrics.
+
+From an experimental perspective, the framework yields a natural comparison matrix. One axis varies memory representation: plain chunks, object-anchored chunks, or full SMUs. A second varies internal layering: flat memory versus layered memory. A third varies evolution mechanism: no reflection, single-agent reflection, debate, or full self-play harness. A fourth varies social structure: single agent, human-agent pair, multi-agent cluster, or multi-region semiosphere. This design keeps the program falsifiable. If semiotic memory does not help, it should fail under controlled comparison. If it does help, it should do so through measurable gains in stability, grounding, and repair, not through anecdotal impressions alone.
+
+\figureplaceholder
+  {Figure 4 Placeholder}
+  {Evaluation roadmap matrix spanning memory unit, memory layers, evolution mechanism, social structure, and five metric families. Replace with the final figure derived from FIG-4 in the companion author notes.}
+  {Evaluation roadmap for the proposed semiotic memory research agenda.}
+  {fig:evaluation}
+
+\section{Discussion, Limitations, and Open Questions}
+\label{sec:discussion}
+
+The strongest claim of this paper is also the easiest to misunderstand. Placing semiotics at the center does not reduce AI systems to a humanities metaphor. It highlights that many advanced memory failures are fundamentally failures of sign-object-interpretant alignment. Cognitive psychology alone cannot explain collective norm formation. Game theory alone cannot explain why two agents appear to disagree while actually referring to different objects. Social diffusion alone cannot explain why repeated claims sometimes stabilize as empty slogans. Computational linguistics can track drift, but cannot by itself define what should count as stable meaning. Semiotics provides the integrative layer within which these disciplines become mutually constraining rather than loosely adjacent.
+
+The proposal also has clear limitations. First, semiotic representations increase schema and annotation overhead. Second, object anchoring is natural in software repositories but harder in open-world domains where inspectable objects are less sharply defined. Third, social-status transitions require governance rules that avoid both premature canonization and excessive conservatism. Fourth, the field still lacks large-scale benchmarks tailored to contested meanings and cross-semiosphere translation. These are not incidental implementation details; they define the real scientific workload ahead.
+
+Several open questions follow directly. How should promotion thresholds vary across domains with different costs of false canonization? What kinds of harness-induced conflict are most diagnostic of weak interpretants? How should semiospheric boundaries be learned rather than manually specified? Which representations best expose the difference between lexical variation and object-level drift? These questions suggest that the proposed architecture is not the endpoint of a design exercise, but the beginning of a measurable research program.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+This paper has reorganized eight chapters of a larger research package into a single arXiv-style survey-position manuscript. The main conclusion is that evolving AI memory should be built around semiotic structure rather than treated as expanded context management. The resulting architecture begins with semiotic memory units, scales through cognitive layers and self-play harnesses, expands into collective semiospheres and propagation-aware auditing, and is grounded by FlashMemory as an object-aware substrate. Cognitive psychology explains internal layering, game theory explains competition and update, social diffusion explains norm formation, and computational linguistics explains how drift becomes measurable. Semiotics remains the center because it alone explains why preserving meaning, rather than merely preserving content, is the defining long-horizon challenge.
+
+If this synthesis is correct, the next generation of AI memory research will no longer ask only how to store more, summarize better, or retrieve faster. It will ask how to preserve and govern meaning across agents, artifacts, timescales, and institutions. That is a harder question, but it is also the question most worth answering.
+
+\bibliographystyle{unsrtnat}
+\bibliography{2026-04-23-semiotics-centered-memory-survey-paper}
+
+\end{document}

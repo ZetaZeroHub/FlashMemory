@@ -17,12 +17,28 @@ import (
 	"github.com/kinglegendzzh/flashmemory/internal/embedding"
 	"github.com/kinglegendzzh/flashmemory/internal/graph"
 	"github.com/kinglegendzzh/flashmemory/internal/index"
+	"github.com/kinglegendzzh/flashmemory/internal/llm"
 	"github.com/kinglegendzzh/flashmemory/internal/parser"
+	"github.com/kinglegendzzh/flashmemory/internal/router"
 	"github.com/kinglegendzzh/flashmemory/internal/search"
 	"github.com/kinglegendzzh/flashmemory/internal/utils"
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"github.com/kinglegendzzh/flashmemory/internal/visualize"
 )
+
+func resolveSearchMode(query, searchMode string) (string, router.IntentDecision) {
+	if strings.EqualFold(strings.TrimSpace(searchMode), "") || strings.EqualFold(searchMode, router.SearchModeAuto) {
+		decision := router.RouteQuery(query)
+		return decision.SearchMode, decision
+	}
+	return searchMode, router.IntentDecision{
+		Intent:     "manual_override",
+		SearchMode: searchMode,
+		Confidence: 1.0,
+		Signals:    []string{"manual_search_mode"},
+		Reason:     "search_mode provided by caller",
+	}
+}
 
 func main() {
 	// 提前嗅探 lang 参数，以便在定义 flag 时能判断语言
@@ -52,7 +68,7 @@ func main() {
 	projDir := flag.String("dir", ".", i18nFlag("要建立索引或分析的项目目录路径", "Path to the project directory to index"))
 	query := flag.String("query", "", i18nFlag("用于搜索代码库的自然语言查询", "Natural language query to search the codebase"))
 	faissType := flag.String("faiss", "cpu", i18nFlag("Faiss 版本: 'cpu' 或 'gpu'", "Type of faiss: 'cpu' or 'gpu'"))
-	searchMode := flag.String("search_mode", "semantic", i18nFlag("搜索模式: semantic, keyword, hybrid", "Search mode: semantic, keyword, hybrid"))
+	searchMode := flag.String("search_mode", "auto", i18nFlag("搜索模式: auto, semantic, keyword, hybrid", "Search mode: auto, semantic, keyword, hybrid"))
 	forceFullIndex := flag.Bool("force_full", false, i18nFlag("强制进行全量索引", "Force full indexing, ignore incremental updates"))
 	commitHash := flag.String("commit", "", i18nFlag("指定特定的commit hash进行索引", "Specify commit hash for indexing"))
 	branchName := flag.String("branch", "master", i18nFlag("指定分支名称", "Specify branch name"))
@@ -60,9 +76,22 @@ func main() {
 	onlyVectors := flag.Bool("only_vectors", false, i18nFlag("仅构建向量索引，跳过解析和LLM分析", "Only rebuild vector indexes, skipping parsing and LLM"))
 	faissServicePath := flag.String("faiss_path", "", i18nFlag("指定 FAISSService 目录绝对路径", "Specify FAISSService absolute path"))
 	filePath := flag.String("file", "", i18nFlag("定量更新的文件或文件夹", "Specify file or dir for partial update"))
+	ingestPath := flag.String("ingest", "", i18nFlag("摄取文档文件或文件夹（支持 md/markdown/txt/rst/pdf/pptx/docx/image）", "Ingest document file or directory (supports md/markdown/txt/rst/pdf/pptx/docx/image)"))
 	useFaiss := flag.Bool("use_faiss", false, i18nFlag("使用 Faiss 原生索引存储", "Use Faiss native index storage"))
-	engineType := flag.String("engine", "zvec", i18nFlag("向量引擎类型: zvec(默认), faiss, memory", "Vector engine type: zvec(default), faiss, memory"))
+	engineType := flag.String("engine", "", i18nFlag("向量引擎类型: zvec, faiss", "Vector engine type: zvec, faiss"))
 	flag.Parse()
+
+	if *ingestPath != "" {
+		if *filePath != "" {
+			log.Fatalf("参数冲突：-ingest 与 -file 不能同时使用")
+		}
+		*filePath = *ingestPath
+		log.Printf("Ingest mode enabled, target: %s", *filePath)
+	}
+
+	if *engineType == "" {
+		*engineType = config.GetEngine()
+	}
 
 	// 判断是否使用 Zvec 引擎
 	useZvec := *engineType == "zvec"
@@ -217,11 +246,8 @@ func main() {
 		}
 
 		cfg, _ := config.LoadConfig()
-		dim := cfg.ZvecConfig.Dimension
-		if dim == 0 {
-			dim = 384
-		}
-		
+		dim := config.ResolveVectorDim(*engineType, cfg)
+
 		// 创建FaissWrapper，传入存储路径选项
 		faissOptions := map[string]interface{}{
 			"storage_path": absGitgoDir,
@@ -229,7 +255,11 @@ func main() {
 			"index_id":     projDir,
 			"python_path":  cfg.ZvecConfig.PythonPath,
 		}
-		idx := &index.Indexer{DB: db, FaissIndex: index.NewFaissWrapperByEngine(*engineType, dim, faissOptions)}
+		faissWrapper, fwErr := index.NewFaissWrapperByEngine(*engineType, dim, faissOptions)
+		if fwErr != nil {
+			log.Fatalf("Failed to initialize vector engine: %v", fwErr)
+		}
+		idx := &index.Indexer{DB: db, FaissIndex: faissWrapper}
 
 		// 加载现有索引
 		err = idx.FaissIndex.LoadFromFile(faissIndexPath)
@@ -243,11 +273,19 @@ func main() {
 		log.Println("执行查询...")
 
 		// 构造搜索选项
+		resolvedSearchMode, routeDecision := resolveSearchMode(*query, *searchMode)
+		llmDecision := llm.DecideForSearch(cfg, llm.RouteInput{
+			Query:      *query,
+			Intent:     routeDecision.Intent,
+			SearchMode: resolvedSearchMode,
+			Limit:      5,
+		})
 		opts := search.SearchOptions{
-			Limit:       5,
-			MinScore:    0.1,
-			IncludeCode: false,
-			SearchMode:  *searchMode,
+			Limit:        5,
+			MinScore:     0.1,
+			IncludeCode:  false,
+			SearchMode:   resolvedSearchMode,
+			KeywordModel: llmDecision.ModelID,
 		}
 
 		// SearchEngine，传入索引器
@@ -257,7 +295,7 @@ func main() {
 		}
 
 		fmt.Println()
-		fmt.Printf("查找: %s (模式: %s)\n", *query, opts.SearchMode)
+		fmt.Printf("查找: %s (模式: %s, 意图: %s, 模型: %s)\n", *query, opts.SearchMode, routeDecision.Intent, llmDecision.ModelID)
 		results, _ := engine.Query(*query, opts)
 
 		if len(results) == 0 {
@@ -665,7 +703,7 @@ func main() {
 	}
 
 	var results []analyzer.LLMAnalysisResult
-	
+
 	if !*onlyVectors {
 		log.Println("正在解析代码...")
 
@@ -742,8 +780,13 @@ func main() {
 	if useZvec {
 		// 使用 Zvec 引擎 (subprocess stdin/stdout 模式)
 		zvecCollPath := filepath.Join(absGitgoDir, "zvec_collections")
-		log.Printf("创建 Zvec 引擎, collection_path=%s, dimension=384", zvecCollPath)
-		faissIdx = index.NewZvecFaissWrapper(384, zvecCollPath, cfg.ZvecConfig.PythonPath)
+		zvecDim := config.ResolveVectorDim("zvec", cfg)
+		log.Printf("创建 Zvec 引擎, collection_path=%s, dimension=%d", zvecCollPath, zvecDim)
+		var zvecErr error
+		faissIdx, zvecErr = index.NewZvecFaissWrapper(zvecDim, zvecCollPath, cfg.ZvecConfig.PythonPath)
+		if zvecErr != nil {
+			log.Fatalf("Failed to create Zvec engine: %v", zvecErr)
+		}
 	} else {
 		// 使用原有 FAISS 引擎
 		faissOptions := map[string]interface{}{
@@ -752,7 +795,12 @@ func main() {
 			"index_id":     *projDir,
 			"python_path":  cfg.ZvecConfig.PythonPath,
 		}
-		faissIdx = index.NewFaissWrapperByEngine(*engineType, 128, faissOptions) // 假设128维向量
+		var fwErr error
+		faissDim := config.ResolveVectorDim(*engineType, cfg)
+		faissIdx, fwErr = index.NewFaissWrapperByEngine(*engineType, faissDim, faissOptions)
+		if fwErr != nil {
+			log.Fatalf("Failed to initialize FAISS engine: %v", fwErr)
+		}
 	}
 	idx := &index.Indexer{DB: db, FaissIndex: faissIdx}
 	if !*onlyVectors {
@@ -761,7 +809,7 @@ func main() {
 			log.Fatalf("保存分析结果到数据库失败: %v", err)
 		}
 	}
-	
+
 	// 构建嵌入向量并添加到Faiss索引
 	if incrementalUpdate {
 		// 增量更新模式：先加载现有索引
@@ -845,11 +893,19 @@ func main() {
 		log.Println("执行查询...")
 
 		// 构造搜索选项
+		resolvedSearchMode, routeDecision := resolveSearchMode(*query, *searchMode)
+		llmDecision := llm.DecideForSearch(cfg, llm.RouteInput{
+			Query:      *query,
+			Intent:     routeDecision.Intent,
+			SearchMode: resolvedSearchMode,
+			Limit:      5,
+		})
 		opts := search.SearchOptions{
-			Limit:       5,
-			MinScore:    0.1, // 根据实际情况调整
-			IncludeCode: false,
-			SearchMode:  *searchMode,
+			Limit:        5,
+			MinScore:     0.1, // 根据实际情况调整
+			IncludeCode:  false,
+			SearchMode:   resolvedSearchMode,
+			KeywordModel: llmDecision.ModelID,
 		}
 
 		// SearchEngine，传入索引器（idx 为 *index.Indexer）
@@ -859,7 +915,7 @@ func main() {
 		}
 
 		fmt.Println()
-		logs.Infof("查找: %s (模式: %s)\n", *query, opts.SearchMode)
+		logs.Infof("查找: %s (模式: %s, 意图: %s, 模型: %s)\n", *query, opts.SearchMode, routeDecision.Intent, llmDecision.ModelID)
 		results, _ := engine.Query(*query, opts)
 
 		if len(results) == 0 {

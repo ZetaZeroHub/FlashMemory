@@ -21,6 +21,20 @@ var (
 		".sh",
 		".sql",
 		".scss",
+		".md",
+		".markdown",
+		".txt",
+		".rst",
+		".pdf",
+		".pptx",
+		".docx",
+		".png",
+		".jpg",
+		".jpeg",
+		".webp",
+		".bmp",
+		".tif",
+		".tiff",
 	}
 
 	BlackList = []string{

@@ -417,9 +417,13 @@ func saveSingleResultToDBWithWriter(dbWriter *utils.DbWriter, res FunctionInfo, 
 	// 2. 准备 SQL 语句
 	funcSQL := `
 		INSERT OR REPLACE INTO functions
-		(name, package, file, description, start_line, end_line, function_type)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		(name, package, file, description, start_line, end_line, function_type, source, page, slide)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
+	source := res.Source
+	if source == "" {
+		source = res.File
+	}
 
 	// 3. 使用 DbWriter 写入 functions 表
 	err := dbWriter.Write("function_insert", funcSQL,
@@ -430,6 +434,9 @@ func saveSingleResultToDBWithWriter(dbWriter *utils.DbWriter, res FunctionInfo, 
 		res.StartLine,
 		res.EndLine,
 		res.FunctionType,
+		source,
+		res.Page,
+		res.Slide,
 	)
 	if err != nil {
 		return fmt.Errorf("Functions write failed: %w", err)

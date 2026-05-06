@@ -1,6 +1,7 @@
 package index
 
 import (
+	"bufio"
 	"fmt"
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 	"os"
@@ -237,26 +238,120 @@ func (fw *MemoryFaissWrapper) SaveToFile(path string) error {
 	return nil
 }
 
-// LoadFromFile 从文件加载索引
+// LoadFromFile loads index from a text-format file saved by SaveToFile
 func (fw *MemoryFaissWrapper) LoadFromFile(path string) error {
 	logs.Infof("MemoryFaissWrapper Loading index from %s", path)
-	// 从简单的文本文件加载（仅支持基本格式）
+
 	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("failed to open index file: %v", err)
 	}
 	defer file.Close()
 
-	// 清除现有数据
+	// Clear existing data before loading
 	fw.Vectors = make(map[int][]float32)
 	fw.ClearCache()
 
-	// 读取并解析文件（简化版，实际应使用二进制格式）
-	fmt.Printf("In-memory index loading from %s is not fully implemented\n", path)
+	scanner := bufio.NewScanner(file)
+	// Increase scanner buffer for lines with large vectors (384 floats * ~12 chars each ≈ 5KB per line)
+	const maxLineSize = 64 * 1024
+	scanner.Buffer(make([]byte, maxLineSize), maxLineSize)
+
+	// Parse header line: "FaissIndex Dim=384 Count=134"
+	if scanner.Scan() {
+		header := scanner.Text()
+		var dim, count int
+		if _, err := fmt.Sscanf(header, "FaissIndex Dim=%d Count=%d", &dim, &count); err != nil {
+			logs.Warnf("LoadFromFile: failed to parse header '%s': %v, attempting to read vectors anyway", header, err)
+		} else {
+			logs.Infof("LoadFromFile: header parsed, dim=%d, count=%d", dim, count)
+			if dim > 0 {
+				fw.Dim = dim
+			}
+		}
+	}
+
+	// Parse vector lines: "Vector 42: 0.123456 0.654321 ..."
+	loadedCount := 0
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) == 0 {
+			continue
+		}
+
+		// Extract the vector ID from the prefix "Vector <id>: "
+		var vecID int
+		var rest string
+		// Find the "Vector " prefix and ": " separator
+		if n, _ := fmt.Sscanf(line, "Vector %d:", &vecID); n != 1 {
+			logs.Warnf("LoadFromFile: skipping unparseable line: %.80s...", line)
+			continue
+		}
+		// Find the position after "Vector <id>: "
+		colonIdx := -1
+		for i := 0; i < len(line); i++ {
+			if line[i] == ':' {
+				colonIdx = i
+				break
+			}
+		}
+		if colonIdx < 0 || colonIdx+2 > len(line) {
+			continue
+		}
+		rest = line[colonIdx+2:] // skip ": "
+
+		// Parse float values from the rest of the line
+		vec := make([]float32, 0, fw.Dim)
+		for _, field := range splitFields(rest) {
+			var val float64
+			if _, err := fmt.Sscanf(field, "%f", &val); err == nil {
+				vec = append(vec, float32(val))
+			}
+		}
+
+		if len(vec) > 0 {
+			// Resize vector to match expected dimension if necessary
+			if len(vec) != fw.Dim {
+				resized := make([]float32, fw.Dim)
+				copy(resized, vec)
+				vec = resized
+			}
+			fw.Vectors[vecID] = vec
+			loadedCount++
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading index file: %v", err)
+	}
 
 	fw.lastSavePath = path
 	fw.dirtyFlag = false
+	logs.Infof("LoadFromFile: successfully loaded %d vectors from %s", loadedCount, path)
 	return nil
+}
+
+// splitFields splits a string by whitespace, returning non-empty tokens.
+// This avoids importing strings package just for Fields().
+func splitFields(s string) []string {
+	var fields []string
+	start := -1
+	for i, c := range s {
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			if start >= 0 {
+				fields = append(fields, s[start:i])
+				start = -1
+			}
+		} else {
+			if start < 0 {
+				start = i
+			}
+		}
+	}
+	if start >= 0 {
+		fields = append(fields, s[start:])
+	}
+	return fields
 }
 
 // SetSimilarityMetric 设置相似度计算方法

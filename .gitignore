@@ -39,17 +39,77 @@ build/
 flashmemory.gitgo.tar.gz
 
 # --- AI tools ---
-.agents/
+.agents/*
 !.agents/skills/
 .agents/skills/*
 !.agents/skills/flashmemory-core/
 !.agents/skills/flashmemory-index/
 !.agents/skills/flashmemory-query/
+!.agents/skills/architecture-decision-records/
+!.agents/skills/brainstorming/
+!.agents/skills/find-skills/
+!.agents/skills/improve-codebase-architecture/
+!.agents/skills/onboarding-cro/
+!.agents/skills/python-design-patterns/
+!.agents/skills/python-testing-patterns/
+!.agents/skills/research-paper-writing/
 .claude/
 .trae/
 .githave/
+.codebuddy/
+.commandcode/
+.continue/
+.crush/
+.factory/
+.goose/
+.kilocode/
+.kiro/
+.mcpjam/
+.mux/
+.neovate/
+.openhands/
+.pi/
+.qoder/
+.qwen/
+.roo/
+.windsurf/
+.zencoder/
 docs/ai.log
+docs/operations/logs/
 skills-lock.json
+
+# --- DeepMemory (separate project) ---
+deepmemory/
+
+# --- External / third-party projects (independent GitHub repos) ---
+Hermes-Wiki/
+harness-engineering/
+hermes-agent/
+
+# --- Sensitive / per-environment configs (NEVER commit) ---
+fm_asiainfo.yaml
+fm_dev.yaml
+fm_*.local.yaml
+*.env.yaml
+
+# --- Backups & dead-letter ---
+.sdd-backup-*/
+_dead_letter/
+11/
+
+# --- Throwaway debug / patch / probe scripts ---
+patch.py
+patch2.py
+patch3.py
+patch_faiss.py
+out.txt
+test_api.sh
+test_api2.sh
+test_api3.py
+
+# --- Index build artifacts ---
+cmd/main/FAISSService/saved_indices/
+cmd/app/FAISSService/saved_indices/
 
 # --- Build artifacts ---
 pip-package/dist/

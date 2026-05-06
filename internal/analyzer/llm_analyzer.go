@@ -806,9 +806,13 @@ func saveSingleResultToDBWithWriter(dbWriter *utils.DbWriter, res LLMAnalysisRes
 	// 使用 DbWriter 写入 functions 表
 	funcSQL := `
         INSERT OR REPLACE INTO functions
-        (name, package, file, description, start_line, end_line, function_type)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        (name, package, file, description, start_line, end_line, function_type, source, page, slide)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `
+	source := res.Func.Source
+	if source == "" {
+		source = res.Func.File
+	}
 	err := dbWriter.Write("functions", funcSQL,
 		res.Func.Name,
 		res.Func.Package,
@@ -817,6 +821,9 @@ func saveSingleResultToDBWithWriter(dbWriter *utils.DbWriter, res LLMAnalysisRes
 		res.Func.StartLine,
 		res.Func.EndLine,
 		res.Func.FunctionType,
+		source,
+		res.Func.Page,
+		res.Func.Slide,
 	)
 	if err != nil {
 		return fmt.Errorf("Functions write failed: %w", err)
@@ -839,7 +846,7 @@ func saveSingleResultToDBWithWriter(dbWriter *utils.DbWriter, res LLMAnalysisRes
 
 // saveSingleResultToDBOnce 是原有的单次写入逻辑
 func saveSingleResultToDBOnce(db *sql.DB, res LLMAnalysisResult, projDir string) error {
-	if res.Func.FunctionType == "llm_parser" {
+	if res.Func.FunctionType == "llm_parser" && res.Func.Source == "" && res.Func.Page == 0 && res.Func.Slide == 0 {
 		logs.Warnf("[WARN] Ignoring library entry %s for LLM_PARSER function", res.Func.Name)
 		return nil
 	}
@@ -863,8 +870,8 @@ func saveSingleResultToDBOnce(db *sql.DB, res LLMAnalysisResult, projDir string)
 	// 准备事务内的statements
 	funcStmt, err := tx.Prepare(`
         INSERT OR REPLACE INTO functions
-        (name, package, file, description, start_line, end_line, function_type)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        (name, package, file, description, start_line, end_line, function_type, source, page, slide)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 	if err != nil {
 		tx.Rollback()
@@ -910,6 +917,10 @@ func saveSingleResultToDBOnce(db *sql.DB, res LLMAnalysisResult, projDir string)
 		}
 	}
 
+	source := res.Func.Source
+	if source == "" {
+		source = res.Func.File
+	}
 	// 3. 插入 functions
 	if _, err := funcStmt.Exec(
 		res.Func.Name,
@@ -919,6 +930,9 @@ func saveSingleResultToDBOnce(db *sql.DB, res LLMAnalysisResult, projDir string)
 		res.Func.StartLine,
 		res.Func.EndLine,
 		res.Func.FunctionType,
+		source,
+		res.Func.Page,
+		res.Func.Slide,
 	); err != nil {
 		return fmt.Errorf("Functions write failed: %w", err)
 	}

@@ -59,109 +59,122 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+const (
+	cReset  = "\033[0m"
+	cBold   = "\033[1m"
+	cDim    = "\033[2m"
+	cCyan   = "\033[36m"
+	cPurple = "\033[35m"
+	cGreen  = "\033[32m"
+	cYellow = "\033[33m"
+)
+
 func showWelcome() {
 	configExists := fileExists(ConfigPath())
 
+	// Top border
+	fmt.Println()
+	fmt.Printf("%s%s╭─────────────────────────────────────────────────────────────╮%s\n", cDim, cPurple, cReset)
+	
 	if common.IsZH() {
+		fmt.Printf("%s│ %s  ⚡ FlashMemory %s%s v%-36s %s│%s\n", cDim, cCyan, cYellow, cBold, Version, cDim, cReset)
+		fmt.Printf("%s│ %s  跨语言代码分析与语义搜索系统                              %s│%s\n", cDim, cReset, cDim, cReset)
+		fmt.Printf("%s╰─────────────────────────────────────────────────────────────╯%s\n", cDim, cReset)
+		
 		if !configExists {
 			fmt.Println()
-			fmt.Println("╔══════════════════════════════════════════════════════╗")
-			fmt.Println("║                                                      ║")
-			fmt.Printf("║   ⚡ FlashMemory v%-36s ║\n", Version)
-			fmt.Println("║   跨语言代码分析与语义搜索系统                        ║")
-			fmt.Println("║                                                      ║")
-			fmt.Println("╠══════════════════════════════════════════════════════╣")
-			fmt.Println("║                                                      ║")
-			fmt.Println("║   👋 欢迎！检测到首次运行。                           ║")
-			fmt.Println("║   请先执行初始化:  fm init                            ║")
-			fmt.Println("║                                                      ║")
-			fmt.Println("║   🚀 快速开始:                                        ║")
-			fmt.Println("║     fm init           初始化配置                      ║")
-			fmt.Println("║     fm index .        索引当前目录的代码               ║")
-			fmt.Println("║     fm query \"登录\"    搜索代码                       ║")
-			fmt.Println("║     fm serve          启动 HTTP API 服务              ║")
-			fmt.Println("║     fm status         查看服务状态                    ║")
-			fmt.Println("║                                                      ║")
-			fmt.Println("║   📖 更多帮助: fm --help                              ║")
-			fmt.Println("║                                                      ║")
-			fmt.Println("╚══════════════════════════════════════════════════════╝")
+			fmt.Printf("  %s👋 很高兴遇见你！检测到这是您的首次运行。%s\n", cBold, cReset)
+			fmt.Printf("  %sFlashMemory 需要进行一次极简配置，请按以下步骤开启探索之旅：%s\n", cDim, cReset)
+			fmt.Println()
+			fmt.Printf("  %s🚀 快速入门指引 (Onboarding):%s\n", cPurple, cReset)
+			fmt.Printf("    %sStep 1.%s %sfm init%s           %s—  初始化基础配置（可灵活切换底层 Zvec/FAISS 向量引擎与 LLM 模型）%s\n", cYellow, cReset, cCyan, cReset, cDim, cReset)
+			fmt.Printf("    %sStep 2.%s %sfm index .%s        %s—  一键解析当前项目，构建代码语义与结构的高速向量索引%s\n", cYellow, cReset, cCyan, cReset, cDim, cReset)
+			fmt.Printf("    %sStep 3.%s %sfm query \"登录\"%s   %s—  体验自然语言搜代码的快感，跟传统正则说拜拜！%s\n", cYellow, cReset, cCyan, cReset, cDim, cReset)
+			fmt.Printf("    %sStep 4.%s %sfm serve%s          %s—  启动常驻 API 服务，作为 IDE 插件或其它应用的智能大脑%s\n", cYellow, cReset, cCyan, cReset, cDim, cReset)
+			fmt.Println()
+			fmt.Printf("  %s💡 核心特色功能:%s\n", cYellow, cReset)
+			fmt.Printf("    %s• 万物皆可索引：%s 支持包括 Go/Python/JS/Java 等多语言全量/增量解析\n", cBold, cReset)
+			fmt.Printf("    %s• AI 语义加持：%s 基于 LLM 提取业务逻辑与摘要，彻底摆脱关键字匹配\n", cBold, cReset)
+			fmt.Printf("    %s• 极速本地检索：%s 深度集成 FAISS/Zvec 引擎，离线检索毫秒级响应\n", cBold, cReset)
+			fmt.Println()
+			fmt.Printf("  %s📖 进阶指引: %sfm --help%s\n", cDim, cBold, cReset)
 			fmt.Println()
 		} else {
 			fmt.Println()
-			fmt.Printf("  ⚡ FlashMemory v%s\n", Version)
+			showStatusBrief(true)
 			fmt.Println()
-			showStatusBrief()
+			fmt.Printf("  %s⚡ 常用命令:%s\n", cPurple, cReset)
+			fmt.Printf("    %sfm index .%s          %s一键索引当前工作目录%s\n", cCyan, cReset, cDim, cReset)
+			fmt.Printf("    %sfm query \"关键词\"%s   %s自然语言语义化搜索代码库%s\n", cCyan, cReset, cDim, cReset)
+			fmt.Printf("    %sfm serve %s/ %sfm stop%s  %s管理本地 API 后台守护服务%s\n", cCyan, cDim, cCyan, cReset, cDim, cReset)
+			fmt.Printf("    %sfm status%s           %s查看系统与向量引擎健康状态%s\n", cCyan, cReset, cDim, cReset)
 			fmt.Println()
-			fmt.Println("  快速命令:")
-			fmt.Println("    fm index .          索引当前目录")
-			fmt.Println("    fm query \"关键词\"    搜索代码")
-			fmt.Println("    fm serve / fm stop  管理 HTTP 服务")
-			fmt.Println("    fm --help           完整帮助")
+			fmt.Printf("  %s📖 完整帮助: %sfm --help%s\n", cDim, cBold, cReset)
 			fmt.Println()
 		}
 	} else {
+		// English Version
+		fmt.Printf("%s│ %s  ⚡ FlashMemory %s%s v%-36s %s│%s\n", cDim, cCyan, cYellow, cBold, Version, cDim, cReset)
+		fmt.Printf("%s│ %s  Cross-language Code Analysis & Semantic Search            %s│%s\n", cDim, cReset, cDim, cReset)
+		fmt.Printf("%s╰─────────────────────────────────────────────────────────────╯%s\n", cDim, cReset)
+		
 		if !configExists {
 			fmt.Println()
-			fmt.Println("╔══════════════════════════════════════════════════════╗")
-			fmt.Println("║                                                      ║")
-			fmt.Printf("║   ⚡ FlashMemory v%-36s ║\n", Version)
-			fmt.Println("║   Cross-language Code Analysis & Semantic Search     ║")
-			fmt.Println("║                                                      ║")
-			fmt.Println("╠══════════════════════════════════════════════════════╣")
-			fmt.Println("║                                                      ║")
-			fmt.Println("║   👋 Welcome! First run detected.                    ║")
-			fmt.Println("║   Please initialize first:  fm init                  ║")
-			fmt.Println("║                                                      ║")
-			fmt.Println("║   🚀 Quick start:                                    ║")
-			fmt.Println("║     fm init           Initialize configuration       ║")
-			fmt.Println("║     fm index .        Index code in current dir      ║")
-			fmt.Println("║     fm query \"login\"   Search codebase               ║")
-			fmt.Println("║     fm serve          Start HTTP API server          ║")
-			fmt.Println("║     fm status         Check service status           ║")
-			fmt.Println("║                                                      ║")
-			fmt.Println("║   📖 More help: fm --help                            ║")
-			fmt.Println("║                                                      ║")
-			fmt.Println("╚══════════════════════════════════════════════════════╝")
+			fmt.Printf("  %s👋 Great to see you! First run detected.%s\n", cBold, cReset)
+			fmt.Printf("  %sFlashMemory needs a quick setup. Follow these steps to begin your journey:%s\n", cDim, cReset)
+			fmt.Println()
+			fmt.Printf("  %s🚀 Quick Start Onboarding:%s\n", cPurple, cReset)
+			fmt.Printf("    %sStep 1.%s %sfm init%s           %s—  Initialize config (Switch between Zvec/FAISS engines & LLM models)%s\n", cYellow, cReset, cCyan, cReset, cDim, cReset)
+			fmt.Printf("    %sStep 2.%s %sfm index .%s        %s—  1-click parse & build high-speed vector index for your project%s\n", cYellow, cReset, cCyan, cReset, cDim, cReset)
+			fmt.Printf("    %sStep 3.%s %sfm query \"login\"%s  %s—  Experience natural language code search. Say goodbye to regex!%s\n", cYellow, cReset, cCyan, cReset, cDim, cReset)
+			fmt.Printf("    %sStep 4.%s %sfm serve%s          %s—  Start the API daemon, turning FM into a smart brain for IDEs/apps%s\n", cYellow, cReset, cCyan, cReset, cDim, cReset)
+			fmt.Println()
+			fmt.Printf("  %s💡 Core Features:%s\n", cYellow, cReset)
+			fmt.Printf("    %s• Polyglot Indexing:%s Supports Go/Python/JS/Java full & incremental sync\n", cBold, cReset)
+			fmt.Printf("    %s• AI Semantic Tech:%s LLM-driven abstraction, beyond simple keyword matching\n", cBold, cReset)
+			fmt.Printf("    %s• Lightning Local Search:%s Integrated FAISS/Zvec for ms-level offline search\n", cBold, cReset)
+			fmt.Println()
+			fmt.Printf("  %s📖 Advanced Help: %sfm --help%s\n", cDim, cBold, cReset)
 			fmt.Println()
 		} else {
 			fmt.Println()
-			fmt.Printf("  ⚡ FlashMemory v%s\n", Version)
+			showStatusBrief(false)
 			fmt.Println()
-			showStatusBrief()
+			fmt.Printf("  %s⚡ Quick Commands:%s\n", cPurple, cReset)
+			fmt.Printf("    %sfm index .%s          %sIndex current workspace%s\n", cCyan, cReset, cDim, cReset)
+			fmt.Printf("    %sfm query \"keyword\"%s  %sSemantic codebase search%s\n", cCyan, cReset, cDim, cReset)
+			fmt.Printf("    %sfm serve %s/ %sfm stop%s  %sManage local API service%s\n", cCyan, cDim, cCyan, cReset, cDim, cReset)
+			fmt.Printf("    %sfm status%s           %sCheck system health%s\n", cCyan, cReset, cDim, cReset)
 			fmt.Println()
-			fmt.Println("  Quick commands:")
-			fmt.Println("    fm index .          Index current directory")
-			fmt.Println("    fm query \"keyword\"  Search codebase")
-			fmt.Println("    fm serve / fm stop  Manage HTTP service")
-			fmt.Println("    fm --help           Full help")
+			fmt.Printf("  %s📖 Full Help: %sfm --help%s\n", cDim, cBold, cReset)
 			fmt.Println()
 		}
 	}
 }
 
-func showStatusBrief() {
+func showStatusBrief(isZH bool) {
 	pidFile := filepath.Join(fmHome, "fm_http.pid")
 	if pid, err := os.ReadFile(pidFile); err == nil {
 		pidStr := strings.TrimSpace(string(pid))
 		// Check if process is running
 		if _, err := os.FindProcess(0); err == nil {
-			if common.IsZH() {
-				fmt.Printf("  状态: HTTP 服务运行中 (PID %s)\n", pidStr)
+			if isZH {
+				fmt.Printf("  %s◉%s 状态: %sHTTP 服务运行中%s (PID %s)\n", cGreen, cReset, cBold, cReset, pidStr)
 			} else {
-				fmt.Printf("  Status: HTTP service running (PID %s)\n", pidStr)
+				fmt.Printf("  %s◉%s Status: %sHTTP service running%s (PID %s)\n", cGreen, cReset, cBold, cReset, pidStr)
 			}
 		}
 	} else {
-		if common.IsZH() {
-			fmt.Println("  状态: HTTP 服务未运行")
+		if isZH {
+			fmt.Printf("  %s○%s 状态: %sHTTP 服务未运行%s\n", cDim, cReset, cDim, cReset)
 		} else {
-			fmt.Println("  Status: HTTP service not running")
+			fmt.Printf("  %s○%s Status: %sHTTP service not running%s\n", cDim, cReset, cDim, cReset)
 		}
 	}
-	if common.IsZH() {
-		fmt.Printf("  配置: %s\n", ConfigPath())
+	if isZH {
+		fmt.Printf("  %s⚙%s 配置: %s%s%s\n", cDim, cReset, cDim, ConfigPath(), cReset)
 	} else {
-		fmt.Printf("  Config: %s\n", ConfigPath())
+		fmt.Printf("  %s⚙%s Config: %s%s%s\n", cDim, cReset, cDim, ConfigPath(), cReset)
 	}
 }
 

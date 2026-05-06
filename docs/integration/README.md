@@ -1,30 +1,9 @@
 # AI 系统集成指南：FlashMemory + DeepMemory
 
-> **版本**: 1.0.0
-> **日期**: 2026-05-01
-> **定位**: 面向已有 AI 对话系统的零侵入集成方案
+> **版本**: 1.0.0  
+> **日期**: 2026-05-01  
+> **定位**: 面向已有 AI 对话系统的零侵入集成方案  
 > **Slogan**: 用符号学解构语义、用博弈增强群体记忆
-
----
-
-## 🚀 我应该看哪份文档?
-
-| 你是谁 | 直接打开 |
-|--------|----------|
-| **DeepMemory 包的维护者** | [`roles/deepmemory_team.md`](./roles/deepmemory_team.md) |
-| **FlashMemory / fm_http 的维护者** | [`roles/flashmemory_team.md`](./roles/flashmemory_team.md) |
-| **eino 网关的维护者** | [`roles/eino_gateway_team.md`](./roles/eino_gateway_team.md) |
-| **想看 HTTP 接口规范** | [`http_api_reference.md`](./http_api_reference.md) |
-| **想了解整套架构原理** | 继续看本文(以下章节) |
-| **想了解 5 个 Skill 是什么** | [`skills/README.md`](./skills/README.md) |
-| **集成项目经理 / 协调人** | [`roles/README.md`](./roles/README.md) |
-
-> ⚠️ **历史遗留**: 本文 Step 3 的 `dialog_hooks_example.yaml` 假设宿主系统支持生命周期钩子。
-> eino 当前的 `react.Agent` 链路**不提供这种钩子**,所以那段配置在 eino 上是死代码。
-> eino 适配版已经把 3 个能力下沉到了 HTTP middleware + SDK daemon ——
-> **请直接看 [`roles/eino_gateway_team.md`](./roles/eino_gateway_team.md),不要看本文 Step 3**。
->
-> 整套交互改用 HTTP(替代 MCP stdio),理由见 [`http_api_reference.md` 顶部](./http_api_reference.md#为什么是-http)。
 
 ---
 
@@ -603,21 +582,10 @@ docs/integration/skills/game-theory-debate.md
 docs/integration/skills/memory-evolution-cycle.md
 docs/integration/skills/user-feedback-handler.md
 
-# 角色任务书(主入口)
-docs/integration/roles/README.md                  # 三方任务索引 + 顺序依赖图
-docs/integration/roles/deepmemory_team.md         # DeepMemory 团队任务书
-docs/integration/roles/flashmemory_team.md        # FlashMemory 团队任务书
-docs/integration/roles/eino_gateway_team.md       # eino 网关团队任务书
-
-# HTTP 接口规范(三方共同契约)
-docs/integration/http_api_reference.md            # 完整 HTTP API 参考
-
 # 配置示例
-docs/integration/mcp_config_example.json          # stdio MCP(仅 Claude Desktop 等用)
-docs/integration/dialog_hooks_example.yaml        # 通用 hooks 栈(eino 不适用)
-docs/integration/gateway_integration_eino.md      # eino 适配版深度技术文档
-docs/integration/examples/gateway_middleware_eino.go  # 网关 middleware 完整示例
+docs/integration/mcp_config_example.json
+docs/integration/dialog_hooks_example.yaml
 
 # 验证脚本
-scripts/verify_mcp_integration.py         # 25 项端到端测试(stdio MCP 路径)
+scripts/verify_mcp_integration.py         # 25 项端到端测试
 ```

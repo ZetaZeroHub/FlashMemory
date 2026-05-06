@@ -3,16 +3,17 @@ package graph
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strconv"
 
 	"github.com/kinglegendzzh/flashmemory/internal/analyzer"
+	"github.com/kinglegendzzh/flashmemory/internal/anchor"
 	"github.com/kinglegendzzh/flashmemory/internal/utils/logs"
 )
 
 // KnowledgeGraph holds the nodes (functions) and relationships.
 type KnowledgeGraph struct {
 	Functions []analyzer.LLMAnalysisResult // all function analysis results
+	Anchors   map[string]anchor.Locator    // anchor_id -> locator
 	Calls     map[string][]string          // adjacency list: func -> funcs it calls
 	CalledBy  map[string][]string          // reverse adjacency: func -> funcs that call it
 	Packages  map[string][]string          // package -> functions in that package
@@ -30,6 +31,7 @@ func BuildGraph(results []analyzer.LLMAnalysisResult, projDir string) KnowledgeG
 
 	kg := KnowledgeGraph{
 		Functions: results,
+		Anchors:   make(map[string]anchor.Locator),
 		Calls:     make(map[string][]string),
 		CalledBy:  make(map[string][]string),
 		Packages:  make(map[string][]string),
@@ -37,22 +39,14 @@ func BuildGraph(results []analyzer.LLMAnalysisResult, projDir string) KnowledgeG
 	}
 	// 后面的逻辑就不用再清空 CodeSnippet 了
 	for i := range kg.Functions {
-		// 如果传入了项目根目录，则转换为相对路径
-		path := kg.Functions[i].Func.File
-		if projDir != "" {
-			filePath := path
-			// 如果不是绝对路径，就把它视作相对于 projDir 的子路径
-			if !filepath.IsAbs(filePath) {
-				filePath = filepath.Join(projDir, filePath)
-			}
-			rel, err := filepath.Rel(projDir, filePath)
-			if err != nil {
-				logs.Warnf("[WARN] Unable to calculate relative path: %v, use original path", err)
-			} else {
-				path = filepath.ToSlash(rel)
-			}
+		kg.Functions[i].Func.File = anchor.NormalizePath(kg.Functions[i].Func.File, projDir)
+		kg.Functions[i].Func.Source = anchor.NormalizePath(
+			anchor.EffectiveSource(kg.Functions[i].Func.File, kg.Functions[i].Func.Source),
+			projDir,
+		)
+		if kg.Functions[i].Func.Source == "" {
+			kg.Functions[i].Func.Source = kg.Functions[i].Func.File
 		}
-		kg.Functions[i].Func.File = path
 		logs.Infof("[DEBUG][BuildGraph] Converting file path: %s", kg.Functions[i].Func.File)
 
 		name := kg.Functions[i].Func.Name
@@ -70,6 +64,29 @@ func BuildGraph(results []analyzer.LLMAnalysisResult, projDir string) KnowledgeG
 		}
 		for _, lib := range kg.Functions[i].ExternalDeps {
 			kg.Externals[lib] = append(kg.Externals[lib], name)
+		}
+		anchorID := anchor.BuildID(
+			kg.Functions[i].Func.Name,
+			kg.Functions[i].Func.Package,
+			kg.Functions[i].Func.FunctionType,
+			kg.Functions[i].Func.File,
+			kg.Functions[i].Func.Source,
+			kg.Functions[i].Func.Page,
+			kg.Functions[i].Func.Slide,
+			kg.Functions[i].Func.StartLine,
+			kg.Functions[i].Func.EndLine,
+		)
+		kg.Anchors[anchorID] = anchor.Locator{
+			ID:           anchorID,
+			Name:         kg.Functions[i].Func.Name,
+			Package:      kg.Functions[i].Func.Package,
+			FunctionType: kg.Functions[i].Func.FunctionType,
+			File:         kg.Functions[i].Func.File,
+			Source:       kg.Functions[i].Func.Source,
+			Page:         kg.Functions[i].Func.Page,
+			Slide:        kg.Functions[i].Func.Slide,
+			StartLine:    kg.Functions[i].Func.StartLine,
+			EndLine:      kg.Functions[i].Func.EndLine,
 		}
 	}
 	return kg
@@ -97,6 +114,9 @@ func (kg *KnowledgeGraph) SaveGraphJSON(path string) error {
 			"." + f.Func.Name +
 			"." + f.Func.File +
 			"." + f.Func.Package +
+			"." + f.Func.Source +
+			"." + strconv.Itoa(f.Func.Page) +
+			"." + strconv.Itoa(f.Func.Slide) +
 			":" + strconv.Itoa(f.Func.StartLine) +
 			"-" + strconv.Itoa(f.Func.EndLine)
 	}
@@ -154,9 +174,19 @@ func (kg *KnowledgeGraph) SaveGraphJSON(path string) error {
 		mergedExternals[k] = v
 	}
 
+	// 合并 Anchors
+	mergedAnchors := make(map[string]anchor.Locator)
+	for k, v := range oldKG.Anchors {
+		mergedAnchors[k] = v
+	}
+	for k, v := range kg.Anchors {
+		mergedAnchors[k] = v
+	}
+
 	// 构造合并后的 KnowledgeGraph
 	mergedKG := KnowledgeGraph{
 		Functions: mergedFuncs,
+		Anchors:   mergedAnchors,
 		Calls:     mergedCalls,
 		CalledBy:  mergedCalledBy,
 		Packages:  mergedPackages,
@@ -188,6 +218,9 @@ func (kg *KnowledgeGraph) SaveGraphJSONOnlyFunctions(path string) error {
 			"." + f.Func.Name +
 			"." + f.Func.File +
 			"." + f.Func.Package +
+			"." + f.Func.Source +
+			"." + strconv.Itoa(f.Func.Page) +
+			"." + strconv.Itoa(f.Func.Slide) +
 			":" + strconv.Itoa(f.Func.StartLine) +
 			"-" + strconv.Itoa(f.Func.EndLine)
 	}
@@ -208,9 +241,18 @@ func (kg *KnowledgeGraph) SaveGraphJSONOnlyFunctions(path string) error {
 	for _, f := range oldFuncMap {
 		mergedFuncs = append(mergedFuncs, f)
 	}
+	mergedAnchors := make(map[string]anchor.Locator)
+	for k, v := range oldKG.Anchors {
+		mergedAnchors[k] = v
+	}
+	for k, v := range kg.Anchors {
+		mergedAnchors[k] = v
+	}
+
 	// 构造合并后的 KnowledgeGraph
 	mergedKG := KnowledgeGraph{
 		Functions: mergedFuncs,
+		Anchors:   mergedAnchors,
 		Calls:     oldKG.CalledBy,
 		CalledBy:  oldKG.CalledBy,
 		Packages:  oldKG.Packages,

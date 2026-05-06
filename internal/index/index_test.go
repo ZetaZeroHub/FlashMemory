@@ -188,18 +188,22 @@ func TestHTTPFaissWrapper(t *testing.T) {
 	fw.Free()
 }
 
-// TestNewFaissWrapperFallback 测试 NewFaissWrapper 的回退逻辑（当 HTTP 服务不可用时应使用内存实现）
-func TestNewFaissWrapperFallback(t *testing.T) {
-	// 临时修改 DefaultFaissServerURL 为一个无效地址，迫使 HTTP 实现创建失败
+// TestNewFaissWrapperNoFallback tests that NewFaissWrapper returns an error when HTTP service is unavailable
+func TestNewFaissWrapperNoFallback(t *testing.T) {
+	// Temporarily set DefaultFaissServerURL to an invalid address
 	originalURL := DefaultFaissServerURL
 	DefaultFaissServerURL = "http://nonexistent.invalid"
 	defer func() { DefaultFaissServerURL = originalURL }()
 
-	wrapper := NewFaissWrapper(10)
-	// 期望 fallback 到 MemoryFaissWrapper
-	if _, ok := wrapper.(*MemoryFaissWrapper); !ok {
-		t.Fatalf("预期回退为 MemoryFaissWrapper, 实际类型: %T", wrapper)
+	wrapper, err := NewFaissWrapper(10)
+	// Expect error instead of silent fallback
+	if err == nil {
+		t.Fatalf("Expected error when FAISS server is unreachable, got wrapper type: %T", wrapper)
 	}
+	if wrapper != nil {
+		t.Fatalf("Expected nil wrapper when FAISS server is unreachable")
+	}
+	t.Logf("Got expected error: %v", err)
 }
 
 // TestDirectoryCreationForSaveIndex 测试 SaveToFile 保存时目录不存在的情况

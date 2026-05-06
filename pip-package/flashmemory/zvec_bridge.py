@@ -13,6 +13,8 @@ import json
 import sys
 import os
 import logging
+import signal
+import atexit
 import traceback
 
 # 将 flashmemory 包目录加入 sys.path
@@ -107,7 +109,6 @@ class ZvecBridge:
             if collection_type in ("modules", "both"):
                 self.engine.init_module_collection(force_new=force_new)
 
-            # P2-1: Optionally initialize zvec built-in embedding
             use_zvec_embedding = params.get("use_zvec_embedding", False)
             if use_zvec_embedding:
                 self._init_zvec_embedding(
@@ -121,6 +122,13 @@ class ZvecBridge:
             )
         except Exception as e:
             logger.error("Init failed: %s\n%s", e, traceback.format_exc())
+            # Clean up partially opened collections to release LOCK files
+            if self.engine:
+                try:
+                    self.engine.close()
+                except Exception:
+                    pass
+                self.engine = None
             self._respond_error(f"Init failed: {e}")
 
     def handle_add_vector(self, params: dict):
@@ -563,12 +571,43 @@ class ZvecBridge:
         "shutdown": handle_shutdown,
     }
 
-    def run(self):
-        """主循环：从 stdin 读取 JSON-line 请求，分发到对应 handler"""
-        logger.info("ZvecBridge 开始监听 stdin...")
+    REQUIRED_PACKAGES = {
+        "zvec": "zvec>=0.1.1",
+    }
 
-        # 立即发送 ready 信号
-        self._respond_ok(message="ready")
+    def _check_dependencies(self):
+        """Check if required Python packages are available.
+
+        Returns:
+            list[str]: List of missing package names (empty if all available)
+        """
+        missing = []
+        for module_name in self.REQUIRED_PACKAGES:
+            try:
+                __import__(module_name)
+            except ImportError:
+                missing.append(module_name)
+                logger.warning("Required package missing: %s", module_name)
+        return missing
+
+    def run(self):
+        """Main loop: read JSON-line requests from stdin, dispatch to handlers"""
+        logger.info("ZvecBridge starting, checking dependencies...")
+
+        missing = self._check_dependencies()
+        if missing:
+            missing_specs = [self.REQUIRED_PACKAGES[m] for m in missing]
+            logger.warning(
+                "Missing required packages: %s. Auto-provisioning needed.",
+                ", ".join(missing_specs),
+            )
+            self._respond_ok(
+                data={"missing_packages": missing_specs},
+                message="ready_with_deps_missing",
+            )
+        else:
+            logger.info("All dependencies available, bridge is fully ready")
+            self._respond_ok(message="ready")
 
         for line in sys.stdin:
             line = line.strip()
@@ -601,12 +640,41 @@ class ZvecBridge:
             if not self.running:
                 break
 
-        logger.info("ZvecBridge 退出")
+        # Ensure cleanup on exit: close collections to release LOCK files
+        if self.engine:
+            try:
+                self.engine.close()
+            except Exception as e:
+                logger.warning("Cleanup on exit failed: %s", e)
+            self.engine = None
+
+        logger.info("ZvecBridge exited")
 
 
 def main():
-    """入口函数"""
+    """Entry point with signal handlers and atexit cleanup"""
     bridge = ZvecBridge()
+
+    def cleanup_on_exit():
+        """atexit handler: ensure collections are closed and LOCK files released"""
+        if bridge.engine:
+            try:
+                bridge.engine.close()
+                logger.info("atexit: collections closed, LOCK files released")
+            except Exception as e:
+                logger.warning("atexit cleanup failed: %s", e)
+            bridge.engine = None
+
+    atexit.register(cleanup_on_exit)
+
+    def signal_handler(signum, frame):
+        """Handle SIGTERM/SIGINT: graceful shutdown"""
+        logger.info("Received signal %d, shutting down gracefully...", signum)
+        bridge.running = False
+
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
     bridge.run()
 
 

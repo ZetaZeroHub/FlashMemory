@@ -54,30 +54,119 @@ type GitInfoHistory struct {
 	History []GitBuildInfo `json:"history"` // 历史构建信息列表
 }
 
+type parseArtifactFailure struct {
+	source       string
+	status       string
+	errorCode    string
+	errorMessage string
+	fallbackMode string
+}
+
+func classifyParseArtifactFailure(file string, err error) parseArtifactFailure {
+	source := filepath.ToSlash(strings.TrimSpace(file))
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	lower := strings.ToLower(msg)
+	status := index.ParseArtifactStatusFailed
+	errorCode := "parse_error"
+	fallbackMode := "none"
+
+	ext := strings.ToLower(filepath.Ext(file))
+	if strings.Contains(lower, "required for") || strings.Contains(lower, "produced empty text") {
+		status = index.ParseArtifactStatusDegraded
+		errorCode = "extract_degraded"
+		switch ext {
+		case ".pdf":
+			fallbackMode = "page_chunk"
+		case ".pptx":
+			fallbackMode = "slide_chunk"
+		default:
+			fallbackMode = "plain_text_chunk"
+		}
+	}
+	return parseArtifactFailure{
+		source:       source,
+		status:       status,
+		errorCode:    errorCode,
+		errorMessage: msg,
+		fallbackMode: fallbackMode,
+	}
+}
+
+// indexLockMaxAge 是 indexing.temp 锁文件的有效期。超过这个时间认为是
+// 上一次崩溃留下的 stale lock，可以安全覆盖。索引正常应在这个时间内完成。
+const indexLockMaxAge = 5 * time.Minute
+
+// ErrIndexInProgress 表示同 project_dir 下已有 BuildIndex 在跑。调用方
+// （HTTP handler / gateway）应当返回明确错误而不是 retry，避免两个 BuildIndex
+// 并发写同一个 zvec collection 把 RocksDB scalar.X.ipc 写半截。
+var ErrIndexInProgress = fmt.Errorf("indexing already in progress for this project, please retry later")
+
+// acquireIndexLock 检查并争抢 indexing.temp 锁。返回 release 函数,
+// 调用方必须 defer release() 才能让后续 BuildIndex 拿锁。
+//   - 文件不存在 → 创建并返回 release fn
+//   - 文件存在但 mtime 旧于 indexLockMaxAge → 视为 stale，覆盖创建并返回 release fn
+//   - 文件存在且新鲜 → 返回 ErrIndexInProgress，调用方应放弃，不要并发跑
+//
+// 这不是 fcntl flock，是 best-effort：进程级别 race 仍然可能(stat 之后到
+// Create 之间另一个进程也调用 acquire)，但实践中已经能挡掉 99% 的 gateway
+// retry 风暴。如未来需要 100% 严格，再升级到 syscall.Flock。
+func acquireIndexLock(tempFilePath string) (release func(), err error) {
+	if info, statErr := os.Stat(tempFilePath); statErr == nil {
+		age := time.Since(info.ModTime())
+		if age < indexLockMaxAge {
+			logs.Warnf("indexing.temp exists with age %v < %v, refusing concurrent BuildIndex on %q",
+				age, indexLockMaxAge, tempFilePath)
+			return nil, ErrIndexInProgress
+		}
+		logs.Warnf("indexing.temp is stale (age %v >= %v), assuming previous indexer crashed and overwriting",
+			age, indexLockMaxAge)
+	} else if !os.IsNotExist(statErr) {
+		return nil, fmt.Errorf("failed to stat index lock file: %w", statErr)
+	}
+	f, createErr := os.Create(tempFilePath)
+	if createErr != nil {
+		return nil, fmt.Errorf("failed to create index lock file %q: %w", tempFilePath, createErr)
+	}
+	f.Close()
+	return func() {
+		if err := os.Remove(tempFilePath); err != nil && !os.IsNotExist(err) {
+			logs.Warnf("Failed to release index lock file %q: %v", tempFilePath, err)
+		} else {
+			logs.Infof("Released index lock %q", tempFilePath)
+		}
+	}, nil
+}
+
 // BuildIndex 构建全量或指定目录索引
-func BuildIndex(projDir, subDir string, full bool, open bool) error {
+func BuildIndex(projDir, subDir string, full bool, open bool, engine string) error {
 	gitgoDir := filepath.Join(projDir, ".gitgo")
 	if e := os.MkdirAll(gitgoDir, 0755); e != nil {
 		return fmt.Errorf("Failed to create index directory: %w", e)
 	}
 	tempFilePath := filepath.Join(gitgoDir, "indexing.temp")
-	// 如果 temp 文件已存在，说明已有索引进程在运行
-	if _, err := os.Stat(tempFilePath); err == nil {
-		logs.Warnf("Indexing has been run, indexing skipped...")
-	} else if !os.IsNotExist(err) {
-		logs.Warnf("Index temporary file already exists, indexing skipped...")
-	}
 
-	// 创建临时文件，标记开始索引
-	f, err := os.Create(tempFilePath)
+	// 真锁：拿到才进入，拿不到立刻拒绝。这是为了堵 gateway retry 风暴
+	// （如 fireAndForgetIndex 三次重试同一个 project_dir）导致两个 BuildIndex
+	// 并发往同一个 zvec collection 写、把 RocksDB scalar.X.ipc 写到半截
+	// （表现为后续 zvec.open 报 "no such file" 或 "recovery idmap failed"）。
+	release, err := acquireIndexLock(tempFilePath)
 	if err != nil {
-		logs.Warnf("Failed to create index temporary file %q: %v", tempFilePath, err)
+		return err
 	}
-	f.Close()
-	fm, err := InitFaissManager(projDir, open)
+	// defer LIFO：先 fm.Free（杀桥、flush+close collection），
+	// 再 release（删 indexing.temp）。这样在桥还活着时锁就一直保持，
+	// 第二个 BuildIndex 看到锁立即拒绝；桥死透后才释放锁让下一个进来。
+	defer release()
+	fm, err := InitFaissManager(projDir, open, engine)
 	if err != nil {
 		return fmt.Errorf("Failed to initialize FaissManager: %w", err)
 	}
+	// 关键：必须在返回前释放 zvec_bridge 子进程并释放 collection LOCK，
+	// 否则桥进程会驻留持有 fcntl LOCK，导致后续 search/check 永远拿不到锁。
+	defer fm.Free()
 	// 如果需要全量，先 Reset（删除老索引）
 	if full {
 		if e := fm.Reset(); e != nil {
@@ -89,11 +178,23 @@ func BuildIndex(projDir, subDir string, full bool, open bool) error {
 }
 
 // IncrementalUpdate 增量更新索引
-func IncrementalUpdate(projDir, branch, commit string, open bool) error {
-	fm, err := InitFaissManager(projDir, open)
+func IncrementalUpdate(projDir, branch, commit string, open bool, engine string) error {
+	gitgoDir := filepath.Join(projDir, ".gitgo")
+	if e := os.MkdirAll(gitgoDir, 0755); e != nil {
+		return fmt.Errorf("Failed to create index directory: %w", e)
+	}
+	tempFilePath := filepath.Join(gitgoDir, "indexing.temp")
+	release, err := acquireIndexLock(tempFilePath)
+	if err != nil {
+		return err
+	}
+	defer release()
+	fm, err := InitFaissManager(projDir, open, engine)
 	if err != nil {
 		return fmt.Errorf("Failed to initialize FaissManager: %w", err)
 	}
+	// 同 BuildIndex：释放桥进程，避免 collection LOCK 长期被占。
+	defer fm.Free()
 	return indexCodeWithManager(fm, projDir, branch, commit, false, "")
 }
 
@@ -147,27 +248,34 @@ func RefreshFaiss(projDir string) error {
 	moduleFaissPath := filepath.Join(gitgo, "module.faiss")
 	moduleFaissMetaPath := filepath.Join(gitgo, "module.faiss.meta")
 
-	// 清除客户端缓存
-	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-	reqBody, _ := json.Marshal(map[string]interface{}{
-		"index_id": projDir,
-	})
-	resp, err := httpClient.Post(index.DefaultFaissServerURL+"/delete_index", "application/json", bytes.NewBuffer(reqBody))
-	if err != nil {
-		logs.Warnf("Dropping index failed, but ignored error: %v", err)
-	}
+	// zvec 模式不需要联系 FAISS HTTP 服务（5533 端口根本不会启动）
+	// 直接删除残留的 .faiss 文件即可，避免 connection refused → nil resp.Body.Close() 触发 panic
+	if config.GetEngine() != "zvec" {
+		httpClient := &http.Client{
+			Timeout: 30 * time.Second,
+		}
+		defer httpClient.CloseIdleConnections()
 
-	reqBody, _ = json.Marshal(map[string]interface{}{
-		"index_id": fmt.Sprintf("%s_module", projDir),
-	})
-	resp, err = httpClient.Post(index.DefaultFaissServerURL+"/delete_index", "application/json", bytes.NewBuffer(reqBody))
-	if err != nil {
-		logs.Warnf("Deleting module vector failed, but ignored error: %v", err)
+		dropFaissIndex := func(indexID, label string) {
+			reqBody, _ := json.Marshal(map[string]interface{}{
+				"index_id": indexID,
+			})
+			resp, err := httpClient.Post(
+				index.DefaultFaissServerURL+"/delete_index",
+				"application/json",
+				bytes.NewBuffer(reqBody),
+			)
+			if err != nil {
+				logs.Warnf("%s failed, but ignored error: %v", label, err)
+				return
+			}
+			if resp != nil && resp.Body != nil {
+				resp.Body.Close()
+			}
+		}
+		dropFaissIndex(projDir, "Dropping index")
+		dropFaissIndex(fmt.Sprintf("%s_module", projDir), "Deleting module vector")
 	}
-	defer httpClient.CloseIdleConnections()
-	defer resp.Body.Close()
 
 	os.Remove(faissIndexPath)
 	os.Remove(faissIndexMetaPath)
@@ -190,19 +298,24 @@ func ResetIndex(projDir, subPath string) error {
 	graphPath := filepath.Join(gitgo, "graph.json")
 	moduleFaissPath := filepath.Join(gitgo, "module.faiss")
 	moduleFaissMetaPath := filepath.Join(gitgo, "module.faiss.meta")
-	// 清除客户端缓存
-	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
+
+	// zvec 模式跳过 FAISS HTTP 服务调用，避免 connection refused → nil resp panic
+	if config.GetEngine() != "zvec" {
+		httpClient := &http.Client{
+			Timeout: 30 * time.Second,
+		}
+		defer httpClient.CloseIdleConnections()
+		reqBody, _ := json.Marshal(map[string]interface{}{
+			"index_id": projDir,
+		})
+		resp, err := httpClient.Post(index.DefaultFaissServerURL+"/delete_index", "application/json", bytes.NewBuffer(reqBody))
+		if err != nil {
+			logs.Warnf("Dropping index failed, but ignored error: %v", err)
+		} else if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
 	}
-	reqBody, _ := json.Marshal(map[string]interface{}{
-		"index_id": projDir,
-	})
-	resp, err := httpClient.Post(index.DefaultFaissServerURL+"/delete_index", "application/json", bytes.NewBuffer(reqBody))
-	if err != nil {
-		logs.Warnf("Dropping index failed, but ignored error: %v", err)
-	}
-	defer httpClient.CloseIdleConnections()
-	defer resp.Body.Close()
+
 	os.Remove(faissIndexPath)
 	os.Remove(faissIndexMetaPath)
 	os.Remove(localIndexPath)
@@ -454,28 +567,9 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 	log.Println("Indexing code files...")
 	os.MkdirAll(gitgoDir, 0755)
 
-	tempFilePath := filepath.Join(gitgoDir, "indexing.temp")
-	// 如果 temp 文件已存在，说明已有索引进程在运行
-	if _, err := os.Stat(tempFilePath); err == nil {
-		logs.Warnf("Indexing has been run, indexing skipped...")
-	} else if !os.IsNotExist(err) {
-		logs.Warnf("Index temporary file already exists, indexing skipped...")
-	}
-
-	// 创建临时文件，标记开始索引
-	f, err := os.Create(tempFilePath)
-	if err != nil {
-		logs.Warnf("Failed to create index temporary file %q: %v", tempFilePath, err)
-	}
-	f.Close()
-
-	// 确保退出时删除临时文件
-	defer func() {
-		if err := os.Remove(tempFilePath); err != nil && !os.IsNotExist(err) {
-			log.Printf("Failed to delete index temporary file %q: %v", tempFilePath, err)
-		}
-		logs.Infof("Indexing completed, index temporary file %q deleted", tempFilePath)
-	}()
+	// indexing.temp 锁由调用方 (BuildIndex / IncrementalUpdate) 通过
+	// acquireIndexLock 持有并 defer release。这里不再重复 stat/Create/defer Remove，
+	// 否则两次释放会让锁释放时机错位（在 fm.Free 之前就释放）。
 
 	// 强制清理全局索引临时文件
 	fullIndexTemp := filepath.Join(gitgoDir, "full_index.temp")
@@ -861,7 +955,9 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 			} else {
 				log.Printf("Index record deleted for file %s, %s", filePath, n)
 			}
-			files = append(files, filePath)
+			// 必须 append 绝对路径——后续 parser 直接调 os.Stat / ioutil.ReadFile，
+			// 而 fm 进程 CWD 不一定等于 projDir，相对路径会触发 stat 失败。
+			files = append(files, fullPath)
 		}
 	} else if incrementalUpdate && len(filesToProcess) > 0 {
 		// 增量更新模式：只处理变更文件
@@ -938,6 +1034,8 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 	// 用于捕获第一个错误
 	var firstErr error
 	var firstErrOnce sync.Once
+	parseFailedFiles := make([]parseArtifactFailure, 0, 16)
+	var parseFailedMu sync.Mutex
 
 	// 启动并发worker
 	for i := 0; i < concurrency; i++ {
@@ -952,6 +1050,14 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 				p := parser.NewParserDb(lang, db, projDir)
 				funcs, err := p.ParseFile(file)
 				if err != nil {
+					relFile := file
+					if rel, relErr := filepath.Rel(projDir, file); relErr == nil {
+						relFile = rel
+					}
+					failure := classifyParseArtifactFailure(relFile, err)
+					parseFailedMu.Lock()
+					parseFailedFiles = append(parseFailedFiles, failure)
+					parseFailedMu.Unlock()
 					firstErrOnce.Do(func() {
 						firstErr = err
 					})
@@ -969,6 +1075,20 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 	fmt.Printf("Parsed %d files, extracted %d functions.\n", len(files), len(allFuncs))
 
 	if firstErr != nil {
+		for _, failed := range parseFailedFiles {
+			if recErr := index.RecordParseArtifact(
+				db,
+				projDir,
+				failed.source,
+				failed.status,
+				failed.errorCode,
+				failed.errorMessage,
+				failed.fallbackMode,
+				"",
+			); recErr != nil {
+				logs.Warnf("record parse artifact failed: %v", recErr)
+			}
+		}
 		logs.Errorf("Error parsing files: %v", firstErr)
 		return firstErr
 	}
@@ -987,6 +1107,15 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 		return err
 	}
 	fmt.Printf("Analyzed %d functions with AI summaries.\n", len(results))
+
+	// 诊断日志：parser 抽到函数但 analyzer 返回 0 条，多半是 LLM 凭据/连接问题被静默吞掉了。
+	// 没有这个日志，下游 `index/check` 拿到 total_function_count=0 时根本看不出原因。
+	if len(allFuncs) > 0 && len(results) == 0 {
+		logs.Warnf("Parser extracted %d functions but analyzer returned 0 results. "+
+			"Check LLM provider credentials (DASHSCOPE_API_KEY / OpenAI key) and network connectivity. "+
+			"Without analyzer results, no rows will be written to the functions table.",
+			len(allFuncs))
+	}
 
 	// 3.1 进行模块级分析（文件/目录级别）
 	// 创建一个新的数据库连接，专门用于模块分析
@@ -1027,6 +1156,12 @@ func indexCodeWithManager(fm *FaissManager, projDir, branchName, commitHash stri
 	err = idx.SaveAnalysisToDBHttp(results, projDir)
 	if err != nil {
 		return err
+	}
+	if err := index.PersistDocHierarchyFromResults(db, projDir, results); err != nil {
+		logs.Warnf("persist doc hierarchy failed: %v", err)
+	}
+	if err := index.RecordParseArtifactSuccessFromResults(db, projDir, results); err != nil {
+		logs.Warnf("record parse artifact success failed: %v", err)
 	}
 	// 构建嵌入向量并添加到Faiss索引
 	if incrementalUpdate {
@@ -1214,6 +1349,8 @@ func ListGraph(projDir, subPath string) (err error) {
 	// 用于捕获第一个错误
 	var firstErr error
 	var firstErrOnce sync.Once
+	parseFailedFiles := make([]parseArtifactFailure, 0, 16)
+	var parseFailedMu sync.Mutex
 
 	// 启动并发worker进行文件解析
 	for i := 0; i < concurrency; i++ {
@@ -1228,6 +1365,14 @@ func ListGraph(projDir, subPath string) (err error) {
 				p := parser.NewParserDb(lang, db, projDir)
 				funcs, err := p.ParseFile(file)
 				if err != nil {
+					relFile := file
+					if rel, relErr := filepath.Rel(projDir, file); relErr == nil {
+						relFile = rel
+					}
+					failure := classifyParseArtifactFailure(relFile, err)
+					parseFailedMu.Lock()
+					parseFailedFiles = append(parseFailedFiles, failure)
+					parseFailedMu.Unlock()
 					firstErrOnce.Do(func() {
 						firstErr = err
 					})
@@ -1245,6 +1390,20 @@ func ListGraph(projDir, subPath string) (err error) {
 	fmt.Printf("Parsed %d files, extracted %d functions.\n", len(files), len(allFuncs))
 
 	if firstErr != nil {
+		for _, failed := range parseFailedFiles {
+			if recErr := index.RecordParseArtifact(
+				db,
+				projDir,
+				failed.source,
+				failed.status,
+				failed.errorCode,
+				failed.errorMessage,
+				failed.fallbackMode,
+				"",
+			); recErr != nil {
+				logs.Warnf("record parse artifact failed: %v", recErr)
+			}
+		}
 		logs.Errorf("Error parsing files: %v", firstErr)
 		return firstErr
 	}

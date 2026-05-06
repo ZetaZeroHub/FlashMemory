@@ -39,11 +39,22 @@ func deadlineInfo(ctx context.Context) (string, time.Duration) {
 
 // 字典枚举
 var (
-	OPENAI  = "openai"
-	OLLAMA  = "ollama"
-	QWEN    = "qwen"
-	GITHAVE = "githave"
+	OPENAI   = "openai"
+	OLLAMA   = "ollama"
+	QWEN     = "qwen"
+	GITHAVE  = "githave"
+	ASIAINFO = "asiainfo"
 )
+
+// resolveBaseURL picks OverrideURL when set, otherwise falls back to the
+// configured Url. Used by OpenAI-compatible providers so deployments can pin
+// a gateway (e.g. AsiaInfo aigw) without rewriting the original Url field.
+func resolveBaseURL(c *config.CloudModel) string {
+	if c.OverrideURL != "" {
+		return c.OverrideURL
+	}
+	return c.Url
+}
 
 // EmbeddingData 对应接口返回的每一条 embedding
 type EmbeddingData struct {
@@ -102,7 +113,7 @@ func CreateChatModel(ctx context.Context, config *config.CloudModel) (model mode
 		modelConfig := openai.ChatModelConfig{
 			APIKey:  config.Api,
 			Model:   config.Model,
-			BaseURL: config.Url,
+			BaseURL: resolveBaseURL(config),
 		}
 		if remaining > 0 {
 			modelConfig.Timeout = remaining
@@ -148,7 +159,7 @@ func CreateChatModel(ctx context.Context, config *config.CloudModel) (model mode
 			apiKey = common.GetCurrentToken()
 			logs.Infof("githave token: %s", common.GetCurrentToken())
 		}
-		baseURL := config.Url
+		baseURL := resolveBaseURL(config)
 		if common.GetURL() != "" {
 			baseURL = common.GetURL()
 			logs.Infof("override githave url: %s", common.GetURL())
@@ -157,6 +168,22 @@ func CreateChatModel(ctx context.Context, config *config.CloudModel) (model mode
 			APIKey:  apiKey,
 			Model:   config.Model,
 			BaseURL: baseURL,
+		}
+		if remaining > 0 {
+			modelConfig.Timeout = remaining
+		} else {
+			modelConfig.Timeout = 120 * time.Second
+		}
+		if config.Temperature != 0 {
+			modelConfig.Temperature = &config.Temperature
+		}
+		cm, err := openai.NewChatModel(ctx, &modelConfig)
+		return cm, err
+	case ASIAINFO:
+		modelConfig := openai.ChatModelConfig{
+			APIKey:  config.Api,
+			Model:   config.Model,
+			BaseURL: resolveBaseURL(config),
 		}
 		if remaining > 0 {
 			modelConfig.Timeout = remaining
@@ -369,7 +396,7 @@ func EmbeddingInvoke(config *config.CloudModel, ask []string, dim int) ([][]floa
 // GetEmbeddings 调用 OpenAI Embeddings API，返回解析后的响应
 func GetEmbeddings(ctx context.Context, req api.EmbedRequest, config *config.CloudModel) (*EmbedResponse, error) {
 	apiKey := config.Api
-	url := config.Url
+	url := resolveBaseURL(config)
 	if config.Type == GITHAVE {
 		if common.HasToken() {
 			logs.Infof("switch to GitHave AI, token: %s", common.GetCurrentToken())

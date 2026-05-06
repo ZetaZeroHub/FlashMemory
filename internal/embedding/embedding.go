@@ -17,19 +17,22 @@ func estimateTokens(text string) int {
 	return len([]rune(text))
 }
 
-// 按 token 数切分文本
+// splitTextByToken 按 token 数切分文本。
+// 由于 estimateTokens 按 1 rune = 1 token 估算，本函数也直接按 rune 数切，
+// 让 chunkTokenMax 真正成为单 chunk 上限。
+// 历史实现误用 chunkTokenMax*2 → 中文 chunk 实际逼近 BGE-512 上限，触发 413。
 func splitTextByToken(text string, chunkTokenMin, chunkTokenMax int) []string {
 	runes := []rune(text)
 	var res []string
 	start := 0
 	for start < len(runes) {
-		end := start + chunkTokenMax*2
+		end := start + chunkTokenMax
 		if end > len(runes) {
 			end = len(runes)
 		}
-		// 保证每块不少于 chunkTokenMin
-		if end-start < chunkTokenMin*2 && end != len(runes) {
-			end = start + chunkTokenMin*2
+		// 保证非末尾 chunk 不少于 chunkTokenMin
+		if end-start < chunkTokenMin && end != len(runes) {
+			end = start + chunkTokenMin
 			if end > len(runes) {
 				end = len(runes)
 			}

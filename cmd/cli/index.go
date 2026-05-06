@@ -25,7 +25,7 @@ func init() {
 	i18n := common.I18n
 
 	indexCmd.Flags().StringVar(&indexFaissType, "faiss", "cpu", i18n("Faiss 版本: 'cpu' 或 'gpu'", "Faiss version: 'cpu' or 'gpu'"))
-	indexCmd.Flags().StringVar(&indexSearchMode, "search-mode", "semantic", i18n("搜索模式: semantic, keyword, hybrid", "Search mode: semantic, keyword, hybrid"))
+	indexCmd.Flags().StringVar(&indexSearchMode, "search-mode", "auto", i18n("搜索模式: auto, semantic, keyword, hybrid", "Search mode: auto, semantic, keyword, hybrid"))
 	indexCmd.Flags().BoolVar(&indexForce, "force-full", false, i18n("强制进行全量索引", "Force full indexing"))
 	indexCmd.Flags().StringVar(&indexCommit, "commit", "", i18n("指定 commit hash", "Specify commit hash"))
 	indexCmd.Flags().StringVar(&indexBranch, "branch", "master", i18n("指定分支名称", "Specify branch name"))

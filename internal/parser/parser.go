@@ -19,6 +19,9 @@ type FunctionInfo struct {
 	StartLine    int      // 函数的起始行号
 	EndLine      int      // 函数的结束行号
 	FunctionType string   // 函数类型（例如 "method"方法、"function"函数、"constructor"构造函数等）
+	Source       string   // 来源标识（如文档路径、slide XML 路径等）
+	Page         int      // 来源页码（文档场景，默认 0）
+	Slide        int      // 来源幻灯片编号（PPT 场景，默认 0）
 	Description  string
 	CodeSnippet  string
 	Scan         bool
@@ -61,6 +64,18 @@ func DetectLang(path string) string {
 		return "ruby"
 	case ".php":
 		return "php"
+	case ".md", ".markdown":
+		return "markdown"
+	case ".txt", ".rst":
+		return "text"
+	case ".pdf":
+		return "pdf"
+	case ".pptx":
+		return "pptx"
+	case ".docx":
+		return "docx"
+	case ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff":
+		return "image"
 	default:
 		// 对于其他未知的文件类型，去除.后缀
 		return strings.TrimPrefix(ext, ".")
@@ -72,6 +87,8 @@ func NewParser(lang string) Parser {
 	switch lang {
 	case "go", "python", "javascript", "typescript", "java", "cpp", "c", "h", "ruby", "rust", "bash", "elixir", "php":
 		return &TreeSitterParser{Lang: lang, Debug: false}
+	case "markdown", "text", "pdf", "pptx", "docx", "image":
+		return &DocParser{Lang: lang}
 	default:
 		return &LLMParser{Lang: lang}
 	}
@@ -81,6 +98,8 @@ func NewParserDb(lang string, db *sql.DB, projDir string) Parser {
 	switch lang {
 	case "go", "python", "javascript", "typescript", "java", "cpp", "c", "h", "ruby", "rust", "bash", "elixir", "php":
 		return &TreeSitterParser{Lang: lang, Debug: false, Db: db, ProjDir: projDir}
+	case "markdown", "text", "pdf", "pptx", "docx", "image":
+		return &DocParser{Lang: lang}
 	default:
 		return &LLMParser{Lang: lang, Db: db, ProjDir: projDir}
 	}
@@ -90,6 +109,8 @@ func NewParserNoLLM(lang string) Parser {
 	switch lang {
 	case "go", "python", "javascript", "typescript", "java", "cpp", "c", "h", "ruby", "rust", "bash", "elixir", "php":
 		return &TreeSitterParser{Lang: lang, Debug: false, NoLLM: true}
+	case "markdown", "text", "pdf", "pptx", "docx", "image":
+		return &DocParser{Lang: lang}
 	default:
 		return &LLMParser{Lang: lang, NoLLM: true}
 	}

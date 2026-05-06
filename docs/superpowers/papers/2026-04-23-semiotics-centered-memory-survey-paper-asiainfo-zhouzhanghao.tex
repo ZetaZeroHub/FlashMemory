@@ -1,0 +1,207 @@
+\documentclass[10pt,twocolumn]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[left=0.72in,right=0.72in,top=0.82in,bottom=0.92in]{geometry}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{setspace}
+\usepackage{amsmath}
+\usepackage{titlesec}
+\usepackage{dblfloatfix}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=[RGB]{18,77,102},
+  citecolor=[RGB]{18,77,102},
+  urlcolor=[RGB]{18,77,102},
+  pdftitle={Meaning Instability in Long-Horizon AI Memory: A Semiotic Position Paper},
+  pdfauthor={Zhanghao Zhou},
+  pdfsubject={AI memory, semiotics, collective memory, meaning instability},
+  pdfkeywords={semiotic memory, AI agents, meaning instability, semiosphere, self-play harness, semantic drift, collective memory}
+}
+
+\setlength{\columnsep}{0.24in}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.28em}
+\setlist[itemize]{leftmargin=1.4em}
+\setlist[enumerate]{leftmargin=1.6em}
+
+\titleformat{\section}
+  {\normalfont\large\bfseries\raggedright}
+  {\thesection}{0.6em}{}
+\titleformat{\subsection}
+  {\normalfont\normalsize\bfseries\raggedright}
+  {\thesubsection}{0.6em}{}
+
+\newcommand{\paperkeywords}[1]{%
+  \vspace{0.5em}
+  \noindent\textbf{Keywords:} #1
+}
+
+\newcommand{\paperfigure}[3]{%
+  \begin{figure}[t]
+    \centering
+    \includegraphics[width=0.98\linewidth]{#1}
+    \caption{#2}
+    \label{#3}
+  \end{figure}
+}
+
+\newcommand{\paperwidefigure}[3]{%
+  \begin{figure*}[!t]
+    \centering
+    \includegraphics[width=0.94\textwidth]{#1}
+    \caption{#2}
+    \label{#3}
+  \end{figure*}
+}
+
+\title{\textbf{Meaning Instability in Long-Horizon AI Memory: A Semiotic Position Paper}}
+\author{Zhanghao Zhou$^{1}$\\[0.2em]
+\small $^{1}$Asiainfo Technologies (China), Inc., Beijing, China\\
+\small \textit{NOTE: Corresponding author: Zhanghao Zhou}\\
+\small \texttt{zhouzh13@asiainfo.com}}
+\date{April 23, 2026}
+
+\begin{document}
+
+\twocolumn[
+\maketitle
+\begin{abstract}
+Long-horizon AI agents increasingly rely on memory modules to retrieve prior observations, preserve intermediate conclusions, and stabilize behavior across extended interactions. Yet current work still tends to frame memory failure as a problem of storage, retrieval, or context length. This paper identifies a different and under-theorized failure mode: agents can preserve traces without preserving operational meaning. The central thesis is that long-horizon memory should be analyzed as a problem of sign--object--interpretant stability rather than as enlarged text retention. On this view, memory fails when a retained sign no longer refers to the same object, no longer supports a compatible interpretant, or becomes institutionalized despite weak grounding. The paper develops this thesis into a testable research framework centered on semiotic memory units, layered consolidation, interpretive competition, and collective stabilization. Cognitive psychology, game theory, social diffusion theory, and computational linguistics are used as supporting lenses rather than as competing centers. The paper does not present a finished system or benchmark result; instead, it specifies the minimum empirical conditions under which the thesis could be supported or weakened. The position is therefore falsifiable: if object-anchored and propagation-aware memory settings do not improve semiotic stability, repair efficiency, or canon quality over standard text-buffer memory, the proposed account should be revised or rejected.
+\end{abstract}
+
+\paperkeywords{semiotic memory, AI agents, meaning instability, semiosphere, self-play harness, semantic drift, collective memory}
+\vspace{1.0em}
+]
+
+\section{Introduction}
+
+Current research on AI memory has made substantial progress on retrieval, reflection, and long-context handling, but it still tends to diagnose memory failure too narrowly. In many systems, a memory module is considered successful if it retains more observations, retrieves more relevant traces, or supports longer interaction horizons. These advances matter, yet they leave a deeper failure mode insufficiently theorized: an agent may retain textual traces while losing the operational meaning that those traces once supported.
+
+This paper argues that long-horizon AI memory should be treated as a problem of meaning instability. The central concern is not only whether a memory can be retrieved, but whether a retained sign still refers to the same object and still licenses a compatible interpretation. When this alignment degrades, the resulting failures are not well captured by the language of forgetting alone. They appear instead as reference drift, interpretive divergence, sloganized summaries, and canonized but weakly grounded norms.
+
+The proposed explanation is semiotic. A durable memory item is better understood as a relation among sign, object, and interpretant than as a stored text span \cite{short2021peirce, lotman2005semiosphere}. This claim does not replace existing work in cognitive psychology, agent memory, or computational linguistics. Rather, it clarifies how these lines of work address different parts of the same problem. Cognitive psychology helps explain internal layering \cite{atkinson1968human, baddeley1974working, tulving1972episodic, nelson1990metamemory}; game-theoretic reasoning helps explain why interpretations compete; social diffusion theory helps explain why some claims become norms \cite{centola2010spread}; and computational linguistics helps quantify semantic drift \cite{hamilton2016diachronic}. Semiotics is the center because it explains why these mechanisms belong to one problem rather than to several adjacent ones.
+
+The paper advances four contributions. First, it formulates meaning instability as a distinct failure mode for long-horizon AI memory. Second, it develops a semiotic thesis in which memory is analyzed through sign--object--interpretant alignment rather than text retention alone. Third, it proposes a testable research framework organized around semiotic memory units, layered consolidation, interpretive competition, and collective stabilization. Fourth, it derives falsifiable hypotheses and evaluation criteria that can support or weaken the position.
+
+The remainder of the paper proceeds as follows. Section~\ref{sec:problem} defines the target failure mode. Section~\ref{sec:insufficient} explains why existing paradigms remain insufficient. Section~\ref{sec:semiotic-thesis} develops the semiotic thesis. Section~\ref{sec:framework} presents a testable research framework. Section~\ref{sec:method-instantiation} outlines the minimum methodological setting needed to study the thesis empirically. Section~\ref{sec:hypotheses} formulates hypotheses and evaluation criteria. Section~\ref{sec:limitations} discusses limitations and falsifiability, and Section~\ref{sec:conclusion} concludes.
+
+\section{Problem Statement: Memory Failure as Meaning Instability}
+\label{sec:problem}
+
+The argument begins from a narrower and more concrete problem statement than the one usually adopted in AI memory work. The question is not simply how an agent can retain more observations, but how it can preserve operational meaning under repeated summarization, translation, contestation, and reuse. A memory mechanism fails, in the sense relevant here, when previously useful traces remain available but no longer support stable action because their referential or interpretive structure has changed.
+
+Three failure modes are central. The first is \textbf{reference drift}: a sign remains available but ceases to refer reliably to the same object. The second is \textbf{interpretive divergence}: multiple agents retrieve what appears to be the same memory trace but derive incompatible interpretations from it. The third is \textbf{ungrounded canonization}: a claim is repeatedly reused and stabilized as a norm despite weak or degraded object-level support. These failures are analytically distinct from simple forgetting because the system may appear memory-rich while becoming progressively less reliable.
+
+This framing matters because the long-horizon setting amplifies precisely these pathologies. Summaries compress. Roles diversify. Agents interact across heterogeneous symbolic environments. Repeated retellings reward fluency and reuse, not necessarily grounding. If these conditions are taken seriously, then memory research needs constructs that can track not only persistence but also meaning preservation. Figure~\ref{fig:teaser} summarizes the core claim of this paper: the problem is best understood as one of alignment and instability across multiple layers of interpretation rather than one of text accumulation alone.
+
+\paperwidefigure{images/fig1-architecture-overview.png}{Analytic overview of the paper's central claim: long-horizon AI memory must be studied as the preservation or degradation of sign--object--interpretant alignment across individual, collective, and evaluative levels.}{fig:teaser}
+
+\section{Why Existing Memory Paradigms Remain Insufficient}
+\label{sec:insufficient}
+
+\subsection{Reflective and Episodic Memory in Agents}
+
+Recent agent systems have shown that episodic traces and reflection loops can improve adaptation across extended tasks. Generative Agents use remembered experiences and synthesized reflections to shape future behavior \cite{park2023generative}, while Reflexion demonstrates that language-mediated self-feedback can function as a lightweight reinforcement signal \cite{shinn2023reflexion}. These studies establish that memory is not reducible to immediate context. However, they still tend to treat memory as retrievable text plus post hoc interpretation. They improve persistence and adaptation, but they do not explicitly theorize failure as instability of sign--object--interpretant alignment.
+
+\subsection{Hierarchical and Long-Context Memory Architectures}
+
+Hierarchical memory schemes extend this line by distinguishing levels of storage and retrieval. MemGPT, for example, frames long-horizon memory management through an operating-system analogy in which information is paged across tiers \cite{packer2024memgpt}. Such work is valuable because it shows that long-horizon memory requires internal organization rather than a flat buffer. Yet the dominant design question remains one of storage efficiency, access policy, and retrieval control. These architectures help manage memory scale, but they do not by themselves explain when a retained representation continues to refer to the same object or support the same interpretation.
+
+\subsection{Multi-Agent Interaction and Coordination}
+
+Multi-agent work further demonstrates that memory and communication are inseparable in collective settings. CAMEL shows that role differentiation and interaction can generate distinct communicative regimes \cite{li2023camel}, and related work on reasoning-and-acting loops highlights the importance of iterative feedback in situated behavior \cite{yao2023react}. These studies explain how agents coordinate, contest, and distribute reasoning. What they do not yet make central is that coordination can fail even when communication appears fluent, because the relevant signs may have drifted, split, or stabilized around incompatible referents.
+
+\subsection{Semantic Drift and Language Change Modeling}
+
+Computational linguistics provides a different but highly relevant line of evidence. Diachronic embedding studies show that semantic drift is measurable rather than metaphorical \cite{hamilton2016diachronic}. This is directly useful for memory research because it suggests that changing meanings can be tracked quantitatively across time and use. Even so, language-change models alone cannot specify what counts as a stable interpretive relation in agent memory. They capture representational movement, but they do not on their own explain when drift matters for action, norm formation, or institutional reuse.
+
+Taken together, these paradigms explain important parts of the problem while leaving the central failure mode under-specified. Existing work improves reflection, hierarchy, interaction, or drift measurement, but it does not yet provide a unified account of why memory can remain accessible while becoming operationally unreliable. The remainder of this paper argues that semiotics supplies the missing center for that account.
+
+\section{A Semiotic Thesis of AI Memory}
+\label{sec:semiotic-thesis}
+
+The theoretical claim of this paper is straightforward: a memory item should be modeled as a relation among sign, object, and interpretant rather than as a stored textual fragment. This proposal draws on Peirce's account of semiosis, in which meaning is not exhausted by a sign and its referent because interpretation is constitutive of the relation itself \cite{short2021peirce}. For long-horizon AI memory, this means that retention without interpretive stability is not sufficient for reliable memory.
+
+This thesis changes the explanatory target of memory research. The relevant question is no longer only whether an agent can recover prior traces. It is whether a remembered sign still points to the same object and still yields an interpretant compatible with prior action or judgment. On this view, memory failure is not only decay. It is also misalignment among reference, interpretation, and institutional reuse.
+
+Lotman's notion of the semiosphere extends the same logic to collective settings \cite{lotman2005semiosphere, noth2015topography}. Memory does not operate in one homogeneous representational space. Distinct agents, tasks, and communicative roles occupy partially different symbolic regions, and translation across these regions is both productive and error-prone. This helps explain why long-horizon collective memory can degrade even when all participants appear to be preserving and exchanging information successfully.
+
+The semiotic thesis is therefore not a decorative overlay on existing memory systems. It is an argument about what kind of object memory research should be studying. If the thesis is correct, the primary unit of analysis is not the chunk or summary as such, but the stability of a sign--object--interpretant relation under temporal compression, interaction, and propagation.
+
+\section{A Testable Research Framework}
+\label{sec:framework}
+
+The paper's framework translates the semiotic thesis into a set of research constructs that can support empirical work. The first construct is the \textbf{semiotic memory unit (SMU)}. An SMU is a claim-level structure containing at least a sign, an object anchor, an interpretant, a context, provenance information, a confidence estimate, and a social status. Figure~\ref{fig:smu} visualizes this construct as the minimal analytic unit required to distinguish object identity from interpretive plurality.
+
+\paperfigure{images/fig2-smu-schema.png}{Semiotic memory unit as an analytic construct for studying whether preserved signs remain anchored to inspectable objects and compatible interpretations over time.}{fig:smu}
+
+The second construct is \textbf{layered consolidation}. Following classical memory theory, the framework distinguishes transient perception, working interpretation, episodic traces, semantic stabilization, and metamemory \cite{atkinson1968human, baddeley1974working, tulving1972episodic, nelson1990metamemory}. The purpose of this layering is not to mimic cognition for its own sake, but to prevent two errors that a flat memory store encourages: treating all observations as equally durable, and promoting local experience into generalized knowledge without sufficient evidence.
+
+The third construct is \textbf{interpretive competition}. A memory claim should not be assumed correct when written. It should become more or less credible through retrieval, use, challenge, and revision. This follows naturally from work on verbal self-correction and multi-agent interaction \cite{shinn2023reflexion, madaan2023selfrefine, li2023camel}, but here the emphasis is narrower: competing interpretants should be modeled explicitly because interpretive conflict is informative rather than incidental.
+
+The fourth construct is \textbf{collective stabilization}. Repeated use does not merely preserve memory; it can also distort it. Claims propagate, compress, drift, and eventually stabilize as norms. In this phase, social diffusion theory becomes important because reinforcement structure influences which claims become canonical \cite{centola2010spread}. A complete memory framework therefore needs to track not only individual retrieval, but also how a claim moves toward or away from institutional status.
+
+\section{Methodological Instantiation}
+\label{sec:method-instantiation}
+
+The framework above is theoretical, but it is not intended to remain abstract. To study the semiotic thesis empirically, an experimental setting must satisfy three methodological conditions.
+
+First, it must provide an \textbf{object-anchored experimental substrate}. Memory claims need inspectable anchors such as code entities, documents, incidents, or other external objects against which reference stability can be checked. Without such anchors, drift is difficult to distinguish from benign paraphrase.
+
+Second, it must provide a \textbf{self-play memory harness}. The relevant question is not whether a claim can be stored once, but whether it survives retrieval, challenge, reinterpretation, and downstream use. A suitable setting must therefore stage tasks in which memory claims can be contested and updated rather than passively archived. Figure~\ref{fig:semiosphere} should be read in this methodological sense: it represents the kinds of translational boundaries and propagation paths an experimental environment must expose if collective memory is to be studied rigorously.
+
+\paperfigure{images/fig3-semiosphere-propagation.png}{Methodological view of collective memory: heterogeneous symbolic regions, translational boundaries, and propagation paths that make interpretive drift and stabilization empirically observable.}{fig:semiosphere}
+
+Third, it must provide a \textbf{propagation-aware evaluation setting}. Long-horizon memory should be studied across repeated summarization, heterogeneous roles, and cross-region communication. A single-agent retrieval benchmark may be useful, but it is insufficient for testing whether meanings remain stable when memory becomes collective, compressed, and normative.
+
+These requirements do not prescribe one implementation. They specify the minimum empirical conditions under which the semiotic thesis becomes meaningfully testable. Any system, simulator, or benchmark that satisfies them could in principle support the proposed research program.
+
+\section{Research Hypotheses and Evaluation Criteria}
+\label{sec:hypotheses}
+
+The framework yields three explicit hypotheses.
+
+\textbf{H1.} Object-anchored memory representations should outperform plain chunk-based memory on \textbf{semiotic stability}, because explicit anchors make it easier to preserve reference under summarization and reuse.
+
+\textbf{H2.} Interpretive competition should outperform static write policies on \textbf{repair efficiency}, because challenge and revision expose weak interpretations that passive storage leaves latent.
+
+\textbf{H3.} Propagation-aware evaluation settings should expose \textbf{canon drift} earlier than single-agent memory settings, because repeated translation and social reinforcement reveal instability that isolated retrieval does not.
+
+These hypotheses require evaluation criteria that are aligned with the paper's central problem formulation. Figure~\ref{fig:evaluation} summarizes the resulting evaluation space and should be read as an argument about what memory research must measure, not as a fixed system roadmap.
+
+\paperwidefigure{images/fig4-evaluation-matrix.png}{Evaluation space for the proposed position: memory representations, layering schemes, update regimes, and social settings should be compared against criteria that directly operationalize meaning stability and repair.}{fig:evaluation}
+
+Five criteria are especially important. \textbf{Semiotic stability} measures whether a claim still refers to the same object and supports a compatible interpretant after transformation. \textbf{Interpretive divergence} measures how far different agents' interpretants separate when they retrieve apparently similar claims. \textbf{Symbol grounding strength} measures the robustness of the link between signs and inspectable objects. \textbf{Canon quality} evaluates whether stabilized claims are genuinely reusable and low-risk rather than merely frequent. \textbf{Repair efficiency} measures how quickly the system can recover after a weak interpretation has become established.
+
+The position advanced here is meaningful only if these criteria can separate memory designs in practice. If object anchoring, layered consolidation, and interpretive competition do not improve any of these criteria relative to simpler baselines, then the proposed thesis has little empirical value.
+
+\section{Limitations and Falsifiability}
+\label{sec:limitations}
+
+The paper makes a strong theoretical claim, but it is not intended to be insulated from counter-evidence. Several limitations are immediate. Semiotic representations impose schema overhead. Object anchoring is easier in domains with inspectable artifacts than in open-world environments. Collective evaluation is more expensive than single-agent benchmarking. In addition, social-status modeling may introduce governance assumptions that are difficult to standardize across settings.
+
+More importantly, the position is falsifiable. Evidence against it would include at least the following outcomes. First, object-anchored memory may fail to improve semiotic stability over plain chunk memory in controlled settings. Second, interpretive competition may not improve repair efficiency relative to simpler write-and-retrieve policies. Third, propagation-aware evaluation may fail to reveal canon drift beyond what single-agent testing already captures. Any of these results would weaken the claim that meaning instability is the central organizing problem for long-horizon memory research.
+
+There is also a conceptual risk. Semiotics may provide a useful vocabulary without providing enough added explanatory power to justify a new research program. If the same empirical effects can be explained equally well by existing retrieval, memory-hierarchy, or communication models without explicit sign--object--interpretant analysis, then the present thesis should be narrowed. The paper therefore does not ask to be accepted as a manifesto. It asks to be tested against alternative explanations.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+This paper has argued that long-horizon AI memory is under-theorized when treated primarily as a problem of storage, retrieval, or context length. The proposed alternative is to analyze memory failure as meaning instability: a breakdown in the stability of sign--object--interpretant relations under repeated use, translation, and institutional reuse.
+
+On that basis, the paper has advanced a semiotic thesis of memory, formulated a set of research constructs, and derived a falsifiable methodological program. The intended contribution is not a finished system design, but a sharper research question and a clearer empirical target. If the argument is correct, future work on AI memory should devote less attention to memory volume alone and more attention to the conditions under which meaning remains stable, revisable, and collectively governable.
+
+\bibliographystyle{unsrtnat}
+\bibliography{2026-04-23-semiotics-centered-memory-survey-paper-asiainfo-zhouzhanghao}
+
+\end{document}
